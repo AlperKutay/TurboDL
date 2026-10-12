@@ -98,6 +98,14 @@ describe("DownloadManager", () => {
     expect(manager.get("id1")?.status).toBe("completed");
   });
 
+  it("keeps names unique among unfinished downloads in the same folder (they would share a temp file)", () => {
+    const { manager } = setup({ maxConcurrent: 1 });
+    const a = manager.add(input("a.zip"), "now");
+    const b = manager.add(input("a.zip"), "now");
+    const c = manager.add(input("a.zip", "/other"), "now");
+    expect([a.filename, b.filename, c.filename]).toEqual(["a.zip", "a (1).zip", "a.zip"]);
+  });
+
   it("keeps 'later' downloads scheduled until the scheduler activates them", async () => {
     const { manager, tasks } = setup();
     const rec = manager.add(input("a"), "later");

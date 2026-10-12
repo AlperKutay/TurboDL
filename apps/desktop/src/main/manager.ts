@@ -1,7 +1,7 @@
 import { EventEmitter } from "node:events";
 import { promises as fsp } from "node:fs";
 import path from "node:path";
-import type { DownloadRecord, DownloadView, NewDownload, Settings } from "@turbodl/shared";
+import { uniqueName, type DownloadRecord, type DownloadView, type NewDownload, type Settings } from "@turbodl/shared";
 import { TEMP_SUFFIX } from "./engine/download-task";
 import type { JsonStore } from "./store";
 import type { TaskHandle } from "./task";
@@ -75,8 +75,12 @@ export class DownloadManager extends EventEmitter<ManagerEvents> {
   }
 
   add(input: NewDownload, mode: "now" | "later"): DownloadRecord {
+    // unfinished downloads in one folder must not share a name: they would share the temp file
+    const taken = (name: string) =>
+      [...this.records.values()].some((r) => r.dir === input.dir && r.filename === name && r.status !== "completed");
     const record: DownloadRecord = {
       ...input,
+      filename: uniqueName(input.filename, taken),
       id: (this.opts.newId ?? randomId)(),
       headers: { ...input.headers },
       received: 0,

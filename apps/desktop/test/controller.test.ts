@@ -131,6 +131,14 @@ describe("AppController", () => {
     if (!res.accepted) expect(res.reason).toContain("404");
   });
 
+  it("declines an intercepted download whose link only returns a web page, so Chrome keeps it", async () => {
+    const c = await start();
+    const res = await c.handleDownloadRequest({ url: server.url("/page"), source: "intercept" });
+    expect(res.accepted).toBe(false);
+    expect(ui.opened).toHaveLength(0);
+    expect(c.manager.list()).toHaveLength(0);
+  });
+
   it("opens the media dialog for a manually added web page", async () => {
     const c = await start();
     expect(await c.addUrl(server.url("/page"))).toEqual({ ok: true });

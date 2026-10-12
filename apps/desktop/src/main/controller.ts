@@ -160,7 +160,9 @@ export class AppController {
     } catch (err) {
       return { accepted: false, reason: message(err) };
     }
-    if (info.mime === "text/html" && req.source !== "intercept") {
+    if (info.mime === "text/html") {
+      // Chrome got a file but a plain GET gets a page (POST-only or one-time link): leave it to Chrome.
+      if (req.source === "intercept") return { accepted: false, reason: "This address returns a web page instead of a file." };
       await this.handleMediaRequest({ pageUrl: req.url, title: "", items: [], cookies: req.cookies, referrer: req.referrer, userAgent: req.userAgent });
       return { accepted: true };
     }
