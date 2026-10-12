@@ -8,12 +8,13 @@ export async function getPort(): Promise<number> {
   return typeof port === "number" && port > 0 ? port : DEFAULT_BRIDGE_PORT;
 }
 
-async function call<T>(method: "GET" | "POST", path: string, body?: unknown, timeoutMs = 4000): Promise<{ status: number; data: T | null }> {
+// Always POST: Chrome omits the Origin header on GETs from an extension, and the app requires it.
+async function call<T>(path: string, body: unknown = {}, timeoutMs = 4000): Promise<{ status: number; data: T | null }> {
   const port = await getPort();
   const res = await fetch(`http://127.0.0.1:${port}/v1${path}`, {
-    method,
-    headers: body === undefined ? undefined : { "Content-Type": "application/json" },
-    body: body === undefined ? undefined : JSON.stringify(body),
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
     signal: AbortSignal.timeout(timeoutMs),
   });
   let data: T | null = null;
@@ -27,7 +28,7 @@ async function call<T>(method: "GET" | "POST", path: string, body?: unknown, tim
 
 export async function ping(): Promise<boolean> {
   try {
-    const res = await call<PingResponse>("GET", "/ping");
+    const res = await call<PingResponse>("/ping");
     return res.status === 200 && res.data?.app === "turbodl";
   } catch {
     return false;
@@ -38,7 +39,7 @@ export async function getConfig(): Promise<BridgeConfig | null> {
   const port = await getPort();
   if (configCache && configCache.port === port && Date.now() - configCache.at < CONFIG_TTL) return configCache.value;
   try {
-    const res = await call<BridgeConfig>("GET", "/config");
+    const res = await call<BridgeConfig>("/config");
     if (res.status === 200 && res.data) {
       configCache = { value: res.data, at: Date.now(), port };
       return res.data;
@@ -52,7 +53,7 @@ export async function getConfig(): Promise<BridgeConfig | null> {
 
 export async function sendDownload(req: DownloadRequest): Promise<{ ok: boolean; reason?: string }> {
   try {
-    const res = await call<{ accepted: boolean; reason?: string }>("POST", "/downloads", req, 25_000);
+    const res = await call<{ accepted: boolean; reason?: string }>("/downloads", req, 25_000);
     return { ok: res.status === 202, reason: res.data?.reason };
   } catch {
     return { ok: false, reason: "TurboDL is not running." };
@@ -61,7 +62,7 @@ export async function sendDownload(req: DownloadRequest): Promise<{ ok: boolean;
 
 export async function sendMedia(req: MediaRequest): Promise<boolean> {
   try {
-    return (await call("POST", "/media", req, 10_000)).status === 202;
+    return (await call("/media", req, 10_000)).status === 202;
   } catch {
     return false;
   }

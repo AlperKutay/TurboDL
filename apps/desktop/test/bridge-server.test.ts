@@ -62,6 +62,11 @@ describe("bridge server", () => {
     expect((await call("/v1/config")).json).toEqual({ captureEnabled: true, captureExtensions: ["zip"], minCaptureSize: 0 });
   });
 
+  it("answers ping and config over POST, because Chrome omits Origin on extension GETs", async () => {
+    expect(await call("/v1/ping", { method: "POST", body: "{}" })).toEqual({ status: 200, json: { app: "turbodl", version: "1.2.3" } });
+    expect((await call("/v1/config", { method: "POST", body: "{}" })).json).toEqual({ captureEnabled: true, captureExtensions: ["zip"], minCaptureSize: 0 });
+  });
+
   it("rejects other origins and missing origins", async () => {
     expect((await call("/v1/ping", { origin: "https://evil.example" })).status).toBe(403);
     expect((await call("/v1/ping", { origin: null })).status).toBe(403);

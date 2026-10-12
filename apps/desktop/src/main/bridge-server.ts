@@ -141,8 +141,10 @@ export function createBridgeServer(h: BridgeHandlers): BridgeServer {
       }
 
       const path = (req.url ?? "").split("?")[0];
-      if (req.method === "GET" && path === "/v1/ping") return send(200, { app: APP_ID, version: h.version });
-      if (req.method === "GET" && path === "/v1/config") return send(200, h.getConfig());
+      // Chrome omits Origin on GETs from an extension, so the extension uses POST; GET stays for tools.
+      const read = req.method === "GET" || req.method === "POST";
+      if (read && path === "/v1/ping") return send(200, { app: APP_ID, version: h.version });
+      if (read && path === "/v1/config") return send(200, h.getConfig());
       if (req.method === "POST" && (path === "/v1/downloads" || path === "/v1/media")) {
         if (!String(req.headers["content-type"] ?? "").includes("application/json")) return send(415, { error: "content-type" });
         const body = await readBody(req);

@@ -48,6 +48,8 @@ async function evaluate(item: chrome.downloads.DownloadItem, filenameKnown: bool
     }
     return;
   }
+  // re-check: another event for the same download may have claimed it while we awaited the config
+  if (handled.has(item.id)) return;
   handled.add(item.id);
   await capture(item, candidate);
 }
