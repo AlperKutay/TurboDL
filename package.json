@@ -1,0 +1,14 @@
+{
+  "name": "turbodl",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "test": "pnpm -r --workspace-concurrency=1 test",
+    "typecheck": "pnpm -r typecheck",
+    "icons": "node scripts/generate-icons.mjs",
+    "build": "pnpm --filter @turbodl/extension build && pnpm --filter @turbodl/desktop build",
+    "dev": "pnpm --filter @turbodl/extension build && pnpm --filter @turbodl/desktop dev",
+    "dist": "pnpm build && pnpm --filter @turbodl/desktop dist",
+    "e2e": "pnpm --filter @turbodl/extension e2e && pnpm --filter @turbodl/desktop e2e"
+  }
+}
