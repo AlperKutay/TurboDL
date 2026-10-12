@@ -31,9 +31,12 @@ test("detects page media and sends it from the video button", async ({ context, 
     .toBe("file,hls");
 
   const box = await page.locator("#v").boundingBox();
-  await page.mouse.move(box!.x + 120, box!.y + 120);
   const button = page.getByRole("button", { name: "⬇ TurboDL" });
-  await expect(button).toBeVisible();
+  // the content script is injected at document_idle; keep hovering until it reacts
+  await expect(async () => {
+    await page.mouse.move(box!.x + 100 + Math.random() * 40, box!.y + 120);
+    await expect(button).toBeVisible({ timeout: 500 });
+  }).toPass({ timeout: 10_000 });
   await button.click();
   await expect.poll(() => bridge.requests.filter((r) => r.path === "/v1/media").length, { timeout: 10_000 }).toBe(1);
   const body = bridge.requests.find((r) => r.path === "/v1/media")!.body;
