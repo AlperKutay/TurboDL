@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <header>
+      <img src="icons/icon32.png" alt="" width="24" height="24" />
+      <h1>TurboDL</h1>
+      <span id="status" class="status">…</span>
+    </header>
+    <label class="row"><input type="checkbox" id="capture" /> Send downloads to TurboDL</label>
+    <section>
+      <h2>Media on this page</h2>
+      <ul id="media"></ul>
+      <p id="empty" class="muted">No media found yet. Try playing the video.</p>
+      <button id="analyze" type="button" class="wide">Open the page in TurboDL (choose quality)</button>
+    </section>
+    <details>
+      <summary>Advanced</summary>
+      <label class="row">Connection port <input type="number" id="port" min="1024" max="65535" /></label>
+    </details>
+    <script src="popup.js"></script>
+  </body>
+</html>
