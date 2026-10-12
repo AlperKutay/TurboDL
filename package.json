@@ -10,5 +10,8 @@
     "dev": "pnpm --filter @turbodl/extension build && pnpm --filter @turbodl/desktop dev",
     "dist": "pnpm build && pnpm --filter @turbodl/desktop dist",
     "e2e": "pnpm --filter @turbodl/extension e2e && pnpm --filter @turbodl/desktop e2e"
+  },
+  "devDependencies": {
+    "@resvg/resvg-js": "2.6.2"
   }
 }
