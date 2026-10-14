@@ -195,6 +195,8 @@ export class AppController {
       items: req.items,
       headers: buildHeaders(req.cookies, req.referrer ?? req.pageUrl, req.userAgent),
       defaultDir: this.categoryDir("video"),
+      cookieJar: req.cookieJar ?? [],
+      useLogin: false,
     });
   }
 
@@ -234,7 +236,7 @@ export class AppController {
       const info = await fetchMediaInfo(paths, p.pageUrl, withoutCookie(p.headers));
       const { title, options } = formatOptionsFromInfo(info);
       p.title = title;
-      return { ok: true, title, options };
+      return { ok: true, title, options, usedLogin: false };
     } catch (err) {
       return { ok: false, error: message(err) };
     }

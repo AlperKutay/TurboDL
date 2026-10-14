@@ -25,6 +25,12 @@ describe("settings", () => {
     expect(s.closeToTray).toBe(defaults.closeToTray);
   });
 
+  it("watches the clipboard unless switched off", () => {
+    expect(defaults.watchClipboard).toBe(true);
+    expect(normalizeSettings({ watchClipboard: false }, defaults).watchClipboard).toBe(false);
+    expect(normalizeSettings({ watchClipboard: "no" }, defaults).watchClipboard).toBe(true);
+  });
+
   it("validates scheduler times", () => {
     const s = normalizeSettings({ scheduler: { enabled: true, startTime: "25:00", stopTime: "07:30", afterAll: "explode" } }, defaults);
     expect(s.scheduler).toEqual({ enabled: true, startTime: "02:00", stopTime: "07:30", afterAll: "none" });
