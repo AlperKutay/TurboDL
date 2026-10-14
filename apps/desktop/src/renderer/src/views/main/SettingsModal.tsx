@@ -79,6 +79,10 @@ export function SettingsModal({ settings, version, onClose }: { settings: Settin
         <input type="checkbox" checked={draft.captureEnabled} onChange={(e) => set("captureEnabled", e.target.checked)} />
         Capture Chrome downloads
       </label>
+      <label className="check">
+        <input type="checkbox" checked={draft.watchClipboard} onChange={(e) => set("watchClipboard", e.target.checked)} />
+        Capture copied download links (extensions above)
+      </label>
       <label className="field">
         <span>File extensions to capture</span>
         <textarea rows={3} value={extensions} onChange={(e) => setExtensions(e.target.value)} />

@@ -18,11 +18,23 @@ import { Toolbar } from "./main/Toolbar";
 
 type ModalState =
   | null
-  | { type: "add" }
+  | { type: "add"; url: string; autoSubmit: boolean }
   | { type: "settings" }
   | { type: "scheduler" }
   | { type: "refresh"; id: string }
   | { type: "delete"; ids: string[]; withFiles: boolean };
+
+const HTTP_LINK = /^https?:\/\/\S+$/i;
+
+/** An http(s) link on the clipboard, or "". */
+async function clipboardUrl(): Promise<string> {
+  try {
+    const text = (await api.readClipboardText()).trim();
+    return HTTP_LINK.test(text) ? text : "";
+  } catch {
+    return "";
+  }
+}
 
 export function MainWindow() {
   const state = useAppState();
@@ -51,6 +63,19 @@ export function MainWindow() {
     return () => window.removeEventListener("keydown", onKey);
   }, [modal, selectedIds, items]);
 
+  useEffect(() => {
+    // Electron's default Edit menu may consume the Ctrl/⌘V keydown, but the page always gets a paste event
+    const onPaste = (e: ClipboardEvent) => {
+      if (modal || (e.target instanceof HTMLElement && e.target.closest("input, textarea, select"))) return;
+      const url = (e.clipboardData?.getData("text/plain") ?? "").trim();
+      if (!HTTP_LINK.test(url)) return;
+      e.preventDefault();
+      setModal({ type: "add", url, autoSubmit: true });
+    };
+    window.addEventListener("paste", onPaste);
+    return () => window.removeEventListener("paste", onPaste);
+  }, [modal]);
+
   if (!state) return <div className="loading">Loading…</div>;
 
   const current = items.find((d) => d.id === selectedIds[0]) ?? null;
@@ -64,7 +89,7 @@ export function MainWindow() {
       <Toolbar
         hasSelection={selectedIds.length > 0}
         schedulerOn={state.settings.scheduler.enabled}
-        onAdd={() => setModal({ type: "add" })}
+        onAdd={() => void clipboardUrl().then((url) => setModal({ type: "add", url, autoSubmit: false }))}
         onResume={() => void api.resume(selectedIds)}
         onPause={() => void api.pause(selectedIds)}
         onDelete={() => setModal({ type: "delete", ids: selectedIds, withFiles: false })}
@@ -101,7 +126,7 @@ export function MainWindow() {
           onDelete={(ids, withFiles) => setModal({ type: "delete", ids, withFiles })}
         />
       )}
-      {modal?.type === "add" && <AddUrlModal onClose={() => setModal(null)} />}
+      {modal?.type === "add" && <AddUrlModal initialUrl={modal.url} autoSubmit={modal.autoSubmit} onClose={() => setModal(null)} />}
       {modal?.type === "refresh" && <RefreshUrlModal id={modal.id} onClose={() => setModal(null)} />}
       {modal?.type === "delete" && (
         <DeleteModal

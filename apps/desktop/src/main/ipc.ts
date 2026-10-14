@@ -50,6 +50,7 @@ export function registerIpc(c: AppController): void {
     return result;
   });
   handle("copyText", (text: string) => clipboard.writeText(String(text)));
+  handle("readClipboardText", () => clipboard.readText());
   ipcMain.handle("turbodl:closeWindow", (event) => {
     BrowserWindow.fromWebContents(event.sender)?.close();
   });

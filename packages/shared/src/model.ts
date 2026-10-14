@@ -178,5 +178,6 @@ export interface TurboApi {
   cancelCountdown(): Promise<void>;
   installExtension(): Promise<InstallResult>;
   copyText(text: string): Promise<void>;
+  readClipboardText(): Promise<string>;
   closeWindow(): Promise<void>;
 }
