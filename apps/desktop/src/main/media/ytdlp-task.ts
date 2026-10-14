@@ -4,14 +4,15 @@ import path from "node:path";
 import { createInterface } from "node:readline";
 import type { DownloadRecord } from "@turbodl/shared";
 import type { TaskHandle } from "../task";
+import { withCookieFile } from "./cookies";
 import type { ToolPaths } from "./tools";
-import { DEFAULT_FORMAT, buildDownloadArgs, buildInfoArgs, lastErrorLine, parseFileLine, parseProgressLine } from "./ytdlp";
+import { DEFAULT_FORMAT, buildDownloadArgs, buildInfoArgs, lastErrorLine, loginHint, needsLogin, parseFileLine, parseProgressLine } from "./ytdlp";
 
 /** yt-dlp is Python: force UTF-8 so non-ASCII file names survive a legacy code page console. */
 export const YTDLP_ENV = { PYTHONUTF8: "1", PYTHONIOENCODING: "utf-8" };
 
-type Command = (paths: ToolPaths) => { file: string; args: string[] };
-const defaultCommand: Command = (paths) => ({ file: paths.ytdlp, args: [] });
+export type YtdlpCommand = (paths: ToolPaths) => { file: string; args: string[] };
+const defaultCommand: YtdlpCommand = (paths) => ({ file: paths.ytdlp, args: [] });
 
 export function killTree(child: ChildProcess): void {
   if (!child.pid) return;
@@ -30,7 +31,7 @@ export function killTree(child: ChildProcess): void {
 export interface YtdlpTaskOptions {
   tools: (onStatus: (message: string) => void) => Promise<ToolPaths>;
   connections: () => number;
-  command?: Command;
+  command?: YtdlpCommand;
 }
 
 interface RunResult {
@@ -75,25 +76,30 @@ export class YtdlpTask implements TaskHandle {
         return;
       }
       await fsp.mkdir(rec.dir, { recursive: true });
-      const args = buildDownloadArgs({
-        url: rec.url,
-        outputDir: rec.dir,
-        formatSelector: rec.ytdlp?.formatSelector ?? DEFAULT_FORMAT,
-        audioOnly: rec.ytdlp?.audioOnly ?? false,
-        headers: rec.headers,
-        ffmpegPath: paths.ffmpeg,
-        denoPath: paths.deno,
-        connections: this.opts.connections(),
+      const cookies = rec.ytdlp?.cookies;
+      const result = await withCookieFile(cookies, (cookieFile) => {
+        const args = buildDownloadArgs({
+          url: rec.url,
+          outputDir: rec.dir,
+          formatSelector: rec.ytdlp?.formatSelector ?? DEFAULT_FORMAT,
+          audioOnly: rec.ytdlp?.audioOnly ?? false,
+          headers: rec.headers,
+          ffmpegPath: paths.ffmpeg,
+          denoPath: paths.deno,
+          connections: this.opts.connections(),
+          cookieFile,
+        });
+        const cmd = (this.opts.command ?? defaultCommand)(paths);
+        return this.run(cmd.file, [...cmd.args, ...args]);
       });
-      const cmd = (this.opts.command ?? defaultCommand)(paths);
-      const result = await this.run(cmd.file, [...cmd.args, ...args]);
       if (this.pauseRequested) {
         rec.status = "paused";
         return;
       }
       if (result.code !== 0) {
+        const reason = lastErrorLine(result.stderr);
         rec.status = "error";
-        rec.error = lastErrorLine(result.stderr);
+        rec.error = needsLogin(reason) ? loginHint(reason, Boolean(cookies?.length)) : reason;
         return;
       }
       if (result.filePath) {
@@ -162,17 +168,17 @@ export class YtdlpTask implements TaskHandle {
   }
 }
 
-export function fetchMediaInfo(
-  paths: ToolPaths,
-  url: string,
-  headers: Record<string, string>,
-  command: Command = defaultCommand,
-): Promise<unknown> {
-  const cmd = command(paths);
+export interface MediaInfoOptions {
+  command?: YtdlpCommand;
+  cookieFile?: string | null;
+}
+
+export function fetchMediaInfo(paths: ToolPaths, url: string, headers: Record<string, string>, opts: MediaInfoOptions = {}): Promise<unknown> {
+  const cmd = (opts.command ?? defaultCommand)(paths);
   return new Promise((resolve, reject) => {
     execFile(
       cmd.file,
-      [...cmd.args, ...buildInfoArgs(url, paths.deno, headers)],
+      [...cmd.args, ...buildInfoArgs(url, paths.deno, headers, opts.cookieFile)],
       { windowsHide: true, maxBuffer: 64 * 1024 * 1024, timeout: 180000, env: { ...process.env, ...YTDLP_ENV }, encoding: "utf8" },
       (err, stdout, stderr) => {
         if (err) {

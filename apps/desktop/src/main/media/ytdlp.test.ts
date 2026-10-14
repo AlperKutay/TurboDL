@@ -6,6 +6,8 @@ import {
   formatOptionsFromInfo,
   heightSelector,
   lastErrorLine,
+  loginHint,
+  needsLogin,
   parseFileLine,
   parseProgressLine,
 } from "./ytdlp";
@@ -37,14 +39,21 @@ describe("buildDownloadArgs", () => {
     expect(args[args.indexOf("--print") + 1]).toBe("after_move:TDLFILE %(filepath)s");
   });
 
-  it("extracts mp3 for audio-only and passes headers", () => {
+  it("extracts mp3 for audio-only and passes headers, but never the Cookie header", () => {
     const args = buildDownloadArgs({ ...base, audioOnly: true, formatSelector: "ba/b", headers: { Referer: "https://a/", Cookie: "x=1" }, denoPath: null, ffmpegPath: null });
     expect(args).toEqual(expect.arrayContaining(["-x", "--audio-format", "mp3"]));
     expect(args).not.toContain("--merge-output-format");
     expect(args).not.toContain("--js-runtimes");
     expect(args).not.toContain("--ffmpeg-location");
     const headerValues = args.filter((_, i) => args[i - 1] === "--add-headers");
-    expect(headerValues).toEqual(["Referer:https://a/", "Cookie:x=1"]);
+    expect(headerValues).toEqual(["Referer:https://a/"]);
+  });
+
+  it("passes browser cookies as a cookie file", () => {
+    const args = buildDownloadArgs({ ...base, cookieFile: "/tmp/turbodl-ck-1/cookies.txt" });
+    expect(args[args.indexOf("--cookies") + 1]).toBe("/tmp/turbodl-ck-1/cookies.txt");
+    expect(args.indexOf("--cookies")).toBeLessThan(args.indexOf("--"));
+    expect(buildDownloadArgs(base)).not.toContain("--cookies");
   });
 
   it("clamps the connection count", () => {
@@ -65,6 +74,10 @@ describe("buildInfoArgs", () => {
       "--",
       "https://v.example/1",
     ]);
+  });
+
+  it("adds the cookie file and leaves the Cookie header out", () => {
+    expect(buildInfoArgs("https://v.example/1", null, { Cookie: "a=1" }, "/tmp/c.txt")).toEqual(["-J", "--no-playlist", "--no-warnings", "--cookies", "/tmp/c.txt", "--", "https://v.example/1"]);
   });
 });
 
@@ -112,5 +125,22 @@ describe("formatOptionsFromInfo", () => {
     const { title, options } = formatOptionsFromInfo({ formats: [{ vcodec: "unknown" }] });
     expect(title).toBe("video");
     expect(options.map((o) => o.id)).toEqual(["best", "audio"]);
+  });
+});
+
+describe("login errors", () => {
+  it("recognises yt-dlp's sign-in errors", () => {
+    expect(needsLogin("[youtube] abc: Sign in to confirm your age. This video may be inappropriate for some users. Use --cookies-from-browser or --cookies for the authentication.")).toBe(true);
+    expect(needsLogin("[youtube] abc: Sign in to confirm you’re not a bot. Use --cookies-from-browser or --cookies for the authentication.")).toBe(true);
+    expect(needsLogin("[youtube] abc: Private video. Sign in if you've been granted access to this video")).toBe(true);
+    expect(needsLogin("[generic] Unsupported URL: https://x.example/")).toBe(false);
+    expect(needsLogin("HTTP Error 404: Not Found")).toBe(false);
+  });
+
+  it("explains what to do, depending on whether the browser session was tried", () => {
+    expect(loginHint("Sign in to confirm your age", false)).toContain("in your browser while signed in");
+    const tried = loginHint("Sign in to confirm your age", true);
+    expect(tried).toContain("with your browser session either");
+    expect(tried).toContain("(yt-dlp: Sign in to confirm your age)");
   });
 });
