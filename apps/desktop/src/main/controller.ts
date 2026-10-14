@@ -4,6 +4,7 @@ import {
   CATEGORY_LABELS,
   EXTENSION_ORIGIN,
   categorize,
+  clipboardLink,
   extensionFromMime,
   getExtension,
   sanitizeFilename,
@@ -173,7 +174,7 @@ export class AppController {
     }
     if (info.mime === "text/html") {
       // Chrome got a file but a plain GET gets a page (POST-only or one-time link): leave it to Chrome.
-      if (req.source === "intercept") return { accepted: false, reason: "This address returns a web page instead of a file." };
+      if (req.source === "intercept" || req.source === "clipboard") return { accepted: false, reason: "This address returns a web page instead of a file." };
       await this.handleMediaRequest({
         pageUrl: req.url,
         title: "",
@@ -197,7 +198,7 @@ export class AppController {
       resumable: info.resumable,
       headers,
     };
-    if (req.source === "manual" || this.settings.confirmBeforeDownload) {
+    if (req.source === "manual" || req.source === "clipboard" || this.settings.confirmBeforeDownload) {
       this.openPending({ type: "download", pendingId: newId(), source: req.source, item });
     } else {
       this.manager.add(item, "now");
@@ -224,6 +225,14 @@ export class AppController {
     if (!HTTP_URL.test(trimmed)) return { ok: false, error: "Enter a valid http(s) address." };
     const res = await this.handleDownloadRequest({ url: trimmed, source: "manual" });
     return res.accepted ? { ok: true } : { ok: false, error: res.reason };
+  }
+
+  /** A link copied anywhere is always offered through the confirmation window. */
+  async handleClipboardText(text: string): Promise<void> {
+    if (!this.settings.watchClipboard) return;
+    const url = clipboardLink(text, this.settings.captureExtensions);
+    if (!url || this.isKnownUrl(url)) return;
+    await this.handleDownloadRequest({ url, source: "clipboard" });
   }
 
   getPending(pendingId: string): PendingItem | null {
@@ -403,6 +412,11 @@ export class AppController {
 
   private categoryDir(category: Category): string {
     return path.join(this.settings.baseDir, CATEGORY_LABELS[category]);
+  }
+
+  private isKnownUrl(url: string): boolean {
+    for (const p of this.pending.values()) if (p.type === "download" && p.item.url === url) return true;
+    return this.manager.list().some((d) => d.url === url && d.status !== "completed");
   }
 
   private openPending(item: PendingItem): void {

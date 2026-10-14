@@ -1,5 +1,6 @@
 import path from "node:path";
-import { Notification, app, shell, type Tray } from "electron";
+import { Notification, app, clipboard, shell, type Tray } from "electron";
+import { ClipboardWatcher } from "./clipboard-watcher";
 import { AppController } from "./controller";
 import { EVENT_CHANNEL, broadcast, registerIpc } from "./ipc";
 import { appIconPath, extensionSourceDir, ffmpegPath, trayIconPath } from "./paths";
@@ -11,6 +12,7 @@ if (process.env.TURBODL_USER_DATA) app.setPath("userData", process.env.TURBODL_U
 let controller: AppController | null = null;
 let windows: WindowManager | null = null;
 let tray: Tray | null = null;
+let watcher: ClipboardWatcher | null = null;
 let shuttingDown = false;
 
 if (!app.requestSingleInstanceLock()) {
@@ -22,6 +24,7 @@ if (!app.requestSingleInstanceLock()) {
     // keep running in the tray
   });
   app.on("before-quit", (event) => {
+    watcher?.stop();
     if (windows) windows.quitting = true;
     if (shuttingDown || !controller) return;
     event.preventDefault();
@@ -66,6 +69,8 @@ async function start(): Promise<void> {
   controller = c;
   registerIpc(c);
   await c.init();
+  watcher = new ClipboardWatcher({ read: () => clipboard.readText(), onText: (text) => void c.handleClipboardText(text) });
+  watcher.start();
   tray = createTray({
     icon: trayIconPath(),
     onShow: () => wm.showMain(),

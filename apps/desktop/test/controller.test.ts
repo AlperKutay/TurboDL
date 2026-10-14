@@ -226,6 +226,34 @@ describe("AppController", () => {
     expect(await c.probeMediaFormats(ui.opened[0].pendingId)).toEqual({ ok: false, error: "[generic] Unsupported URL: https://video.example/error" });
   });
 
+  it("offers a copied download link in the confirmation window, even when confirmation is off", async () => {
+    const c = await start({ confirmBeforeDownload: false });
+    await c.handleClipboardText(`  ${server.url("/files/a.zip")} `);
+    expect(ui.opened).toHaveLength(1);
+    expect(ui.opened[0]).toMatchObject({ type: "download", source: "clipboard", item: { filename: "a.zip" } });
+    await c.handleClipboardText(server.url("/files/a.zip"));
+    expect(ui.opened).toHaveLength(1);
+    c.confirmDownload(ui.opened[0].pendingId, { filename: "a.zip", dir: path.join(root, "x"), mode: "later" });
+    await c.handleClipboardText(server.url("/files/a.zip"));
+    expect(ui.opened).toHaveLength(1);
+  });
+
+  it("ignores copied text that is not a listed download link, pages and dead links", async () => {
+    server.setFile("/fake.zip", { data: Buffer.from("<html></html>"), contentType: "text/html" });
+    const c = await start();
+    await c.handleClipboardText("merhaba");
+    await c.handleClipboardText(server.url("/page"));
+    await c.handleClipboardText(server.url("/fake.zip"));
+    await c.handleClipboardText(server.url("/nope.zip"));
+    expect(ui.opened).toHaveLength(0);
+  });
+
+  it("does not watch the clipboard when switched off", async () => {
+    const c = await start({ watchClipboard: false });
+    await c.handleClipboardText(server.url("/files/a.zip"));
+    expect(ui.opened).toHaveLength(0);
+  });
+
   it("keeps the browser cookies of a right-clicked link that turns out to be a page", async () => {
     const c = await start();
     await c.handleDownloadRequest({ url: server.url("/page"), source: "context-menu", cookieJar: LOGIN_JAR });
