@@ -7,7 +7,7 @@ import "./dialogs.css";
 type FormatsState =
   | { state: "idle" }
   | { state: "loading" }
-  | { state: "done"; title: string; options: MediaFormatOption[] }
+  | { state: "done"; title: string; options: MediaFormatOption[]; usedLogin: boolean }
   | { state: "error"; error: string };
 
 function shortUrl(url: string): string {
@@ -32,7 +32,7 @@ export function MediaWindow({ pendingId }: { pendingId: string }) {
     setFormats({ state: "loading" });
     const result = await api.probeMediaFormats(pendingId);
     if (result.ok) {
-      setFormats({ state: "done", title: result.title, options: result.options });
+      setFormats({ state: "done", title: result.title, options: result.options, usedLogin: result.usedLogin });
       setChoice((current) => current ?? { kind: "format", option: result.options[0] });
     } else {
       setFormats({ state: "error", error: result.error });
@@ -140,16 +140,19 @@ export function MediaWindow({ pendingId }: { pendingId: string }) {
           </p>
         )}
         {formats.state === "done" && (
-          <ul className="choices compact">
-            {formats.options.map((o) => (
-              <li key={o.id}>
-                <label className="choice">
-                  <input type="radio" name="choice" checked={choice?.kind === "format" && choice.option.id === o.id} onChange={() => setChoice({ kind: "format", option: o })} />
-                  <span className="choice-main">{o.label}</span>
-                </label>
-              </li>
-            ))}
-          </ul>
+          <>
+            <ul className="choices compact">
+              {formats.options.map((o) => (
+                <li key={o.id}>
+                  <label className="choice">
+                    <input type="radio" name="choice" checked={choice?.kind === "format" && choice.option.id === o.id} onChange={() => setChoice({ kind: "format", option: o })} />
+                    <span className="choice-main">{o.label}</span>
+                  </label>
+                </li>
+              ))}
+            </ul>
+            {formats.usedLogin && <p className="muted">Your browser session is used for this video.</p>}
+          </>
         )}
       </section>
 

@@ -31,9 +31,10 @@ import { createBridgeServer, type BridgeServer } from "./bridge-server";
 import { HttpDownloadTask } from "./engine/download-task";
 import { probe } from "./engine/probe";
 import { DownloadManager, type StateFile } from "./manager";
-import { ToolManager } from "./media/tools";
-import { DEFAULT_FORMAT, formatOptionsFromInfo } from "./media/ytdlp";
-import { YtdlpTask, fetchMediaInfo } from "./media/ytdlp-task";
+import { cookiesFromHeader, withCookieFile } from "./media/cookies";
+import { ToolManager, type ToolPaths } from "./media/tools";
+import { DEFAULT_FORMAT, formatOptionsFromInfo, loginHint, needsLogin } from "./media/ytdlp";
+import { YtdlpTask, fetchMediaInfo, type YtdlpCommand } from "./media/ytdlp-task";
 import { runPowerAction, type PowerAction } from "./power";
 import { Scheduler } from "./scheduler";
 import { defaultSettings, mergeSettings, normalizeSettings } from "./settings";
@@ -49,6 +50,8 @@ export interface ControllerUi {
   quit(): void;
 }
 
+export type MediaTools = Pick<ToolManager, "ensure" | "updateIfStale">;
+
 export interface ControllerOptions {
   version: string;
   userDataDir: string;
@@ -59,6 +62,10 @@ export interface ControllerOptions {
   ui: ControllerUi;
   allowedOrigin?: string;
   runPower?: (action: PowerAction) => void;
+  /** test seam: replaces the yt-dlp/Deno downloader */
+  mediaTools?: MediaTools;
+  /** test seam: runs a stand-in instead of the real yt-dlp */
+  ytdlpCommand?: YtdlpCommand;
 }
 
 export function buildHeaders(cookies?: string, referrer?: string, userAgent?: string): Record<string, string> {
@@ -88,7 +95,7 @@ const HTTP_URL = /^https?:\/\//i;
 export class AppController {
   settings: Settings;
   readonly manager: DownloadManager;
-  readonly tools: ToolManager;
+  readonly tools: MediaTools;
   private readonly defaults: Settings;
   private readonly settingsStore: JsonStore<Settings>;
   private readonly scheduler: Scheduler;
@@ -101,13 +108,17 @@ export class AppController {
     this.defaults = defaultSettings(o.downloadsDir);
     this.settingsStore = new JsonStore<Settings>(path.join(o.userDataDir, "settings.json"));
     this.settings = normalizeSettings(this.settingsStore.load(() => this.defaults), this.defaults);
-    this.tools = new ToolManager({ dir: path.join(o.userDataDir, "tools"), ffmpegPath: o.ffmpegPath });
+    this.tools = o.mediaTools ?? new ToolManager({ dir: path.join(o.userDataDir, "tools"), ffmpegPath: o.ffmpegPath });
     this.manager = new DownloadManager({
       store: new JsonStore<StateFile>(path.join(o.userDataDir, "state.json")),
       settings: () => this.settings,
       createTask: (record) =>
         record.kind === "ytdlp"
-          ? new YtdlpTask(record, { tools: (onStatus) => this.tools.ensure(onStatus), connections: () => this.settings.maxConnections })
+          ? new YtdlpTask(record, {
+              tools: (onStatus) => this.tools.ensure(onStatus),
+              connections: () => this.settings.maxConnections,
+              command: o.ytdlpCommand,
+            })
           : new HttpDownloadTask(record, { maxConnections: () => this.settings.maxConnections }),
     });
     this.scheduler = new Scheduler({
@@ -163,7 +174,15 @@ export class AppController {
     if (info.mime === "text/html") {
       // Chrome got a file but a plain GET gets a page (POST-only or one-time link): leave it to Chrome.
       if (req.source === "intercept") return { accepted: false, reason: "This address returns a web page instead of a file." };
-      await this.handleMediaRequest({ pageUrl: req.url, title: "", items: [], cookies: req.cookies, referrer: req.referrer, userAgent: req.userAgent });
+      await this.handleMediaRequest({
+        pageUrl: req.url,
+        title: "",
+        items: [],
+        cookies: req.cookies,
+        cookieJar: req.cookieJar,
+        referrer: req.referrer,
+        userAgent: req.userAgent,
+      });
       return { accepted: true };
     }
     const filename = sanitizeFilename(req.filename || info.filename || "download");
@@ -231,15 +250,34 @@ export class AppController {
   async probeMediaFormats(pendingId: string): Promise<FormatsResult> {
     const p = this.pending.get(pendingId);
     if (!p || p.type !== "media") return { ok: false, error: "This request no longer exists." };
+    let paths: ToolPaths;
     try {
-      const paths = await this.tools.ensure();
-      const info = await fetchMediaInfo(paths, p.pageUrl, withoutCookie(p.headers));
-      const { title, options } = formatOptionsFromInfo(info);
-      p.title = title;
-      return { ok: true, title, options, usedLogin: false };
+      paths = await this.tools.ensure();
     } catch (err) {
       return { ok: false, error: message(err) };
     }
+    const headers = withoutCookie(p.headers);
+    const fetchInfo = (cookieFile: string | null) => fetchMediaInfo(paths, p.pageUrl, headers, { command: this.o.ytdlpCommand, cookieFile });
+    let info: unknown;
+    try {
+      info = await fetchInfo(null);
+      p.useLogin = false;
+    } catch (err) {
+      const reason = message(err);
+      if (!needsLogin(reason)) return { ok: false, error: reason };
+      if (p.cookieJar.length === 0) return { ok: false, error: loginHint(reason, false) };
+      try {
+        // the site wants a signed-in user: only now hand yt-dlp the browser session
+        info = await withCookieFile(p.cookieJar, fetchInfo);
+        p.useLogin = true;
+      } catch (retryErr) {
+        const again = message(retryErr);
+        return { ok: false, error: needsLogin(again) ? loginHint(again, true) : again };
+      }
+    }
+    const { title, options } = formatOptionsFromInfo(info);
+    p.title = title;
+    return { ok: true, title, options, usedLogin: p.useLogin };
   }
 
   async confirmMedia(pendingId: string, choice: MediaChoice, decision: MediaDecision): Promise<Result> {
@@ -260,7 +298,7 @@ export class AppController {
         size: null,
         resumable: false,
         headers: withoutCookie(p.headers),
-        ytdlp: { formatSelector: choice.option.formatSelector, audioOnly: audio },
+        ytdlp: { formatSelector: choice.option.formatSelector, audioOnly: audio, ...(p.useLogin ? { cookies: p.cookieJar } : {}) },
       };
     } else {
       const media = p.items[choice.index];
@@ -288,6 +326,7 @@ export class AppController {
           headers,
         };
       } else {
+        const cookies = cookiesFromHeader(media.cookies, media.url);
         item = {
           kind: "ytdlp",
           url: media.url,
@@ -297,8 +336,8 @@ export class AppController {
           category: "video",
           size: null,
           resumable: false,
-          headers,
-          ytdlp: { formatSelector: DEFAULT_FORMAT, audioOnly: false },
+          headers: withoutCookie(headers),
+          ytdlp: { formatSelector: DEFAULT_FORMAT, audioOnly: false, ...(cookies.length > 0 ? { cookies } : {}) },
         };
       }
     }
