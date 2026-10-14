@@ -1,5 +1,6 @@
 export interface ClipboardWatcherOptions {
-  read(): string;
+  /** Electron's clipboard.readText() is asynchronous since Electron 44 */
+  read(): string | Promise<string>;
   onText(text: string): void;
   intervalMs?: number;
 }
@@ -8,13 +9,17 @@ export interface ClipboardWatcherOptions {
 export class ClipboardWatcher {
   private timer: NodeJS.Timeout | null = null;
   private last = "";
+  private ready: Promise<void> = Promise.resolve();
+  private busy = false;
 
   constructor(private readonly o: ClipboardWatcherOptions) {}
 
   start(): void {
     if (this.timer) return;
-    this.last = this.read();
-    this.timer = setInterval(() => this.check(), this.o.intervalMs ?? 1000);
+    this.ready = this.read().then((text) => {
+      this.last = text;
+    });
+    this.timer = setInterval(() => void this.check(), this.o.intervalMs ?? 1000);
   }
 
   stop(): void {
@@ -22,16 +27,23 @@ export class ClipboardWatcher {
     this.timer = null;
   }
 
-  private check(): void {
-    const text = this.read();
-    if (text === this.last) return;
-    this.last = text;
-    if (text) this.o.onText(text);
+  private async check(): Promise<void> {
+    if (this.busy) return;
+    this.busy = true;
+    try {
+      await this.ready;
+      const text = await this.read();
+      if (!this.timer || text === this.last) return;
+      this.last = text;
+      if (text) this.o.onText(text);
+    } finally {
+      this.busy = false;
+    }
   }
 
-  private read(): string {
+  private async read(): Promise<string> {
     try {
-      return this.o.read();
+      return await this.o.read();
     } catch {
       return this.last;
     }
