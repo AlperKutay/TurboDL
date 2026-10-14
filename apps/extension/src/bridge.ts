@@ -42,6 +42,7 @@ export async function getConfig(): Promise<BridgeConfig | null> {
     const res = await call<BridgeConfig>("/config");
     if (res.status === 200 && res.data) {
       configCache = { value: res.data, at: Date.now(), port };
+      void chrome.storage.local.set({ lastConfig: res.data });
       return res.data;
     }
   } catch {
@@ -66,4 +67,10 @@ export async function sendMedia(req: MediaRequest): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+/** The capture settings the app gave us last time, for deciding while it is closed. */
+export async function rememberedConfig(): Promise<BridgeConfig | null> {
+  const { lastConfig } = await chrome.storage.local.get("lastConfig");
+  return lastConfig && typeof lastConfig === "object" ? (lastConfig as BridgeConfig) : null;
 }

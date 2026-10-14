@@ -128,3 +128,7 @@ details {
 details input {
   width: 90px;
 }
+
+#launch {
+  margin: 6px 0 2px;
+}
