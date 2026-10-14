@@ -104,6 +104,7 @@ export class AppController {
   private bridge: BridgeServer | null = null;
   private bridgeStatus: BridgeStatus = { ok: false, port: 0 };
   private countdown: CountdownState | null = null;
+  private ownClipboardText: string | null = null;
 
   constructor(private readonly o: ControllerOptions) {
     this.defaults = defaultSettings(o.downloadsDir);
@@ -227,8 +228,15 @@ export class AppController {
     return res.accepted ? { ok: true } : { ok: false, error: res.reason };
   }
 
+  /** Text TurboDL puts on the clipboard itself ("Copy link") must not come back as a new download. */
+  noteOwnClipboardText(text: string): void {
+    this.ownClipboardText = text.trim();
+  }
+
   /** A link copied anywhere is always offered through the confirmation window. */
   async handleClipboardText(text: string): Promise<void> {
+    if (text.trim() === this.ownClipboardText) return;
+    this.ownClipboardText = null;
     if (!this.settings.watchClipboard) return;
     const url = clipboardLink(text, this.settings.captureExtensions);
     if (!url || this.isKnownUrl(url)) return;

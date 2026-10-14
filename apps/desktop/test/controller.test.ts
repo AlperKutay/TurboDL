@@ -248,6 +248,18 @@ describe("AppController", () => {
     expect(ui.opened).toHaveLength(0);
   });
 
+  it("ignores a link TurboDL itself copied, such as 'Copy link' on a finished download", async () => {
+    const c = await start();
+    const own = server.url("/files/a.zip");
+    c.noteOwnClipboardText(own);
+    await c.handleClipboardText(own);
+    expect(ui.opened).toHaveLength(0);
+    // once something else was copied, the same link copied from a browser counts again
+    await c.handleClipboardText("merhaba");
+    await c.handleClipboardText(own);
+    expect(ui.opened).toHaveLength(1);
+  });
+
   it("does not watch the clipboard when switched off", async () => {
     const c = await start({ watchClipboard: false });
     await c.handleClipboardText(server.url("/files/a.zip"));
