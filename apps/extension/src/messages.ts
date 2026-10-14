@@ -1,10 +1,11 @@
 import type { MediaItem } from "@turbodl/shared";
-import { ping, sendMedia } from "./bridge";
-import { sendMediaForTab } from "./media-request";
-import { cookieHeader, flashBadge } from "./util";
+import { ping } from "./bridge";
+import { ensureApp } from "./launcher";
+import { buildMediaRequest, deliverMedia, sendMediaForTab } from "./media-request";
 
 export type ExtensionMessage =
   | { type: "status" }
+  | { type: "launch" }
   | { type: "media-request"; tabId?: number; pageUrl: string; title: string; srcUrl?: string }
   | { type: "send-media-item"; pageUrl: string; title: string; item: MediaItem };
 
@@ -25,18 +26,13 @@ export function registerMessages(): void {
       return true;
     }
     if (msg?.type === "send-media-item") {
-      void (async () => {
-        const ok = await sendMedia({
-          pageUrl: msg.pageUrl,
-          title: msg.title,
-          items: [{ ...msg.item, cookies: await cookieHeader(msg.item.url) }],
-          cookies: await cookieHeader(msg.pageUrl),
-          referrer: msg.pageUrl,
-          userAgent: navigator.userAgent,
-        });
-        if (!ok) flashBadge();
-        sendResponse({ ok });
-      })();
+      void buildMediaRequest(msg.pageUrl, msg.title, [msg.item])
+        .then(deliverMedia)
+        .then((ok) => sendResponse({ ok }));
+      return true;
+    }
+    if (msg?.type === "launch") {
+      void ensureApp().then((ok) => sendResponse({ ok }));
       return true;
     }
     return false;
