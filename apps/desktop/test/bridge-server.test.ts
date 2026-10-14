@@ -117,6 +117,43 @@ describe("bridge server", () => {
     expect(media[0]).toEqual({ pageUrl: "https://video.example/watch?v=1", title: "Clip", items: [{ url: "https://cdn.example/a.m3u8", kind: "hls", size: 10 }] });
   });
 
+  it("keeps valid browser cookies and drops broken ones", async () => {
+    const good = { domain: ".youtube.com", hostOnly: false, path: "/", secure: true, expires: 1999999999, name: "SID", value: "a=b" };
+    const res = await call("/v1/media", {
+      method: "POST",
+      body: JSON.stringify({
+        pageUrl: "https://www.youtube.com/watch?v=1",
+        title: "Clip",
+        items: [],
+        cookieJar: [
+          good,
+          { ...good, name: "TAB", value: "a\tb" },
+          { ...good, name: "NL\n" },
+          { ...good, domain: "evil.com/x" },
+          { ...good, path: "nope" },
+          { ...good, expires: -1 },
+          { ...good, secure: "yes" },
+          { ...good, name: "" },
+          "junk",
+        ],
+      }),
+    });
+    expect(res.status).toBe(202);
+    expect(media[0].cookieJar).toEqual([good]);
+  });
+
+  it("accepts browser cookies with a download request and caps their number", async () => {
+    const jar = Array.from({ length: 400 }, (_, i) => ({ domain: "x.com", hostOnly: true, path: "/", secure: false, expires: 0, name: `c${i}`, value: "1" }));
+    await call("/v1/downloads", { method: "POST", body: JSON.stringify({ url: "https://x.com/watch", source: "context-menu", cookieJar: jar }) });
+    expect(downloads[0].cookieJar).toHaveLength(300);
+    expect(downloads[0].source).toBe("context-menu");
+  });
+
+  it("does not let the extension claim the clipboard source", async () => {
+    await call("/v1/downloads", { method: "POST", body: JSON.stringify({ url: "https://x.com/a.zip", source: "clipboard" }) });
+    expect(downloads[0].source).toBe("intercept");
+  });
+
   it("returns 404 for unknown paths", async () => {
     expect((await call("/v1/nope")).status).toBe(404);
   });

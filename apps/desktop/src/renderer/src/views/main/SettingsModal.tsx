@@ -77,7 +77,11 @@ export function SettingsModal({ settings, version, onClose }: { settings: Settin
       <h3>Browser</h3>
       <label className="check">
         <input type="checkbox" checked={draft.captureEnabled} onChange={(e) => set("captureEnabled", e.target.checked)} />
-        Capture Chrome downloads
+        Capture browser downloads
+      </label>
+      <label className="check">
+        <input type="checkbox" checked={draft.watchClipboard} onChange={(e) => set("watchClipboard", e.target.checked)} />
+        Capture copied download links (extensions above)
       </label>
       <label className="field">
         <span>File extensions to capture</span>
@@ -101,20 +105,24 @@ export function SettingsModal({ settings, version, onClose }: { settings: Settin
             void api.installExtension().then(setInstall);
           }}
         >
-          Install the Chrome extension…
+          Install the browser extension…
         </button>
         {install && !install.ok && <p className="error-text">{install.error}</p>}
         {install?.ok && (
           <ol className="steps">
             <li>
-              Open <code>chrome://extensions</code> in Chrome.{" "}
+              Open the extensions page: <code>chrome://extensions</code> in Chrome and Brave, <code>edge://extensions</code> in Edge.{" "}
               <button type="button" className="link-button" onClick={() => void api.copyText("chrome://extensions")}>
-                Copy the address
+                Copy the Chrome address
+              </button>{" "}
+              <button type="button" className="link-button" onClick={() => void api.copyText("edge://extensions")}>
+                Copy the Edge address
               </button>
             </li>
-            <li>Turn on “Developer mode” in the top right.</li>
+            <li>Turn on “Developer mode” (in the left menu in Edge).</li>
             <li>Click “Load unpacked” and choose this folder:</li>
             <li className="path">{install.path}</li>
+            <li>The extension starts TurboDL by itself even when it is closed, as long as TurboDL has been opened at least once.</li>
           </ol>
         )}
       </div>

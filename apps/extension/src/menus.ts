@@ -1,6 +1,7 @@
 import { sendDownload } from "./bridge";
+import { ensureApp } from "./launcher";
 import { sendMediaForTab } from "./media-request";
-import { cookieHeader, flashBadge } from "./util";
+import { cookieHeader, cookieJar, flashBadge } from "./util";
 
 export function createMenus(): void {
   chrome.contextMenus.removeAll(() => {
@@ -13,13 +14,16 @@ export function registerMenuHandlers(): void {
   chrome.contextMenus.onClicked.addListener((info, tab) => {
     void (async () => {
       if (info.menuItemId === "turbodl-link" && info.linkUrl) {
-        const result = await sendDownload({
-          url: info.linkUrl,
-          referrer: info.pageUrl,
-          cookies: await cookieHeader(info.linkUrl),
-          userAgent: navigator.userAgent,
-          source: "context-menu",
-        });
+        const result = (await ensureApp())
+          ? await sendDownload({
+              url: info.linkUrl,
+              referrer: info.pageUrl,
+              cookies: await cookieHeader(info.linkUrl),
+              cookieJar: await cookieJar(info.linkUrl),
+              userAgent: navigator.userAgent,
+              source: "context-menu",
+            })
+          : { ok: false };
         if (!result.ok) flashBadge();
         return;
       }

@@ -12,6 +12,7 @@ async function refreshStatus(): Promise<void> {
   const { ok } = await send({ type: "status" });
   status.textContent = ok ? "Connected" : "App not running";
   status.className = `status ${ok ? "ok" : "bad"}`;
+  byId<HTMLButtonElement>("launch").hidden = ok;
 }
 
 function renderItem(item: MediaItem, tab: chrome.tabs.Tab): HTMLLIElement {
@@ -52,6 +53,18 @@ async function init(): Promise<void> {
     }
   });
   void refreshStatus();
+
+  const launch = byId<HTMLButtonElement>("launch");
+  launch.addEventListener("click", async () => {
+    launch.disabled = true;
+    launch.textContent = "Starting…";
+    byId<HTMLParagraphElement>("launch-error").hidden = true;
+    const { ok } = await send({ type: "launch" });
+    launch.disabled = false;
+    launch.textContent = "Start TurboDL";
+    byId<HTMLParagraphElement>("launch-error").hidden = ok;
+    await refreshStatus();
+  });
 
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   const list = byId<HTMLUListElement>("media");

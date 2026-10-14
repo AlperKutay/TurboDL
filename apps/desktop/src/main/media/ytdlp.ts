@@ -15,12 +15,20 @@ export interface YtdlpArgsInput {
   ffmpegPath: string | null;
   denoPath: string | null;
   connections: number;
+  cookieFile?: string | null;
 }
 
+// Cookies go through a domain-scoped cookie file: a Cookie header would reach every host yt-dlp contacts.
 function headerArgs(headers: Record<string, string>): string[] {
   const out: string[] = [];
-  for (const [key, value] of Object.entries(headers)) if (value) out.push("--add-headers", `${key}:${value}`);
+  for (const [key, value] of Object.entries(headers)) {
+    if (value && key.toLowerCase() !== "cookie") out.push("--add-headers", `${key}:${value}`);
+  }
   return out;
+}
+
+function cookieArgs(cookieFile: string | null | undefined): string[] {
+  return cookieFile ? ["--cookies", cookieFile] : [];
 }
 
 export function buildDownloadArgs(i: YtdlpArgsInput): string[] {
@@ -45,14 +53,14 @@ export function buildDownloadArgs(i: YtdlpArgsInput): string[] {
   else args.push("--merge-output-format", "mp4");
   if (i.ffmpegPath) args.push("--ffmpeg-location", i.ffmpegPath);
   if (i.denoPath) args.push("--js-runtimes", `deno:${i.denoPath}`);
-  args.push(...headerArgs(i.headers), "--", i.url);
+  args.push(...cookieArgs(i.cookieFile), ...headerArgs(i.headers), "--", i.url);
   return args;
 }
 
-export function buildInfoArgs(url: string, denoPath: string | null, headers: Record<string, string>): string[] {
+export function buildInfoArgs(url: string, denoPath: string | null, headers: Record<string, string>, cookieFile?: string | null): string[] {
   const args = ["-J", "--no-playlist", "--no-warnings"];
   if (denoPath) args.push("--js-runtimes", `deno:${denoPath}`);
-  args.push(...headerArgs(headers), "--", url);
+  args.push(...cookieArgs(cookieFile), ...headerArgs(headers), "--", url);
   return args;
 }
 
@@ -90,6 +98,20 @@ export function lastErrorLine(stderr: string): string {
     .filter(Boolean);
   const error = [...lines].reverse().find((l) => l.startsWith("ERROR:"));
   return (error ?? lines[lines.length - 1] ?? "yt-dlp failed.").replace(/^ERROR:\s*/, "");
+}
+
+const LOGIN_REQUIRED = /--cookies|sign in|log ?in|members|age[- ]restrict|confirm your age|private video/i;
+
+/** yt-dlp failed because the site wants a signed-in user (age gate, members only, bot check). */
+export function needsLogin(message: string): boolean {
+  return LOGIN_REQUIRED.test(message);
+}
+
+export function loginHint(message: string, triedCookies: boolean): string {
+  if (!triedCookies) {
+    return "This video requires signing in (age limit, membership or bot check). Open the video in your browser while signed in and send it with the TurboDL button; your browser session will be used.";
+  }
+  return `It could not be opened with your browser session either. Make sure you are signed in to this site and, if needed, have completed age verification. (yt-dlp: ${message})`;
 }
 
 export function heightSelector(h: number): string {

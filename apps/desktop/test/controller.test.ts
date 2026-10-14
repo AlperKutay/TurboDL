@@ -9,6 +9,7 @@ import { AppController, type ControllerUi } from "../src/main/controller";
 import { startTestServer, type TestServer } from "./fixtures/test-server";
 
 const ORIGIN = "chrome-extension://fnkkncklkbdmaphmmddfmbcjkllejhea";
+const FAKE_YTDLP = path.join(__dirname, "fixtures", "fake-ytdlp.mjs");
 
 function freePort(): Promise<number> {
   return new Promise((resolve) => {
@@ -89,6 +90,8 @@ async function start(settings: Record<string, unknown> = {}): Promise<AppControl
     extensionSourceDir: extensionDir,
     ffmpegPath: null,
     ui,
+    mediaTools: { ensure: async () => ({ ytdlp: "unused", deno: null, ffmpeg: null }), updateIfStale: async () => undefined },
+    ytdlpCommand: () => ({ file: process.execPath, args: [FAKE_YTDLP] }),
   });
   await controller.init();
   return controller;
@@ -160,7 +163,9 @@ describe("AppController", () => {
     await c.confirmMedia(ui.opened[0].pendingId, { kind: "item", index: 0 }, { dir: path.join(root, "v"), mode: "later" });
     const rec = c.manager.list()[0];
     expect(rec).toMatchObject({ kind: "ytdlp", url: "https://cdn.example/a.m3u8", filename: "Live.mp4" });
-    expect(c.manager.get(rec.id)?.headers.Cookie).toBe("c=2");
+    const stored = c.manager.get(rec.id)!;
+    expect(stored.headers.Cookie).toBeUndefined();
+    expect(stored.ytdlp?.cookies).toEqual([{ domain: "cdn.example", hostOnly: true, path: "/", secure: true, expires: 0, name: "c", value: "2" }]);
   });
 
   it("downloads a chosen quality from the page without cookies", async () => {
@@ -171,6 +176,100 @@ describe("AppController", () => {
     const rec = c.manager.list()[0];
     expect(rec).toMatchObject({ kind: "ytdlp", url: "https://video.example/w", filename: "Song.mp3", category: "music", ytdlp: { formatSelector: "ba/b", audioOnly: true } });
     expect(c.manager.get(rec.id)?.headers.Cookie).toBeUndefined();
+    expect(c.manager.get(rec.id)?.ytdlp?.cookies).toBeUndefined();
+  });
+
+  const LOGIN_JAR = [{ domain: "video.example", hostOnly: true, path: "/", secure: true, expires: 0, name: "session", value: "ok" }];
+  const option = { id: "h720", label: "720p", formatSelector: "x", audioOnly: false };
+
+  it("lists qualities without the browser session when the video does not need it", async () => {
+    const c = await start();
+    await c.handleMediaRequest({ pageUrl: "https://video.example/w", title: "Clip", items: [], cookieJar: LOGIN_JAR });
+    const id = ui.opened[0].pendingId;
+    expect(await c.probeMediaFormats(id)).toMatchObject({ ok: true, usedLogin: false });
+    await c.confirmMedia(id, { kind: "format", option }, { dir: path.join(root, "v"), mode: "later" });
+    expect(c.manager.get(c.manager.list()[0].id)?.ytdlp?.cookies).toBeUndefined();
+  });
+
+  it("uses the browser session only when the video asks for a login, and keeps it for the download", async () => {
+    const c = await start();
+    await c.handleMediaRequest({ pageUrl: "https://video.example/login", title: "Age restricted", items: [], cookieJar: LOGIN_JAR });
+    const id = ui.opened[0].pendingId;
+    const result = await c.probeMediaFormats(id);
+    expect(result).toMatchObject({ ok: true, title: "Info", usedLogin: true });
+    if (!result.ok) return;
+    await c.confirmMedia(id, { kind: "format", option: result.options[0] }, { dir: path.join(root, "v"), mode: "later" });
+    const view = c.manager.list()[0];
+    expect(c.manager.get(view.id)?.ytdlp?.cookies).toEqual(LOGIN_JAR);
+    expect(view.ytdlp?.cookies).toBeUndefined();
+  });
+
+  it("explains what to do when a video needs a login and no browser session came with it", async () => {
+    const c = await start();
+    await c.handleMediaRequest({ pageUrl: "https://video.example/login", title: "", items: [] });
+    const r = await c.probeMediaFormats(ui.opened[0].pendingId);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toContain("in your browser while signed in");
+  });
+
+  it("says so when even the browser session cannot open the video", async () => {
+    const c = await start();
+    await c.handleMediaRequest({ pageUrl: "https://video.example/login", title: "", items: [], cookieJar: [{ ...LOGIN_JAR[0], value: "expired" }] });
+    const r = await c.probeMediaFormats(ui.opened[0].pendingId);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toContain("with your browser session either");
+  });
+
+  it("does not use the browser session for other failures", async () => {
+    const c = await start();
+    await c.handleMediaRequest({ pageUrl: "https://video.example/error", title: "", items: [], cookieJar: LOGIN_JAR });
+    expect(await c.probeMediaFormats(ui.opened[0].pendingId)).toEqual({ ok: false, error: "[generic] Unsupported URL: https://video.example/error" });
+  });
+
+  it("offers a copied download link in the confirmation window, even when confirmation is off", async () => {
+    const c = await start({ confirmBeforeDownload: false });
+    await c.handleClipboardText(`  ${server.url("/files/a.zip")} `);
+    expect(ui.opened).toHaveLength(1);
+    expect(ui.opened[0]).toMatchObject({ type: "download", source: "clipboard", item: { filename: "a.zip" } });
+    await c.handleClipboardText(server.url("/files/a.zip"));
+    expect(ui.opened).toHaveLength(1);
+    c.confirmDownload(ui.opened[0].pendingId, { filename: "a.zip", dir: path.join(root, "x"), mode: "later" });
+    await c.handleClipboardText(server.url("/files/a.zip"));
+    expect(ui.opened).toHaveLength(1);
+  });
+
+  it("ignores copied text that is not a listed download link, pages and dead links", async () => {
+    server.setFile("/fake.zip", { data: Buffer.from("<html></html>"), contentType: "text/html" });
+    const c = await start();
+    await c.handleClipboardText("merhaba");
+    await c.handleClipboardText(server.url("/page"));
+    await c.handleClipboardText(server.url("/fake.zip"));
+    await c.handleClipboardText(server.url("/nope.zip"));
+    expect(ui.opened).toHaveLength(0);
+  });
+
+  it("ignores a link TurboDL itself copied, such as 'Copy link' on a finished download", async () => {
+    const c = await start();
+    const own = server.url("/files/a.zip");
+    c.noteOwnClipboardText(own);
+    await c.handleClipboardText(own);
+    expect(ui.opened).toHaveLength(0);
+    // once something else was copied, the same link copied from a browser counts again
+    await c.handleClipboardText("merhaba");
+    await c.handleClipboardText(own);
+    expect(ui.opened).toHaveLength(1);
+  });
+
+  it("does not watch the clipboard when switched off", async () => {
+    const c = await start({ watchClipboard: false });
+    await c.handleClipboardText(server.url("/files/a.zip"));
+    expect(ui.opened).toHaveLength(0);
+  });
+
+  it("keeps the browser cookies of a right-clicked link that turns out to be a page", async () => {
+    const c = await start();
+    await c.handleDownloadRequest({ url: server.url("/page"), source: "context-menu", cookieJar: LOGIN_JAR });
+    expect(ui.opened[0]).toMatchObject({ type: "media", pageUrl: server.url("/page"), cookieJar: LOGIN_JAR, useLogin: false });
   });
 
   it("reports a busy bridge port and recovers when the port changes", async () => {

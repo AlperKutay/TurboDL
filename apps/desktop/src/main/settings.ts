@@ -17,6 +17,7 @@ export function defaultSettings(downloadsDir: string): Settings {
     bridgePort: DEFAULT_BRIDGE_PORT,
     closeToTray: true,
     notifyOnComplete: true,
+    watchClipboard: true,
     scheduler: { enabled: false, startTime: "02:00", stopTime: null, afterAll: "none" },
   };
 }
@@ -56,6 +57,7 @@ export function normalizeSettings(input: unknown, defaults: Settings): Settings 
     bridgePort: clampInt(src.bridgePort, 1024, 65535, defaults.bridgePort),
     closeToTray: bool(src.closeToTray, defaults.closeToTray),
     notifyOnComplete: bool(src.notifyOnComplete, defaults.notifyOnComplete),
+    watchClipboard: bool(src.watchClipboard, defaults.watchClipboard),
     scheduler: {
       enabled: bool(schedSrc.enabled, d.enabled),
       startTime: typeof schedSrc.startTime === "string" && TIME.test(schedSrc.startTime) ? schedSrc.startTime : d.startTime,

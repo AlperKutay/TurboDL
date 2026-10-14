@@ -12,6 +12,7 @@ module.exports = {
   extraResources: [
     { from: "resources/icons", to: "icons" },
     { from: "../extension/dist", to: "extension" },
+    { from: "resources/native-host", to: "native-host" },
     { from: ffmpegDir, to: "ffmpeg", filter: ["ffmpeg", "ffmpeg.exe"] },
   ],
   win: {

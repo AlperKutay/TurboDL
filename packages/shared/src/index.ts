@@ -5,3 +5,4 @@ export * from "./filename";
 export * from "./capture";
 export * from "./media";
 export * from "./format";
+export * from "./clipboard";

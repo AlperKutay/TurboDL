@@ -1,8 +1,10 @@
 import path from "node:path";
-import { Notification, app, shell, type Tray } from "electron";
+import { Notification, app, clipboard, shell, type Tray } from "electron";
+import { ClipboardWatcher } from "./clipboard-watcher";
 import { AppController } from "./controller";
 import { EVENT_CHANNEL, broadcast, registerIpc } from "./ipc";
-import { appIconPath, extensionSourceDir, ffmpegPath, trayIconPath } from "./paths";
+import { isBackgroundLaunch, registerNativeHost } from "./native-host";
+import { appIconPath, extensionSourceDir, ffmpegPath, nativeHostScript, trayIconPath } from "./paths";
 import { createTray } from "./tray";
 import { WindowManager } from "./windows";
 
@@ -11,17 +13,21 @@ if (process.env.TURBODL_USER_DATA) app.setPath("userData", process.env.TURBODL_U
 let controller: AppController | null = null;
 let windows: WindowManager | null = null;
 let tray: Tray | null = null;
+let watcher: ClipboardWatcher | null = null;
 let shuttingDown = false;
 
 if (!app.requestSingleInstanceLock()) {
   app.quit();
 } else {
-  app.on("second-instance", () => windows?.showMain());
+  app.on("second-instance", (_event, argv) => {
+    if (!isBackgroundLaunch(argv)) windows?.showMain();
+  });
   app.on("activate", () => windows?.showMain());
   app.on("window-all-closed", () => {
     // keep running in the tray
   });
   app.on("before-quit", (event) => {
+    watcher?.stop();
     if (windows) windows.quitting = true;
     if (shuttingDown || !controller) return;
     event.preventDefault();
@@ -65,14 +71,26 @@ async function start(): Promise<void> {
   });
   controller = c;
   registerIpc(c);
+  // let the extension start TurboDL; test runs (TURBODL_USER_DATA) must not touch the real browser registration
+  if (app.isPackaged && !process.env.TURBODL_USER_DATA && (process.platform === "win32" || process.platform === "darwin")) {
+    void registerNativeHost({
+      platform: process.platform,
+      userDataDir: app.getPath("userData"),
+      homeDir: app.getPath("home"),
+      execPath: process.execPath,
+      hostScript: nativeHostScript(),
+    }).catch((err: unknown) => console.warn("Could not register the browser launcher:", err));
+  }
   await c.init();
+  watcher = new ClipboardWatcher({ read: () => clipboard.readText(), onText: (text) => void c.handleClipboardText(text) });
+  watcher.start();
   tray = createTray({
     icon: trayIconPath(),
     onShow: () => wm.showMain(),
     onPauseAll: () => c.manager.stopAll(),
     onQuit: () => app.quit(),
   });
-  const hidden = process.argv.includes("--hidden") || app.getLoginItemSettings().wasOpenedAtLogin;
+  const hidden = isBackgroundLaunch(process.argv) || app.getLoginItemSettings().wasOpenedAtLogin;
   if (!hidden) wm.showMain();
   void tray;
 }

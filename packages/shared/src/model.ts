@@ -1,4 +1,4 @@
-import type { CaptureSource, MediaItem } from "./protocol";
+import type { BrowserCookie, CaptureSource, MediaItem } from "./protocol";
 
 export type Category = "video" | "music" | "programs" | "archives" | "documents" | "images" | "other";
 export type DownloadStatus = "queued" | "scheduled" | "downloading" | "paused" | "completed" | "error";
@@ -15,6 +15,8 @@ export interface YtdlpOptions {
   /** value passed to yt-dlp -f */
   formatSelector: string;
   audioOnly: boolean;
+  /** browser cookies handed to yt-dlp as a cookie file (login-only videos, hls/dash with cookies) */
+  cookies?: BrowserCookie[];
 }
 
 export interface DownloadRecord {
@@ -71,6 +73,7 @@ export interface Settings {
   bridgePort: number;
   closeToTray: boolean;
   notifyOnComplete: boolean;
+  watchClipboard: boolean;
   scheduler: SchedulerSettings;
 }
 
@@ -102,6 +105,10 @@ export interface PendingMedia {
   items: MediaItem[];
   headers: Record<string, string>;
   defaultDir: string;
+  /** the browser's cookies for pageUrl */
+  cookieJar: BrowserCookie[];
+  /** set once yt-dlp needed the browser session for this page */
+  useLogin: boolean;
 }
 
 export type PendingItem = PendingDownload | PendingMedia;
@@ -145,7 +152,7 @@ export type Result = { ok: true } | { ok: false; error: string };
 
 export type DownloadDecision = { filename: string; dir: string; mode: "now" | "later" };
 export type MediaDecision = { dir: string; mode: "now" | "later" };
-export type FormatsResult = { ok: true; title: string; options: MediaFormatOption[] } | { ok: false; error: string };
+export type FormatsResult = { ok: true; title: string; options: MediaFormatOption[]; usedLogin: boolean } | { ok: false; error: string };
 export type InstallResult = { ok: true; path: string } | { ok: false; error: string };
 
 /** API exposed to the renderer as window.turbodl */
@@ -171,5 +178,6 @@ export interface TurboApi {
   cancelCountdown(): Promise<void>;
   installExtension(): Promise<InstallResult>;
   copyText(text: string): Promise<void>;
+  readClipboardText(): Promise<string>;
   closeWindow(): Promise<void>;
 }

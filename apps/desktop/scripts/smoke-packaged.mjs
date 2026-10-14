@@ -39,11 +39,29 @@ const checks = [
   ["ffmpeg", path.join(resources, "ffmpeg", process.platform === "win32" ? "ffmpeg.exe" : "ffmpeg")],
   ["extension", path.join(resources, "extension", "manifest.json")],
   ["tray icon", path.join(resources, "icons", process.platform === "darwin" ? "trayTemplate.png" : "tray.png")],
+  ["browser launcher", path.join(resources, "native-host", "host.cjs")],
 ];
 let failed = false;
 for (const [label, file] of checks) {
   const ok = existsSync(file);
   console.log(`${ok ? "✓" : "✗"} ${label}: ${file}`);
+  failed ||= !ok;
+}
+
+// the packaged executable must still run host.cjs in Node mode (ELECTRON_RUN_AS_NODE fuse)
+{
+  const frame = Buffer.from(JSON.stringify({ type: "ping" }));
+  const head = Buffer.alloc(4);
+  head.writeUInt32LE(frame.length, 0);
+  const res = spawnSync(exe, [path.join(resources, "native-host", "host.cjs")], {
+    input: Buffer.concat([head, frame]),
+    env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" },
+    timeout: 20000,
+  });
+  const out = res.stdout ?? Buffer.alloc(0);
+  const reply = out.length > 4 ? out.subarray(4, 4 + out.readUInt32LE(0)).toString("utf8") : "";
+  const ok = reply === JSON.stringify({ ok: true });
+  console.log(`${ok ? "✓" : "✗"} browser launcher answers in Node mode: ${reply || res.error || "no answer"}`);
   failed ||= !ok;
 }
 

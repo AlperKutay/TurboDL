@@ -275,6 +275,8 @@ export class DownloadManager extends EventEmitter<ManagerEvents> {
     return {
       ...record,
       headers: {},
+      // stored browser cookies stay in the main process
+      ytdlp: record.ytdlp && { formatSelector: record.ytdlp.formatSelector, audioOnly: record.ytdlp.audioOnly },
       segments: record.segments.map((s) => ({ ...s })),
       speed: run?.task.speed ?? 0,
       eta: run?.task.eta ?? null,

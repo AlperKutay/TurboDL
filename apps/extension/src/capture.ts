@@ -1,6 +1,7 @@
 import { captureDecision, type CaptureCandidate } from "@turbodl/shared";
-import { getConfig, sendDownload } from "./bridge";
+import { getConfig, rememberedConfig, sendDownload } from "./bridge";
 import { basename } from "./headers";
+import { ensureApp } from "./launcher";
 import { cookieHeader, flashBadge } from "./util";
 
 const WAIT_FOR_NAME_MS = 3000;
@@ -26,7 +27,7 @@ function candidateOf(item: chrome.downloads.DownloadItem): CaptureCandidate {
 async function evaluate(item: chrome.downloads.DownloadItem, filenameKnown: boolean): Promise<void> {
   if (handled.has(item.id) || item.state !== "in_progress") return;
   if (!(await captureOn())) return;
-  const config = await getConfig();
+  const config = (await getConfig()) ?? (await rememberedConfig());
   if (!config) return;
   const candidate = candidateOf(item);
   const decision = captureDecision(candidate, {
@@ -62,6 +63,12 @@ async function capture(item: chrome.downloads.DownloadItem, candidate: CaptureCa
   }
   const [current] = await chrome.downloads.search({ id: item.id });
   if (!current || current.state !== "in_progress") return;
+  // TurboDL may be closed: start it through the native host while Chrome's download waits paused
+  if (!(await ensureApp())) {
+    await chrome.downloads.resume(item.id).catch(() => undefined);
+    flashBadge();
+    return;
+  }
 
   const result = await sendDownload({
     url: item.url,

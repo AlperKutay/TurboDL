@@ -1,0 +1,132 @@
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { hostManifest, isBackgroundLaunch, launcherScript, regAddArgs, registerNativeHost } from "../../src/main/native-host";
+
+const ORIGIN = "chrome-extension://fnkkncklkbdmaphmmddfmbcjkllejhea/";
+
+let root: string;
+beforeEach(() => {
+  root = mkdtempSync(path.join(os.tmpdir(), "turbodl-nh-"));
+});
+afterEach(() => {
+  rmSync(root, { recursive: true, force: true });
+});
+
+describe("hostManifest", () => {
+  it("allows only the TurboDL extension", () => {
+    expect(hostManifest("C:\\x\\turbodl-host.bat")).toEqual({
+      name: "com.turbodl.host",
+      description: "TurboDL: lets the extension start the app",
+      path: "C:\\x\\turbodl-host.bat",
+      type: "stdio",
+      allowed_origins: [ORIGIN],
+    });
+  });
+});
+
+describe("launcherScript", () => {
+  it("runs the app executable as Node on Windows and passes the browser's arguments on", () => {
+    expect(launcherScript("win32", "D:\\TurboDL\\TurboDL.exe", "D:\\TurboDL\\resources\\native-host\\host.cjs", [], {})).toBe(
+      '@echo off\r\nset ELECTRON_RUN_AS_NODE=1\r\n"D:\\TurboDL\\TurboDL.exe" "D:\\TurboDL\\resources\\native-host\\host.cjs" %*\r\n',
+    );
+  });
+
+  it("refers to the profile through environment variables so non-ASCII user names survive cmd.exe", () => {
+    const env = { LOCALAPPDATA: "C:\\Users\\Zoë\\AppData\\Local", USERPROFILE: "C:\\Users\\Zoë" };
+    const script = launcherScript(
+      "win32",
+      "C:\\Users\\Zoë\\AppData\\Local\\Programs\\TurboDL\\TurboDL.exe",
+      "C:\\Users\\Zoë\\AppData\\Local\\Programs\\TurboDL\\resources\\native-host\\host.cjs",
+      [],
+      env,
+    );
+    expect(script).toContain('"%LOCALAPPDATA%\\Programs\\TurboDL\\TurboDL.exe"');
+    expect(/^[\x00-\x7f]*$/.test(script)).toBe(true);
+  });
+
+  it("escapes percent signs and switches cmd.exe to UTF-8 when a path stays non-ASCII", () => {
+    const script = launcherScript("win32", "D:\\100%\\Ærø\\TurboDL.exe", "D:\\h.cjs", [], {});
+    expect(script).toContain('"D:\\100%%\\Ærø\\TurboDL.exe"');
+    expect(script.split("\r\n")[1]).toBe("chcp 65001 >nul");
+  });
+
+  it("quotes paths for /bin/sh on macOS, including apostrophes", () => {
+    expect(launcherScript("darwin", "/Users/sam/O'Brien/TurboDL.app/Contents/MacOS/TurboDL", "/x/host.cjs", ["/dev app"])).toBe(
+      `#!/bin/sh\nELECTRON_RUN_AS_NODE=1 exec '/Users/sam/O'\\''Brien/TurboDL.app/Contents/MacOS/TurboDL' '/x/host.cjs' '--launch-arg=/dev app' "$@"\n`,
+    );
+  });
+});
+
+describe("registerNativeHost", () => {
+  it("writes the launcher and manifest and registers them for every Chromium browser on Windows", async () => {
+    const calls: string[][] = [];
+    const userData = path.join(root, "user");
+    const result = await registerNativeHost({
+      platform: "win32",
+      userDataDir: userData,
+      homeDir: root,
+      execPath: "D:\\TurboDL\\TurboDL.exe",
+      hostScript: "D:\\TurboDL\\resources\\native-host\\host.cjs",
+      env: {},
+      runReg: async (args) => {
+        calls.push(args);
+        if (args[1].includes("BraveSoftware")) throw new Error("access denied");
+      },
+    });
+    const manifestPath = path.join(userData, "native-host", "com.turbodl.host.json");
+    expect(result).toEqual({ manifestPath, registered: ["Chrome", "Edge", "Chromium"] });
+    const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+    expect(manifest.path).toBe(path.join(userData, "native-host", "turbodl-host.bat"));
+    expect(readFileSync(manifest.path, "utf8")).toContain("set ELECTRON_RUN_AS_NODE=1");
+    expect(calls).toEqual([
+      regAddArgs("Google\\Chrome", manifestPath),
+      regAddArgs("Microsoft\\Edge", manifestPath),
+      regAddArgs("BraveSoftware\\Brave-Browser", manifestPath),
+      regAddArgs("Chromium", manifestPath),
+    ]);
+    expect(calls[0]).toEqual(["add", "HKCU\\Software\\Google\\Chrome\\NativeMessagingHosts\\com.turbodl.host", "/ve", "/t", "REG_SZ", "/d", manifestPath, "/f"]);
+  });
+
+  it("can register a single browser", async () => {
+    const calls: string[][] = [];
+    await registerNativeHost({
+      platform: "win32",
+      userDataDir: root,
+      homeDir: root,
+      execPath: "e.exe",
+      hostScript: "h.cjs",
+      env: {},
+      only: ["Chromium"],
+      runReg: async (args) => void calls.push(args),
+    });
+    expect(calls.map((c) => c[1])).toEqual(["HKCU\\Software\\Chromium\\NativeMessagingHosts\\com.turbodl.host"]);
+  });
+
+  it("puts the manifest into the NativeMessagingHosts folder of installed browsers on macOS", async () => {
+    const support = path.join(root, "Library", "Application Support");
+    mkdirSync(path.join(support, "Google", "Chrome"), { recursive: true });
+    mkdirSync(path.join(support, "Microsoft Edge"), { recursive: true });
+    const result = await registerNativeHost({
+      platform: "darwin",
+      userDataDir: path.join(root, "user"),
+      homeDir: root,
+      execPath: "/Applications/TurboDL.app/Contents/MacOS/TurboDL",
+      hostScript: "/Applications/TurboDL.app/Contents/Resources/native-host/host.cjs",
+    });
+    expect(result.registered).toEqual(["Chrome", "Edge"]);
+    const chrome = JSON.parse(readFileSync(path.join(support, "Google", "Chrome", "NativeMessagingHosts", "com.turbodl.host.json"), "utf8"));
+    expect(chrome.allowed_origins).toEqual([ORIGIN]);
+    expect(chrome.path.endsWith("turbodl-host.sh")).toBe(true);
+    expect(existsSync(path.join(support, "BraveSoftware"))).toBe(false);
+    if (process.platform !== "win32") expect(statSync(chrome.path).mode & 0o111).not.toBe(0);
+  });
+});
+
+describe("isBackgroundLaunch", () => {
+  it("recognises a start from the browser, which must not pop up the main window", () => {
+    expect(isBackgroundLaunch(["TurboDL.exe", "--hidden"])).toBe(true);
+    expect(isBackgroundLaunch(["TurboDL.exe"])).toBe(false);
+  });
+});

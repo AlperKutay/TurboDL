@@ -44,3 +44,12 @@ test("detects page media and sends it from the video button", async ({ context, 
   expect(body.items.map((i: { kind: string }) => i.kind).sort()).toEqual(["file", "hls"]);
   await expect(page.getByRole("button", { name: "✓ Sent" })).toBeVisible();
 });
+
+test("popup offers to start TurboDL when it is closed and explains a failed start", async ({ context, sw }) => {
+  await sw.evaluate(() => chrome.storage.local.set({ port: 1 }));
+  const popup = await context.newPage();
+  await popup.goto(`chrome-extension://${EXTENSION_ID}/popup.html`);
+  await expect(popup.locator("#status")).toHaveText("App not running");
+  await popup.getByRole("button", { name: "Start TurboDL" }).click();
+  await expect(popup.locator("#launch-error")).toContainText("Open TurboDL once by hand");
+});

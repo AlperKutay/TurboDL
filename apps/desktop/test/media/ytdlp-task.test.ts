@@ -1,8 +1,9 @@
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { DownloadRecord } from "@turbodl/shared";
+import { withCookieFile } from "../../src/main/media/cookies";
 import { YtdlpTask, fetchMediaInfo } from "../../src/main/media/ytdlp-task";
 import type { ToolPaths } from "../../src/main/media/tools";
 
@@ -91,7 +92,43 @@ describe("YtdlpTask", () => {
   });
 
   it("fetches media info as JSON", async () => {
-    const info = (await fetchMediaInfo(tools, "https://video.example/info", {}, command)) as { title: string };
+    const info = (await fetchMediaInfo(tools, "https://video.example/info", {}, { command })) as { title: string };
     expect(info.title).toBe("Info");
+  });
+
+  const loginCookie = { domain: "video.example", hostOnly: true, path: "/", secure: true, expires: 0, name: "session", value: "ok" };
+
+  it("passes the stored browser cookies as a cookie file and deletes it afterwards", async () => {
+    const rec = record("login");
+    rec.ytdlp = { ...rec.ytdlp!, cookies: [loginCookie] };
+    await task(rec).start();
+    expect(rec.status).toBe("completed");
+    const used = readFileSync(path.join(dir, "cookie-file.txt"), "utf8");
+    expect(used).toContain("turbodl-ck-");
+    expect(existsSync(used)).toBe(false);
+  });
+
+  it("explains how to download a video that needs a login", async () => {
+    const rec = record("login");
+    await task(rec).start();
+    expect(rec.status).toBe("error");
+    expect(rec.error).toContain("in your browser while signed in");
+    const expired = record("login");
+    expired.ytdlp = { ...expired.ytdlp!, cookies: [{ ...loginCookie, value: "expired" }] };
+    await task(expired).start();
+    expect(expired.error).toContain("with your browser session either");
+  });
+
+  it("never sends cookies as a request header", async () => {
+    const rec = record("ok");
+    rec.headers = { Cookie: "a=1", Referer: "https://video.example/" };
+    await task(rec).start();
+    expect(rec.status).toBe("completed");
+  });
+
+  it("fetches media info with a cookie file when given one", async () => {
+    await expect(fetchMediaInfo(tools, "https://video.example/login", {}, { command })).rejects.toThrow(/Sign in to confirm your age/);
+    const info = await withCookieFile([loginCookie], (cookieFile) => fetchMediaInfo(tools, "https://video.example/login", {}, { command, cookieFile }));
+    expect((info as { title: string }).title).toBe("Info");
   });
 });

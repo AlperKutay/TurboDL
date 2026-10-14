@@ -3,6 +3,7 @@ import type { AddressInfo } from "node:net";
 import {
   APP_ID,
   type BridgeConfig,
+  type BrowserCookie,
   type CaptureSource,
   type DownloadRequest,
   type DownloadResponse,
@@ -48,6 +49,33 @@ function optString(v: unknown, max = 16_000): string | undefined {
   return typeof v === "string" && v.length > 0 ? v.slice(0, max) : undefined;
 }
 
+const MAX_COOKIES = 300;
+const CONTROL_CHARS = /[\u0000-\u001f\u007f]/;
+const DOMAIN = /^\.?[a-z0-9-]+(\.[a-z0-9-]+)*$/i;
+
+function cleanText(v: unknown, min: number, max: number): string | null {
+  return typeof v === "string" && v.length >= min && v.length <= max && !CONTROL_CHARS.test(v) ? v : null;
+}
+
+/** One cookie from the extension, or null when any field could corrupt the yt-dlp cookie file. */
+export function parseCookie(v: unknown): BrowserCookie | null {
+  if (!isObj(v)) return null;
+  const domain = cleanText(v.domain, 1, 253);
+  const cookiePath = cleanText(v.path, 1, 1024);
+  const name = cleanText(v.name, 1, 256);
+  const value = cleanText(v.value, 0, 8192);
+  if (!domain || !DOMAIN.test(domain) || !cookiePath?.startsWith("/") || !name || value === null) return null;
+  if (typeof v.hostOnly !== "boolean" || typeof v.secure !== "boolean") return null;
+  if (typeof v.expires !== "number" || !Number.isFinite(v.expires) || v.expires < 0) return null;
+  return { domain, hostOnly: v.hostOnly, path: cookiePath, secure: v.secure, expires: v.expires, name, value };
+}
+
+function parseCookieJar(v: unknown): BrowserCookie[] | undefined {
+  if (!Array.isArray(v)) return undefined;
+  const jar = v.map(parseCookie).filter((c): c is BrowserCookie => c !== null).slice(0, MAX_COOKIES);
+  return jar.length > 0 ? jar : undefined;
+}
+
 export function parseDownloadRequest(v: unknown): DownloadRequest | string {
   if (!isObj(v)) return "body";
   if (!isHttpUrl(v.url)) return "url";
@@ -66,6 +94,8 @@ export function parseDownloadRequest(v: unknown): DownloadRequest | string {
   if (filename) out.filename = filename;
   if (mime) out.mime = mime;
   if (typeof v.fileSize === "number" && Number.isFinite(v.fileSize) && v.fileSize > 0) out.fileSize = v.fileSize;
+  const cookieJar = parseCookieJar(v.cookieJar);
+  if (cookieJar) out.cookieJar = cookieJar;
   return out;
 }
 
@@ -93,6 +123,8 @@ export function parseMediaRequest(v: unknown): MediaRequest | string {
   if (cookies) out.cookies = cookies;
   if (referrer) out.referrer = referrer;
   if (userAgent) out.userAgent = userAgent;
+  const cookieJar = parseCookieJar(v.cookieJar);
+  if (cookieJar) out.cookieJar = cookieJar;
   return out;
 }
 

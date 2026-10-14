@@ -30,6 +30,8 @@ let posted: Posted[];
 let storage: Record<string, unknown>;
 let appAccepts: boolean;
 let appRunning: boolean;
+let nativeReply: () => unknown;
+let nativeHost: string | null;
 
 function item(patch: Partial<FakeItem> = {}): FakeItem {
   return {
@@ -55,10 +57,26 @@ beforeEach(() => {
   storage = {};
   appAccepts = true;
   appRunning = true;
+  nativeReply = () => {
+    throw new Error("Specified native messaging host not found.");
+  };
+  nativeHost = null;
   vi.resetModules();
   vi.stubGlobal("chrome", {
-    runtime: { id: "self-extension-id" },
-    storage: { local: { get: async () => ({ ...storage }) } },
+    runtime: {
+      id: "self-extension-id",
+      sendNativeMessage: async (name: string) => {
+        nativeHost = name;
+        calls.push("launch");
+        return nativeReply();
+      },
+    },
+    storage: {
+      local: {
+        get: async () => ({ ...storage }),
+        set: async (values: Record<string, unknown>) => void Object.assign(storage, values),
+      },
+    },
     cookies: { getAll: async () => [{ name: "session", value: "abc" }] },
     action: { setBadgeBackgroundColor: async () => undefined, setBadgeText: async () => undefined },
     downloads: {
@@ -76,6 +94,7 @@ beforeEach(() => {
     const path = new URL(url).pathname;
     const body = init?.body ? JSON.parse(init.body) : {};
     posted.push({ path, body });
+    if (path === "/v1/ping") return new Response(JSON.stringify({ app: "turbodl", version: "0.2.0" }), { status: 200 });
     if (path === "/v1/config") {
       return new Response(JSON.stringify({ captureEnabled: true, captureExtensions: ["zip", "mkv"], minCaptureSize: 0 }), { status: 200 });
     }
@@ -182,6 +201,60 @@ describe("download capture", () => {
     await vi.waitFor(() => expect(calls).toContain("erase:1"));
     await settle();
     expect(downloadPosts()).toHaveLength(1);
+  });
+
+  const remembered = { captureEnabled: true, captureExtensions: ["zip", "mkv"], minCaptureSize: 0 };
+
+  it("starts TurboDL through the native host when it is closed, then hands the download over", async () => {
+    appRunning = false;
+    storage.lastConfig = remembered;
+    nativeReply = () => {
+      appRunning = true;
+      return { ok: true };
+    };
+    await start();
+    create(item());
+    await vi.waitFor(() => expect(calls).toEqual(["pause:1", "launch", "cancel:1", "erase:1"]), { timeout: 4000 });
+    expect(nativeHost).toBe("com.turbodl.host");
+    expect(downloadPosts()).toHaveLength(1);
+  });
+
+  it("gives the download back to Chrome when TurboDL cannot be started", async () => {
+    appRunning = false;
+    storage.lastConfig = remembered;
+    await start();
+    create(item());
+    await vi.waitFor(() => expect(calls).toEqual(["pause:1", "launch", "resume:1"]));
+  });
+
+  it("starts TurboDL only once for several downloads", async () => {
+    appRunning = false;
+    storage.lastConfig = remembered;
+    nativeReply = () => {
+      setTimeout(() => (appRunning = true), 300);
+      return { ok: true };
+    };
+    await start();
+    create(item({ id: 1 }));
+    create(item({ id: 2, url: "https://files.example.com/b.zip", finalUrl: "https://files.example.com/b.zip" }));
+    await vi.waitFor(() => expect(downloadPosts()).toHaveLength(2), { timeout: 6000 });
+    expect(calls.filter((c) => c === "launch")).toHaveLength(1);
+  });
+
+  it("uses the remembered capture list while TurboDL is closed", async () => {
+    appRunning = false;
+    storage.lastConfig = { ...remembered, captureExtensions: ["mkv"] };
+    await start();
+    create(item());
+    await settle();
+    expect(calls).toEqual([]);
+  });
+
+  it("remembers the capture settings it got from the app", async () => {
+    await start();
+    create(item());
+    await vi.waitFor(() => expect(calls).toContain("erase:1"));
+    expect(storage.lastConfig).toEqual({ captureEnabled: true, captureExtensions: ["zip", "mkv"], minCaptureSize: 0 });
   });
 
   it("never captures its own downloads", async () => {

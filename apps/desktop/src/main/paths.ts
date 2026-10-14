@@ -30,3 +30,7 @@ export function ffmpegPath(): string | null {
     return null;
   }
 }
+
+export function nativeHostScript(): string {
+  return path.join(resourcesRoot(), "native-host", "host.cjs");
+}

@@ -31,6 +31,7 @@ const api: TurboApi = {
   cancelCountdown: () => invoke("cancelCountdown"),
   installExtension: () => invoke("installExtension"),
   copyText: (text) => invoke("copyText", text),
+  readClipboardText: () => invoke("readClipboardText"),
   closeWindow: () => invoke("closeWindow"),
 };
 
