@@ -3,6 +3,7 @@ import { promises as fsp } from "node:fs";
 import path from "node:path";
 import { uniqueName, type DownloadRecord, type DownloadView, type NewDownload, type Settings } from "@turbodl/shared";
 import { TEMP_SUFFIX } from "./engine/download-task";
+import { streamTempFiles } from "./media/stream-task";
 import type { JsonStore } from "./store";
 import type { TaskHandle } from "./task";
 
@@ -37,6 +38,7 @@ interface Running {
 export function defaultFilesOf(record: DownloadRecord): string[] {
   if (record.status === "completed") return [path.join(record.dir, record.filename)];
   if (record.kind === "http") return [path.join(record.dir, record.filename + TEMP_SUFFIX)];
+  if (record.kind === "stream") return streamTempFiles(record);
   return [];
 }
 
@@ -277,6 +279,8 @@ export class DownloadManager extends EventEmitter<ManagerEvents> {
       headers: {},
       // stored browser cookies stay in the main process
       ytdlp: record.ytdlp && { formatSelector: record.ytdlp.formatSelector, audioOnly: record.ytdlp.audioOnly },
+      // track records, origins and cookies stay in the main process
+      stream: undefined,
       segments: record.segments.map((s) => ({ ...s })),
       speed: run?.task.speed ?? 0,
       eta: run?.task.eta ?? null,
