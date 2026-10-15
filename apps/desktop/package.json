@@ -1,7 +1,7 @@
 {
   "name": "@turbodl/desktop",
   "productName": "TurboDL",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "description": "TurboDL download manager",
   "author": "TurboDL",
@@ -11,6 +11,7 @@
     "build": "electron-vite build",
     "start": "electron-vite preview",
     "test": "vitest run",
+    "test:live": "vitest run --config vitest.live.config.ts",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
     "e2e": "electron-vite build && playwright test",
     "dist": "electron-builder --config electron-builder.config.cjs",
