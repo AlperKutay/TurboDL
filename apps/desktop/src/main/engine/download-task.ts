@@ -16,6 +16,8 @@ export interface HttpTaskOptions {
   idleTimeoutMs?: number;
   maxRetries?: number;
   retryBaseMs?: number;
+  /** most bytes per request, see SegmentWorker */
+  chunkSize?: number;
 }
 
 const FATAL_FS_CODES = new Set(["ENOSPC", "EACCES", "EPERM", "EROFS", "ENOTDIR", "EEXIST", "EISDIR", "EBADF"]);
@@ -219,6 +221,7 @@ export class HttpDownloadTask implements TaskHandle {
           file,
           signal,
           idleTimeoutMs: this.opts.idleTimeoutMs ?? 30000,
+          chunkSize: this.opts.chunkSize,
           onBytes: (n) => {
             this.meter.add(n);
             rec.received += n;

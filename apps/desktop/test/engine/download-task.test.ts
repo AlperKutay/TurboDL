@@ -197,4 +197,31 @@ describe("HttpDownloadTask", () => {
     expect(rec.status).toBe("error");
     expect(rec.error).toBeTruthy();
   });
+
+  it("asks for at most chunkSize bytes per request and reuses the connection", async () => {
+    const data = randomBytes(2 * MB);
+    server.setFile("/chunks.bin", { data });
+    const rec = record("/chunks.bin", "chunks.bin");
+    await new HttpDownloadTask(rec, { ...options(1), chunkSize: 256 * 1024 }).start();
+    expect(rec.status).toBe("completed");
+    expect(sha(readFileSync(path.join(dir, "chunks.bin")))).toBe(sha(data));
+    const ranges = server.requests.filter((r) => r.range && r.range !== "bytes=0-0").map((r) => /bytes=(\d+)-(\d+)/.exec(r.range!)!);
+    expect(ranges.length).toBe(8);
+    for (const m of ranges) expect(Number(m[2]) - Number(m[1]) + 1).toBeLessThanOrEqual(256 * 1024);
+    // the probe's socket is closed; every chunk after that rides one kept-alive socket
+    expect(server.connections).toBeLessThanOrEqual(2);
+  });
+
+  it("keeps chunking while a slow segment is split", async () => {
+    const data = randomBytes(6 * MB);
+    server.setFile("/chunk-split.bin", { data, throttle: (start) => (start === 0 ? 64 * MB : 2 * MB) });
+    const rec = record("/chunk-split.bin", "chunk-split.bin");
+    await new HttpDownloadTask(rec, { ...options(2), chunkSize: 1 * MB }).start();
+    expect(rec.status).toBe("completed");
+    expect(sha(readFileSync(path.join(dir, "chunk-split.bin")))).toBe(sha(data));
+    for (const r of server.requests.filter((x) => x.range && x.range !== "bytes=0-0")) {
+      const m = /bytes=(\d+)-(\d+)/.exec(r.range!)!;
+      expect(Number(m[2]) - Number(m[1]) + 1).toBeLessThanOrEqual(1 * MB);
+    }
+  });
 });

@@ -26,6 +26,8 @@ export interface FileSpec {
 
 export interface RequestLog {
   path: string;
+  /** path with the query string */
+  url: string;
   range?: string;
   headers: http.IncomingHttpHeaders;
 }
@@ -36,17 +38,19 @@ export interface TestServer {
   readonly requests: RequestLog[];
   readonly bytesSent: number;
   readonly maxConcurrent: number;
+  /** TCP connections accepted so far (keep-alive reuse keeps this low) */
+  readonly connections: number;
   close(): Promise<void>;
 }
 
 export async function startTestServer(): Promise<TestServer> {
   const files = new Map<string, FileSpec & { served: number }>();
-  const state = { requests: [] as RequestLog[], bytesSent: 0, maxConcurrent: 0, active: 0 };
+  const state = { requests: [] as RequestLog[], bytesSent: 0, maxConcurrent: 0, active: 0, connections: 0 };
   const sockets = new Set<Socket>();
 
   const server = http.createServer((req, res) => {
     const path = (req.url ?? "/").split("?")[0];
-    state.requests.push({ path, range: req.headers.range, headers: req.headers });
+    state.requests.push({ path, url: req.url ?? "/", range: req.headers.range, headers: req.headers });
     const spec = files.get(path);
     if (!spec) {
       res.writeHead(404);
@@ -138,6 +142,7 @@ export async function startTestServer(): Promise<TestServer> {
   });
 
   server.on("connection", (socket) => {
+    state.connections++;
     sockets.add(socket);
     socket.on("close", () => sockets.delete(socket));
   });
@@ -157,6 +162,9 @@ export async function startTestServer(): Promise<TestServer> {
     },
     get maxConcurrent() {
       return state.maxConcurrent;
+    },
+    get connections() {
+      return state.connections;
     },
     close: () =>
       new Promise<void>((resolve) => {
