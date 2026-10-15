@@ -12,7 +12,11 @@ A download manager for Windows and macOS, inspired by IDM. It comes with a brows
 - **Automatic sorting** — files go into Video, Music, Programs, Archives, Documents, Images and Other folders.
 - **Clipboard** — copying a download link offers to download it.
 
-## Build and install
+## Download
+
+Installers for Windows and macOS are on the [Releases](https://github.com/AlperKutay/TurboDL/releases) page.
+
+## Build from source
 
 You need Node.js 22 or newer, pnpm 11 and git.
 

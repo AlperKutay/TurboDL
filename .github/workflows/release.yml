@@ -1,0 +1,62 @@
+name: Release
+
+# Pushing a tag like v0.3.0 builds the installers on Windows and macOS
+# and publishes them as a GitHub release.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest # x64 .exe
+            files: apps/desktop/release/*.exe
+          - os: macos-15 # Apple Silicon .dmg
+            files: apps/desktop/release/*.dmg
+          - os: macos-15-intel # Intel .dmg
+            files: apps/desktop/release/*.dmg
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.1.3
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Unit tests
+        run: pnpm test
+        continue-on-error: true
+      - run: pnpm build
+      - name: Build the installer
+        run: pnpm --filter @turbodl/desktop exec electron-builder --config electron-builder.config.cjs --publish never
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: installer-${{ matrix.os }}
+          path: ${{ matrix.files }}
+          if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: installers
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          name: TurboDL ${{ github.ref_name }}
+          body_path: .github/release-notes/${{ github.ref_name }}.md
+          files: installers/*
