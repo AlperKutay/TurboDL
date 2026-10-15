@@ -84,7 +84,8 @@ describe("YtdlpTask", () => {
     const rec = record("slow");
     const t = task(rec);
     const running = t.start();
-    await new Promise((r) => setTimeout(r, 400));
+    // wait for the first progress line; slow machines need longer to start the process
+    for (let i = 0; i < 200 && rec.received === 0; i++) await new Promise((r) => setTimeout(r, 50));
     expect(rec.received).toBeGreaterThan(0);
     t.pause();
     await running;
