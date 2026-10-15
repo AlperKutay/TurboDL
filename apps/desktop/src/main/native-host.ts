@@ -123,6 +123,7 @@ export async function registerNativeHost(o: RegisterOptions): Promise<{ manifest
 }
 
 /** Started by the extension through the native host: stay in the tray. */
+/** Started by the browser (--hidden) or by a click on a Windows notification (COM activation adds -Embedding). */
 export function isBackgroundLaunch(argv: string[]): boolean {
-  return argv.includes("--hidden");
+  return argv.includes("--hidden") || argv.includes("-Embedding");
 }

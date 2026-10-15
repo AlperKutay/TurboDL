@@ -129,4 +129,8 @@ describe("isBackgroundLaunch", () => {
     expect(isBackgroundLaunch(["TurboDL.exe", "--hidden"])).toBe(true);
     expect(isBackgroundLaunch(["TurboDL.exe"])).toBe(false);
   });
+
+  it("treats a start by a notification click (COM activation) as a background start", () => {
+    expect(isBackgroundLaunch(["TurboDL.exe", "-Embedding"])).toBe(true);
+  });
 });

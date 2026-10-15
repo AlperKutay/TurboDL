@@ -1,14 +1,17 @@
+import { existsSync } from "node:fs";
 import path from "node:path";
 import { Notification, app, clipboard, shell, type Tray } from "electron";
 import { ClipboardWatcher } from "./clipboard-watcher";
 import { AppController } from "./controller";
 import { EVENT_CHANNEL, broadcast, registerIpc } from "./ipc";
 import { isBackgroundLaunch, registerNativeHost } from "./native-host";
+import { CompletionNotifier, notificationIdentity, revealDownload } from "./notifications";
 import { appIconPath, extensionSourceDir, ffmpegPath, nativeHostScript, trayIconPath } from "./paths";
 import { createTray } from "./tray";
 import { WindowManager } from "./windows";
 
 if (process.env.TURBODL_USER_DATA) app.setPath("userData", process.env.TURBODL_USER_DATA);
+const identity = notificationIdentity({ isPackaged: app.isPackaged, isolated: Boolean(process.env.TURBODL_USER_DATA) });
 
 let controller: AppController | null = null;
 let windows: WindowManager | null = null;
@@ -38,7 +41,16 @@ if (!app.requestSingleInstanceLock()) {
 }
 
 async function start(): Promise<void> {
-  if (process.platform === "win32") app.setAppUserModelId("com.turbodl.app");
+  if (process.platform === "win32") app.setAppUserModelId(identity.appUserModelId);
+  const notifier = new CompletionNotifier({
+    platform: process.platform,
+    enabled: () => identity.enabled && (controller?.settings.notifyOnComplete ?? false) && Notification.isSupported(),
+    create: (options) => new Notification(options as Electron.NotificationConstructorOptions),
+    reveal: (file) => void revealDownload(file, { exists: existsSync, showItemInFolder: (p) => shell.showItemInFolder(p), openPath: (p) => shell.openPath(p) }),
+    icon: appIconPath(),
+  });
+  // a click on a toast reaches us here even after a restart (the app is then started with -Embedding)
+  if (process.platform === "win32" && identity.enabled) Notification.handleActivation((details) => notifier.handleActivation(details.arguments));
   const wm = new WindowManager({
     preload: path.join(__dirname, "../preload/index.js"),
     icon: appIconPath(),
@@ -59,12 +71,7 @@ async function start(): Promise<void> {
       openPending: (item) => wm.openDialog(item.pendingId, item.type === "media" ? "media" : "new"),
       closePending: (pendingId) => wm.closeDialog(pendingId),
       showMain: () => wm.showMain(),
-      notifyCompleted: (record) => {
-        if (!c.settings.notifyOnComplete || !Notification.isSupported()) return;
-        const note = new Notification({ title: "Download complete", body: record.filename, icon: appIconPath() });
-        note.on("click", () => shell.showItemInFolder(path.join(record.dir, record.filename)));
-        note.show();
-      },
+      notifyCompleted: (record) => notifier.show(path.join(record.dir, record.filename)),
       setLaunchAtLogin: (enabled) => app.setLoginItemSettings({ openAtLogin: enabled, args: ["--hidden"] }),
       quit: () => app.quit(),
     },
