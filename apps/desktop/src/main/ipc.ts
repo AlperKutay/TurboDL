@@ -42,6 +42,7 @@ export function registerIpc(c: AppController): void {
   handle("confirmDownload", (id: string, decision: DownloadDecision) => c.confirmDownload(id, decision));
   handle("cancelPending", (id: string) => c.cancelPending(id));
   handle("probeMediaFormats", (id: string) => c.probeMediaFormats(id));
+  handle("probeStream", (id: string, index: number) => c.probeStream(String(id), Number(index)));
   handle("confirmMedia", (id: string, choice: MediaChoice, decision: MediaDecision) => c.confirmMedia(id, choice, decision));
   handle("cancelCountdown", () => c.cancelCountdown());
   handle("installExtension", async () => {
