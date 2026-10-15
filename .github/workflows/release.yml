@@ -1,6 +1,6 @@
 name: Release
 
-# Pushing a tag like v0.3.0 builds the installers on Windows and macOS
+# Pushing a tag like v0.3.0 builds the Windows and macOS installers and the Firefox add-on
 # and publishes them as a GitHub release.
 on:
   push:
@@ -46,8 +46,41 @@ jobs:
           path: ${{ matrix.files }}
           if-no-files-found: error
 
+  firefox:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.1.3
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @turbodl/extension build
+      # Signed by Mozilla when the AMO_JWT_ISSUER / AMO_JWT_SECRET secrets are set (needed by regular Firefox);
+      # otherwise unsigned, which only Firefox Developer Edition, Nightly and ESR can install.
+      - name: Package the Firefox add-on
+        env:
+          AMO_JWT_ISSUER: ${{ secrets.AMO_JWT_ISSUER }}
+          AMO_JWT_SECRET: ${{ secrets.AMO_JWT_SECRET }}
+        run: |
+          mkdir -p firefox-out
+          if [ -n "$AMO_JWT_ISSUER" ] && [ -n "$AMO_JWT_SECRET" ]; then
+            npx --yes web-ext@10.7.0 sign --source-dir apps/extension/dist-firefox --artifacts-dir firefox-out --channel unlisted --api-key "$AMO_JWT_ISSUER" --api-secret "$AMO_JWT_SECRET"
+          else
+            npx --yes web-ext@10.7.0 build --source-dir apps/extension/dist-firefox --artifacts-dir firefox-out
+          fi
+          mv firefox-out/*.* "firefox-out/TurboDL-Firefox-${GITHUB_REF_NAME#v}.xpi"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: installer-firefox
+          path: firefox-out/*.xpi
+          if-no-files-found: error
+
   release:
-    needs: build
+    needs: [build, firefox]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

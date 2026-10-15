@@ -1,6 +1,6 @@
 # TurboDL
 
-A download manager for Windows and macOS, inspired by IDM. It comes with a browser extension for Chrome, Edge and Brave.
+A download manager for Windows and macOS, inspired by IDM. It comes with a browser extension for Chrome, Edge, Brave, Opera, Vivaldi, Arc and Firefox.
 
 ## Features
 
@@ -11,10 +11,11 @@ A download manager for Windows and macOS, inspired by IDM. It comes with a brows
 - **Queue and scheduler** — start downloads at a set time and shut down or sleep the computer when they finish.
 - **Automatic sorting** — files go into Video, Music, Programs, Archives, Documents, Images and Other folders.
 - **Clipboard** — copying a download link offers to download it.
+- **Notifications** — clicking "Download complete" shows the file in File Explorer or Finder.
 
 ## Download
 
-Installers for Windows and macOS are on the [Releases](https://github.com/AlperKutay/TurboDL/releases) page.
+Installers for Windows and macOS and the Firefox add-on are on the [Releases](https://github.com/AlperKutay/TurboDL/releases) page.
 
 ## Build from source
 
@@ -29,12 +30,18 @@ The installer is created in `apps/desktop/release/` (`.exe` on Windows, `.dmg` o
 
 ### Browser extension
 
+Chrome, Edge, Brave, Opera, Vivaldi and Arc:
+
 1. In TurboDL, open **Settings → Install the browser extension…**. The extension is copied to `Documents/TurboDL Extension`.
-2. Open `chrome://extensions` (Chrome, Brave) or `edge://extensions` (Edge).
+2. Open the browser's extensions page: `chrome://extensions` (Chrome, Brave, Vivaldi, Arc), `edge://extensions` (Edge) or `opera://extensions` (Opera).
 3. Turn on **Developer mode** and click **Load unpacked**.
 4. Choose the `TurboDL Extension` folder.
 
+Firefox: open the `.xpi` file from the [Releases](https://github.com/AlperKutay/TurboDL/releases) page in Firefox. Regular Firefox only installs add-ons signed by Mozilla; an unsigned build works in Firefox Developer Edition, Nightly and ESR with `xpinstall.signatures.required` set to `false`.
+
 Open TurboDL once after installing; from then on the extension can start it.
+
+Safari is not supported.
 
 ## Development
 
