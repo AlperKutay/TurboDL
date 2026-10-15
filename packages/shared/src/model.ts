@@ -2,7 +2,7 @@ import type { BrowserCookie, CaptureSource, MediaItem } from "./protocol";
 
 export type Category = "video" | "music" | "programs" | "archives" | "documents" | "images" | "other";
 export type DownloadStatus = "queued" | "scheduled" | "downloading" | "paused" | "completed" | "error";
-export type DownloadKind = "http" | "ytdlp";
+export type DownloadKind = "http" | "ytdlp" | "stream";
 
 /** Byte range [start, end] (end inclusive); `received` counts bytes written from `start`. */
 export interface Segment {
@@ -17,6 +17,33 @@ export interface YtdlpOptions {
   audioOnly: boolean;
   /** browser cookies handed to yt-dlp as a cookie file (login-only videos, hls/dash with cookies) */
   cookies?: BrowserCookie[];
+}
+
+/** Where a stream download gets its addresses; resolved again on every start (YouTube links expire). */
+export type StreamOrigin =
+  | { type: "ytdlp"; pageUrl: string; formatSelector: string; cookies?: BrowserCookie[] }
+  /** variant: the chosen quality key, "audio" for audio only, null for a playlist without variants */
+  | { type: "hls"; url: string; variant: string | null }
+  /** representation ids; null video = audio only, null audio = the best audio */
+  | { type: "dash"; url: string; video: string | null; audio: string | null };
+
+export interface StreamTrackState {
+  /** format id / representation id / playlist key: a different id means different content */
+  id: string;
+  role: "video" | "audio" | "av";
+  ext: string;
+  done: boolean;
+  /** a single-file track: the inner HTTP download's record (parts, bytes) */
+  file?: DownloadRecord;
+  /** a fragmented track */
+  frag?: { count: number; initDone: boolean; done: number; bytes: number };
+}
+
+export interface StreamInfo {
+  origin: StreamOrigin;
+  output: "mp4" | "mp3";
+  /** filled on the first start */
+  tracks: StreamTrackState[];
 }
 
 export interface DownloadRecord {
@@ -37,6 +64,7 @@ export interface DownloadRecord {
   lastModified?: string;
   segments: Segment[];
   ytdlp?: YtdlpOptions;
+  stream?: StreamInfo;
   /** started by the scheduler (used for stop time and after-all action) */
   viaScheduler: boolean;
   createdAt: number;
@@ -88,6 +116,7 @@ export interface NewDownload {
   resumable: boolean;
   headers: Record<string, string>;
   ytdlp?: YtdlpOptions;
+  stream?: StreamInfo;
 }
 
 export interface PendingDownload {
@@ -120,7 +149,7 @@ export interface MediaFormatOption {
   audioOnly: boolean;
 }
 
-export type MediaChoice = { kind: "item"; index: number } | { kind: "format"; option: MediaFormatOption };
+export type MediaChoice = { kind: "item"; index: number; option?: MediaFormatOption } | { kind: "format"; option: MediaFormatOption };
 
 export interface BridgeStatus {
   ok: boolean;
@@ -174,6 +203,7 @@ export interface TurboApi {
   confirmDownload(pendingId: string, decision: DownloadDecision): Promise<Result>;
   cancelPending(pendingId: string): Promise<void>;
   probeMediaFormats(pendingId: string): Promise<FormatsResult>;
+  probeStream(pendingId: string, index: number): Promise<FormatsResult>;
   confirmMedia(pendingId: string, choice: MediaChoice, decision: MediaDecision): Promise<Result>;
   cancelCountdown(): Promise<void>;
   installExtension(): Promise<InstallResult>;

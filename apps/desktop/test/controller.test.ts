@@ -3,9 +3,10 @@ import http from "node:http";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { AppEvent, PendingItem } from "@turbodl/shared";
 import { AppController, type ControllerUi } from "../src/main/controller";
+import { FFMPEG, makeClips, serveFolder, type Clips } from "./fixtures/media";
 import { startTestServer, type TestServer } from "./fixtures/test-server";
 
 const ORIGIN = "chrome-extension://fnkkncklkbdmaphmmddfmbcjkllejhea";
@@ -74,7 +75,7 @@ afterEach(async () => {
   rmSync(root, { recursive: true, force: true });
 });
 
-async function start(settings: Record<string, unknown> = {}): Promise<AppController> {
+async function start(settings: Record<string, unknown> = {}, ffmpegPath: string | null = null): Promise<AppController> {
   const userData = path.join(root, "user");
   mkdirSync(userData, { recursive: true });
   const port = (settings.bridgePort as number | undefined) ?? (await freePort());
@@ -88,7 +89,7 @@ async function start(settings: Record<string, unknown> = {}): Promise<AppControl
     downloadsDir: path.join(root, "Downloads"),
     documentsDir: path.join(root, "Documents"),
     extensionSourceDir: extensionDir,
-    ffmpegPath: null,
+    ffmpegPath,
     ui,
     mediaTools: { ensure: async () => ({ ytdlp: "unused", deno: null, ffmpeg: null }), updateIfStale: async () => undefined },
     ytdlpCommand: () => ({ file: process.execPath, args: [FAKE_YTDLP] }),
@@ -157,7 +158,7 @@ describe("AppController", () => {
     expect(c.manager.list()[0]).toMatchObject({ kind: "http", filename: "Nice_ Clip.mp4", category: "video", size: 3000 });
   });
 
-  it("sends HLS items to yt-dlp", async () => {
+  it("sends an HLS item to yt-dlp when no quality of it could be read", async () => {
     const c = await start();
     await c.handleMediaRequest({ pageUrl: "https://video.example/w", title: "Live", items: [{ url: "https://cdn.example/a.m3u8", kind: "hls", cookies: "c=2" }] });
     await c.confirmMedia(ui.opened[0].pendingId, { kind: "item", index: 0 }, { dir: path.join(root, "v"), mode: "later" });
@@ -168,15 +169,17 @@ describe("AppController", () => {
     expect(stored.ytdlp?.cookies).toEqual([{ domain: "cdn.example", hostOnly: true, path: "/", secure: true, expires: 0, name: "c", value: "2" }]);
   });
 
-  it("downloads a chosen quality from the page without cookies", async () => {
+  it("turns a chosen page quality into a stream download TurboDL fetches itself, without cookies", async () => {
     const c = await start();
     await c.handleMediaRequest({ pageUrl: "https://video.example/w", title: "Song", items: [], cookies: "secret=1" });
     const option = { id: "audio", label: "Audio only (MP3)", formatSelector: "ba/b", audioOnly: true };
     await c.confirmMedia(ui.opened[0].pendingId, { kind: "format", option }, { dir: path.join(root, "m"), mode: "later" });
     const rec = c.manager.list()[0];
-    expect(rec).toMatchObject({ kind: "ytdlp", url: "https://video.example/w", filename: "Song.mp3", category: "music", ytdlp: { formatSelector: "ba/b", audioOnly: true } });
-    expect(c.manager.get(rec.id)?.headers.Cookie).toBeUndefined();
-    expect(c.manager.get(rec.id)?.ytdlp?.cookies).toBeUndefined();
+    expect(rec).toMatchObject({ kind: "stream", url: "https://video.example/w", filename: "Song.mp3", category: "music" });
+    expect(rec.stream).toBeUndefined();
+    const stored = c.manager.get(rec.id)!;
+    expect(stored.headers.Cookie).toBeUndefined();
+    expect(stored.stream).toEqual({ origin: { type: "ytdlp", pageUrl: "https://video.example/w", formatSelector: "ba/b" }, output: "mp3", tracks: [] });
   });
 
   const LOGIN_JAR = [{ domain: "video.example", hostOnly: true, path: "/", secure: true, expires: 0, name: "session", value: "ok" }];
@@ -188,7 +191,7 @@ describe("AppController", () => {
     const id = ui.opened[0].pendingId;
     expect(await c.probeMediaFormats(id)).toMatchObject({ ok: true, usedLogin: false });
     await c.confirmMedia(id, { kind: "format", option }, { dir: path.join(root, "v"), mode: "later" });
-    expect(c.manager.get(c.manager.list()[0].id)?.ytdlp?.cookies).toBeUndefined();
+    expect(c.manager.get(c.manager.list()[0].id)?.stream?.origin).not.toHaveProperty("cookies");
   });
 
   it("uses the browser session only when the video asks for a login, and keeps it for the download", async () => {
@@ -200,8 +203,9 @@ describe("AppController", () => {
     if (!result.ok) return;
     await c.confirmMedia(id, { kind: "format", option: result.options[0] }, { dir: path.join(root, "v"), mode: "later" });
     const view = c.manager.list()[0];
-    expect(c.manager.get(view.id)?.ytdlp?.cookies).toEqual(LOGIN_JAR);
-    expect(view.ytdlp?.cookies).toBeUndefined();
+    const stored = c.manager.get(view.id)!;
+    expect(stored.stream?.origin).toMatchObject({ type: "ytdlp", cookies: LOGIN_JAR });
+    expect(view.stream).toBeUndefined();
   });
 
   it("explains what to do when a video needs a login and no browser session came with it", async () => {
@@ -295,5 +299,87 @@ describe("AppController", () => {
     const res = await c.installExtension();
     expect(res.ok).toBe(true);
     if (res.ok) expect(existsSync(path.join(res.path, "manifest.json"))).toBe(true);
+  });
+
+  describe("own video engine", () => {
+    let clipsDir: string;
+    let clips: Clips;
+    beforeAll(() => {
+      clipsDir = mkdtempSync(path.join(os.tmpdir(), "turbodl-ctl-clips-"));
+      clips = makeClips(clipsDir);
+    });
+    afterAll(() => {
+      rmSync(clipsDir, { recursive: true, force: true });
+    });
+
+    it("downloads a page's chosen quality with TurboDL's engine and yt-dlp only for the addresses", async () => {
+      server.setFile("/yt/v.mp4", { data: clips.video });
+      server.setFile("/yt/a.m4a", { data: clips.audio });
+      const info = {
+        title: "Local Video",
+        formats: [{ height: 240, vcodec: "avc1" }],
+        requested_formats: [
+          { format_id: "v1", protocol: "https", url: server.url("/yt/v.mp4"), ext: "mp4", vcodec: "avc1", acodec: "none", filesize: clips.video.length, downloader_options: { http_chunk_size: 16384 } },
+          { format_id: "a1", protocol: "https", url: server.url("/yt/a.m4a"), ext: "m4a", vcodec: "none", acodec: "mp4a", filesize: clips.audio.length },
+        ],
+      };
+      server.setFile("/yt/page.info.json", { data: Buffer.from(JSON.stringify(info)) });
+      const c = await start({}, FFMPEG);
+      await c.handleMediaRequest({ pageUrl: server.url("/yt/page"), title: "", items: [] });
+      const id = ui.opened[0].pendingId;
+      const formats = await c.probeMediaFormats(id);
+      expect(formats).toMatchObject({ ok: true, title: "Local Video" });
+      if (!formats.ok) return;
+      expect(await c.confirmMedia(id, { kind: "format", option: formats.options[0] }, { dir: path.join(root, "v"), mode: "now" })).toEqual({ ok: true });
+      for (let i = 0; i < 200 && c.manager.list()[0]?.status !== "completed"; i++) await new Promise((r) => setTimeout(r, 50));
+      expect(c.manager.list()[0]).toMatchObject({ kind: "stream", status: "completed", filename: "Local Video.mp4" });
+      expect(existsSync(path.join(root, "v", "Local Video.mp4"))).toBe(true);
+      expect(server.requests.filter((r) => r.path === "/yt/v.mp4" && r.range && r.range !== "bytes=0-0").length).toBeGreaterThan(1);
+    });
+
+    it("lists the qualities of a captured HLS item and downloads the chosen one itself", async () => {
+      serveFolder(server, clips.hls.av, "/live/av");
+      server.setFile("/live/master.m3u8", { data: Buffer.from("#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=700000,RESOLUTION=320x240\nav/index.m3u8\n") });
+      const c = await start({}, FFMPEG);
+      await c.handleMediaRequest({ pageUrl: "https://video.example/w", title: "Stream", items: [{ url: server.url("/live/master.m3u8"), kind: "hls", cookies: "c=1" }] });
+      const id = ui.opened[0].pendingId;
+      const r = await c.probeStream(id, 0);
+      expect(r).toMatchObject({ ok: true, usedLogin: false });
+      if (!r.ok) return;
+      expect(r.options.map((o) => o.label)).toEqual(["240p · 0.7 Mbps", "Audio only (MP3)"]);
+      expect(server.requests.find((q) => q.path === "/live/master.m3u8")?.headers.cookie).toBe("c=1");
+      await c.confirmMedia(id, { kind: "item", index: 0, option: r.options[0] }, { dir: path.join(root, "v"), mode: "now" });
+      const stored = c.manager.get(c.manager.list()[0].id)!;
+      expect(stored.stream?.origin).toEqual({ type: "hls", url: server.url("/live/master.m3u8"), variant: "320x240@700000" });
+      for (let i = 0; i < 200 && c.manager.list()[0]?.status !== "completed"; i++) await new Promise((res) => setTimeout(res, 50));
+      expect(c.manager.list()[0]).toMatchObject({ status: "completed", filename: "Stream.mp4" });
+    });
+
+    it("lists DASH qualities and keeps audio-only DASH choices without a video id", async () => {
+      server.setFile("/d/x.mpd", {
+        data: Buffer.from(`<MPD type="static" mediaPresentationDuration="PT4S"><Period>
+          <AdaptationSet contentType="video" mimeType="video/mp4"><SegmentTemplate duration="2" media="$RepresentationID$/$Number$.m4s"/><Representation id="v720" bandwidth="3000000" height="720"/></AdaptationSet>
+          <AdaptationSet contentType="audio" mimeType="audio/mp4"><SegmentTemplate duration="2" media="$RepresentationID$/$Number$.m4s"/><Representation id="a1" bandwidth="128000" codecs="mp4a.40.2"/></AdaptationSet></Period></MPD>`),
+      });
+      const c = await start();
+      await c.handleMediaRequest({ pageUrl: "https://video.example/w", title: "Dash", items: [{ url: server.url("/d/x.mpd"), kind: "dash" }] });
+      const id = ui.opened[0].pendingId;
+      const r = await c.probeStream(id, 0);
+      if (!r.ok) throw new Error(r.error);
+      expect(r.options.map((o) => o.id)).toEqual(["v720", "audio"]);
+      await c.confirmMedia(id, { kind: "item", index: 0, option: r.options[1] }, { dir: path.join(root, "v"), mode: "later" });
+      const stored = c.manager.get(c.manager.list()[0].id)!;
+      expect(stored).toMatchObject({ kind: "stream", filename: "Dash.mp3", category: "music" });
+      expect(stored.stream).toMatchObject({ origin: { type: "dash", video: null, audio: null }, output: "mp3" });
+    });
+
+    it("explains why a stream item has no qualities", async () => {
+      const c = await start();
+      await c.handleMediaRequest({ pageUrl: "https://video.example/w", title: "", items: [{ url: server.url("/nope.m3u8"), kind: "hls" }, { url: server.url("/media/clip.mp4"), kind: "file" }] });
+      const id = ui.opened[0].pendingId;
+      expect(await c.probeStream(id, 0)).toMatchObject({ ok: false, error: expect.stringContaining("404") });
+      expect(await c.probeStream(id, 1)).toEqual({ ok: false, error: "This item is not a stream." });
+      expect(await c.probeStream("gone", 0)).toEqual({ ok: false, error: "This request no longer exists." });
+    });
   });
 });

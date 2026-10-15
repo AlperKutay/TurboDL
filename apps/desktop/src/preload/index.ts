@@ -27,6 +27,7 @@ const api: TurboApi = {
   confirmDownload: (id, decision) => invoke("confirmDownload", id, decision),
   cancelPending: (id) => invoke("cancelPending", id),
   probeMediaFormats: (id) => invoke("probeMediaFormats", id),
+  probeStream: (id, index) => invoke("probeStream", id, index),
   confirmMedia: (id, choice, decision) => invoke("confirmMedia", id, choice, decision),
   cancelCountdown: () => invoke("cancelCountdown"),
   installExtension: () => invoke("installExtension"),

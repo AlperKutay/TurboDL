@@ -3,7 +3,7 @@ import type { FileHandle } from "node:fs/promises";
 import path from "node:path";
 import { uniqueName, type DownloadRecord, type Segment } from "@turbodl/shared";
 import type { TaskHandle } from "../task";
-import { HttpError, NetworkError, abortError, isAbortError, request } from "./http";
+import { HttpError, NetworkError, delay, isAbortError, request } from "./http";
 import { probe } from "./probe";
 import { RangeNotSupportedError, SegmentWorker, writeFully } from "./segment-worker";
 import { insertSegment, isSegmentDone, planSegments, segmentsValid, splitLargest, totalReceived } from "./segments";
@@ -16,6 +16,8 @@ export interface HttpTaskOptions {
   idleTimeoutMs?: number;
   maxRetries?: number;
   retryBaseMs?: number;
+  /** most bytes per request, see SegmentWorker */
+  chunkSize?: number;
 }
 
 const FATAL_FS_CODES = new Set(["ENOSPC", "EACCES", "EPERM", "EROFS", "ENOTDIR", "EEXIST", "EISDIR", "EBADF"]);
@@ -26,6 +28,14 @@ function isFatal(err: unknown): boolean {
   const code = (err as NodeJS.ErrnoException)?.code;
   return typeof code === "string" && FATAL_FS_CODES.has(code);
 }
+
+/** What a server answers when it allows fewer connections per client than we opened. */
+function isLimitError(err: unknown): boolean {
+  if (err instanceof RangeNotSupportedError) return true;
+  return err instanceof HttpError && (err.status === 403 || err.status === 429 || err.status === 503);
+}
+
+const NOTE_MS = 5000;
 
 export function describeError(err: unknown): string {
   if (err instanceof HttpError || err instanceof NetworkError || err instanceof RangeNotSupportedError) return err.message;
@@ -45,23 +55,8 @@ export function describeError(err: unknown): string {
   }
 }
 
-function delay(ms: number, signal: AbortSignal): Promise<void> {
-  return new Promise((resolve, reject) => {
-    if (signal.aborted) return reject(abortError());
-    const timer = setTimeout(() => {
-      signal.removeEventListener("abort", onAbort);
-      resolve();
-    }, ms);
-    const onAbort = () => {
-      clearTimeout(timer);
-      reject(abortError());
-    };
-    signal.addEventListener("abort", onAbort, { once: true });
-  });
-}
-
 export class HttpDownloadTask implements TaskHandle {
-  note: string | undefined;
+  private flash: { text: string; until: number } | null = null;
   private controller: AbortController | null = null;
   private readonly meter = new SpeedMeter();
   private readonly workers = new Map<Segment, SegmentWorker>();
@@ -72,6 +67,10 @@ export class HttpDownloadTask implements TaskHandle {
     readonly record: DownloadRecord,
     private readonly opts: HttpTaskOptions,
   ) {}
+
+  get note(): string | undefined {
+    return this.flash && Date.now() < this.flash.until ? this.flash.text : undefined;
+  }
 
   get speed(): number {
     return this.record.status === "downloading" ? this.meter.bytesPerSecond : 0;
@@ -186,6 +185,9 @@ export class HttpDownloadTask implements TaskHandle {
       const backoff = new Map<Segment, NodeJS.Timeout>();
       let failure: unknown = null;
       let settled = false;
+      // lowered when the server refuses extra connections; only for this run
+      let cap = Number.POSITIVE_INFINITY;
+      const limit = () => Math.max(1, Math.min(cap, this.opts.maxConnections()));
 
       const settle = () => {
         if (settled) return;
@@ -219,6 +221,7 @@ export class HttpDownloadTask implements TaskHandle {
           file,
           signal,
           idleTimeoutMs: this.opts.idleTimeoutMs ?? 30000,
+          chunkSize: this.opts.chunkSize,
           onBytes: (n) => {
             this.meter.add(n);
             rec.received += n;
@@ -236,6 +239,13 @@ export class HttpDownloadTask implements TaskHandle {
             this.workers.delete(seg);
             if (signal.aborted) {
               settleWhenIdle();
+              return;
+            }
+            if (isLimitError(err) && this.workers.size > 0) {
+              // the server caps connections per client: carry on with the ones that work
+              cap = this.workers.size;
+              this.flash = { text: `The server allows at most ${cap} connections.`, until: Date.now() + NOTE_MS };
+              fill();
               return;
             }
             const count = (failures.get(seg) ?? 0) + 1;
@@ -263,7 +273,7 @@ export class HttpDownloadTask implements TaskHandle {
           settleWhenIdle();
           return;
         }
-        const max = Math.max(1, this.opts.maxConnections());
+        const max = limit();
         for (const seg of segments) {
           if (this.workers.size >= max) break;
           if (isSegmentDone(seg) || this.workers.has(seg) || backoff.has(seg)) continue;

@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { DownloadRecord, DownloadStatus, DownloadView, NewDownload, Settings } from "@turbodl/shared";
-import { DownloadManager, type StateFile, type StateStore } from "./manager";
+import { DownloadManager, defaultFilesOf, type StateFile, type StateStore } from "./manager";
 import { defaultSettings } from "./settings";
 import type { TaskHandle } from "./task";
 
@@ -212,5 +212,16 @@ describe("DownloadManager", () => {
     expect(manager.list().map((d) => d.status).sort()).toEqual(["paused", "scheduled"]);
     manager.startAll();
     expect(tasks).toHaveLength(3);
+  });
+});
+
+describe("stream downloads in the manager", () => {
+  it("deletes a stream download's track files", () => {
+    const record = {
+      id: "s", kind: "stream", url: "https://v.example/w", filename: "K.mp4", dir: "/d", category: "video", size: null, received: 0,
+      status: "paused", headers: { Cookie: "x" }, resumable: true, segments: [], viaScheduler: false, createdAt: 0,
+      stream: { origin: { type: "ytdlp", pageUrl: "https://v.example/w", formatSelector: "b", cookies: [] }, output: "mp4", tracks: [{ id: "v", role: "video", ext: "mp4", done: false }] },
+    } as DownloadRecord;
+    expect(defaultFilesOf(record).map((f) => f.replace(/\\/g, "/"))).toContain("/d/K.mp4.turbodl-t0.turbodl");
   });
 });

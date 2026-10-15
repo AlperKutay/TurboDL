@@ -22,10 +22,14 @@ export interface FileSpec {
   redirectTo?: string;
   /** send no Content-Length (chunked) */
   omitLength?: boolean;
+  /** serve at most `count` responses at once (the probe "bytes=0-0" is exempt); refuse the rest with `status` (200 = the whole file) */
+  limit?: { count: number; status: number };
 }
 
 export interface RequestLog {
   path: string;
+  /** path with the query string */
+  url: string;
   range?: string;
   headers: http.IncomingHttpHeaders;
 }
@@ -36,17 +40,21 @@ export interface TestServer {
   readonly requests: RequestLog[];
   readonly bytesSent: number;
   readonly maxConcurrent: number;
+  /** TCP connections accepted so far (keep-alive reuse keeps this low) */
+  readonly connections: number;
+  /** responses refused because of `limit` */
+  readonly refused: number;
   close(): Promise<void>;
 }
 
 export async function startTestServer(): Promise<TestServer> {
-  const files = new Map<string, FileSpec & { served: number }>();
-  const state = { requests: [] as RequestLog[], bytesSent: 0, maxConcurrent: 0, active: 0 };
+  const files = new Map<string, FileSpec & { served: number; active: number }>();
+  const state = { requests: [] as RequestLog[], bytesSent: 0, maxConcurrent: 0, active: 0, connections: 0, refused: 0 };
   const sockets = new Set<Socket>();
 
   const server = http.createServer((req, res) => {
     const path = (req.url ?? "/").split("?")[0];
-    state.requests.push({ path, range: req.headers.range, headers: req.headers });
+    state.requests.push({ path, url: req.url ?? "/", range: req.headers.range, headers: req.headers });
     const spec = files.get(path);
     if (!spec) {
       res.writeHead(404);
@@ -61,6 +69,18 @@ export async function startTestServer(): Promise<TestServer> {
     if (spec.status) {
       res.writeHead(spec.status);
       res.end();
+      return;
+    }
+
+    if (spec.limit && spec.active >= spec.limit.count && req.headers.range !== "bytes=0-0") {
+      state.refused++;
+      if (spec.limit.status === 200) {
+        res.writeHead(200, { "Content-Length": String(spec.data.length) });
+        res.end(spec.data);
+      } else {
+        res.writeHead(spec.limit.status);
+        res.end();
+      }
       return;
     }
 
@@ -98,12 +118,14 @@ export async function startTestServer(): Promise<TestServer> {
     const rate = typeof spec.throttle === "function" ? spec.throttle(start) : spec.throttle;
     const chunkSize = rate ? Math.max(16 * 1024, Math.floor(rate / 20)) : 64 * 1024;
     state.active++;
+    spec.active++;
     state.maxConcurrent = Math.max(state.maxConcurrent, state.active);
     let finished = false;
     const finish = () => {
       if (!finished) {
         finished = true;
         state.active--;
+        spec.active--;
       }
     };
     res.on("close", finish);
@@ -122,6 +144,8 @@ export async function startTestServer(): Promise<TestServer> {
         pos += len;
         sent += len;
         state.bytesSent += len;
+        // like a real server, the response stops counting as active once its last byte is written
+        if (pos > end) finish();
         const ok = res.write(chunk);
         if (rate) {
           setTimeout(pump, (len / rate) * 1000);
@@ -138,6 +162,7 @@ export async function startTestServer(): Promise<TestServer> {
   });
 
   server.on("connection", (socket) => {
+    state.connections++;
     sockets.add(socket);
     socket.on("close", () => sockets.delete(socket));
   });
@@ -147,7 +172,7 @@ export async function startTestServer(): Promise<TestServer> {
   return {
     url: (path: string) => `http://127.0.0.1:${port}${path}`,
     setFile: (path: string, spec: FileSpec) => {
-      files.set(path, { ...spec, served: 0 });
+      files.set(path, { ...spec, served: 0, active: 0 });
     },
     get requests() {
       return state.requests;
@@ -157,6 +182,12 @@ export async function startTestServer(): Promise<TestServer> {
     },
     get maxConcurrent() {
       return state.maxConcurrent;
+    },
+    get connections() {
+      return state.connections;
+    },
+    get refused() {
+      return state.refused;
     },
     close: () =>
       new Promise<void>((resolve) => {

@@ -57,8 +57,15 @@ export function buildDownloadArgs(i: YtdlpArgsInput): string[] {
   return args;
 }
 
-export function buildInfoArgs(url: string, denoPath: string | null, headers: Record<string, string>, cookieFile?: string | null): string[] {
+export function buildInfoArgs(
+  url: string,
+  denoPath: string | null,
+  headers: Record<string, string>,
+  cookieFile?: string | null,
+  formatSelector?: string,
+): string[] {
   const args = ["-J", "--no-playlist", "--no-warnings"];
+  if (formatSelector) args.push("-f", formatSelector);
   if (denoPath) args.push("--js-runtimes", `deno:${denoPath}`);
   args.push(...cookieArgs(cookieFile), ...headerArgs(headers), "--", url);
   return args;

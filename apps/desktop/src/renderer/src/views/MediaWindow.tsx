@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { describeMedia, formatBytes, type MediaChoice, type MediaFormatOption, type PendingMedia } from "@turbodl/shared";
+import { describeMedia, formatBytes, type MediaChoice, type MediaFormatOption, type MediaItem, type PendingMedia } from "@turbodl/shared";
 import { api } from "../api";
 import { Icon } from "../components/Icon";
 import "./dialogs.css";
@@ -20,11 +20,14 @@ function shortUrl(url: string): string {
   }
 }
 
+const isStream = (m: MediaItem | undefined) => m?.kind === "hls" || m?.kind === "dash";
+
 export function MediaWindow({ pendingId }: { pendingId: string }) {
   const [pending, setPending] = useState<PendingMedia | null | undefined>(undefined);
   const [dir, setDir] = useState("");
   const [choice, setChoice] = useState<MediaChoice | null>(null);
   const [formats, setFormats] = useState<FormatsState>({ state: "idle" });
+  const [streams, setStreams] = useState<Record<number, FormatsState>>({});
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -39,6 +42,24 @@ export function MediaWindow({ pendingId }: { pendingId: string }) {
     }
   };
 
+  const loadStream = async (index: number) => {
+    setStreams((s) => ({ ...s, [index]: { state: "loading" } }));
+    const result = await api.probeStream(pendingId, index);
+    if (result.ok) {
+      setStreams((s) => ({ ...s, [index]: { state: "done", title: result.title, options: result.options, usedLogin: false } }));
+      // pre-select the best quality, unless the user already moved on
+      setChoice((current) => (current?.kind === "item" && current.index === index && !current.option ? { kind: "item", index, option: result.options[0] } : current));
+    } else {
+      setStreams((s) => ({ ...s, [index]: { state: "error", error: result.error } }));
+    }
+  };
+
+  const pickItem = (index: number) => {
+    const stream = streams[index];
+    setChoice({ kind: "item", index, option: stream?.state === "done" ? stream.options[0] : undefined });
+    if (pending && isStream(pending.items[index]) && !stream) void loadStream(index);
+  };
+
   useEffect(() => {
     document.title = "Download video";
     void api.getPending(pendingId).then((p) => {
@@ -48,7 +69,10 @@ export function MediaWindow({ pendingId }: { pendingId: string }) {
       }
       setPending(p);
       setDir(p.defaultDir);
-      if (p.items.length > 0) setChoice({ kind: "item", index: 0 });
+      if (p.items.length > 0) {
+        setChoice({ kind: "item", index: 0 });
+        if (isStream(p.items[0])) void loadStream(0);
+      }
       else void loadFormats();
     });
     const onKey = (e: KeyboardEvent) => {
@@ -110,13 +134,38 @@ export function MediaWindow({ pendingId }: { pendingId: string }) {
             {pending.items.map((m, i) => (
               <li key={m.url}>
                 <label className="choice">
-                  <input type="radio" name="choice" checked={choice?.kind === "item" && choice.index === i} onChange={() => setChoice({ kind: "item", index: i })} />
+                  <input type="radio" name="choice" checked={choice?.kind === "item" && choice.index === i} onChange={() => pickItem(i)} />
                   <span className="choice-main">{describeMedia(m)}</span>
                   <span className="choice-meta">{m.size ? formatBytes(m.size) : ""}</span>
                   <span className="choice-url" title={m.url}>
                     {shortUrl(m.url)}
                   </span>
                 </label>
+                {isStream(m) && choice?.kind === "item" && choice.index === i && (
+                  <div className="nested">
+                    {streams[i]?.state === "loading" && <p className="muted spinner">Reading qualities…</p>}
+                    {streams[i]?.state === "error" && (
+                      <p className="muted">{(streams[i] as { error: string }).error} If this item stays selected, it is downloaded with yt-dlp.</p>
+                    )}
+                    {streams[i]?.state === "done" && (
+                      <ul className="choices compact">
+                        {(streams[i] as { options: MediaFormatOption[] }).options.map((o) => (
+                          <li key={o.id}>
+                            <label className="choice">
+                              <input
+                                type="radio"
+                                name={`quality-${i}`}
+                                checked={choice.option?.id === o.id}
+                                onChange={() => setChoice({ kind: "item", index: i, option: o })}
+                              />
+                              <span className="choice-main">{o.label}</span>
+                            </label>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+                )}
               </li>
             ))}
           </ul>
@@ -124,7 +173,7 @@ export function MediaWindow({ pendingId }: { pendingId: string }) {
       )}
 
       <section>
-        <h2>Choose quality (yt-dlp)</h2>
+        <h2>Choose quality</h2>
         {formats.state === "idle" && (
           <button type="button" className="btn" onClick={() => void loadFormats()}>
             Get qualities

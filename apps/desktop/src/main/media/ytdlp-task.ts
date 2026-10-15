@@ -3,6 +3,7 @@ import { promises as fsp } from "node:fs";
 import path from "node:path";
 import { createInterface } from "node:readline";
 import type { DownloadRecord } from "@turbodl/shared";
+import { abortError } from "../engine/http";
 import type { TaskHandle } from "../task";
 import { withCookieFile } from "./cookies";
 import type { ToolPaths } from "./tools";
@@ -171,6 +172,9 @@ export class YtdlpTask implements TaskHandle {
 export interface MediaInfoOptions {
   command?: YtdlpCommand;
   cookieFile?: string | null;
+  /** -f: makes yt-dlp report `requested_formats` with their addresses */
+  formatSelector?: string;
+  signal?: AbortSignal;
 }
 
 export function fetchMediaInfo(paths: ToolPaths, url: string, headers: Record<string, string>, opts: MediaInfoOptions = {}): Promise<unknown> {
@@ -178,10 +182,14 @@ export function fetchMediaInfo(paths: ToolPaths, url: string, headers: Record<st
   return new Promise((resolve, reject) => {
     execFile(
       cmd.file,
-      [...cmd.args, ...buildInfoArgs(url, paths.deno, headers, opts.cookieFile)],
-      { windowsHide: true, maxBuffer: 64 * 1024 * 1024, timeout: 180000, env: { ...process.env, ...YTDLP_ENV }, encoding: "utf8" },
+      [...cmd.args, ...buildInfoArgs(url, paths.deno, headers, opts.cookieFile, opts.formatSelector)],
+      { windowsHide: true, maxBuffer: 64 * 1024 * 1024, timeout: 180000, env: { ...process.env, ...YTDLP_ENV }, encoding: "utf8", signal: opts.signal },
       (err, stdout, stderr) => {
         if (err) {
+          if (opts.signal?.aborted) {
+            reject(abortError());
+            return;
+          }
           reject(new Error(lastErrorLine(String(stderr))));
           return;
         }

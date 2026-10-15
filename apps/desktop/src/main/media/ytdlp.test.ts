@@ -144,3 +144,10 @@ describe("login errors", () => {
     expect(tried).toContain("(yt-dlp: Sign in to confirm your age)");
   });
 });
+
+describe("buildInfoArgs with a format selector", () => {
+  it("asks yt-dlp for the chosen formats when a selector is given", () => {
+    expect(buildInfoArgs("https://v.example/w", null, {}, null, "bv*+ba/b").slice(0, 5)).toEqual(["-J", "--no-playlist", "--no-warnings", "-f", "bv*+ba/b"]);
+    expect(buildInfoArgs("https://v.example/w", null, {})).not.toContain("-f");
+  });
+});

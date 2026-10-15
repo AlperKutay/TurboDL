@@ -30,6 +30,17 @@ if (mode === "login") {
     process.exit(1);
   }
 }
+// pages on the local test server describe themselves: GET <page>.info.json (the -f selector goes in the query)
+if (args.includes("-J") && new URL(url).hostname === "127.0.0.1") {
+  const selector = args.includes("-f") ? args[args.indexOf("-f") + 1] : "";
+  const res = await fetch(`${url}.info.json?f=${encodeURIComponent(selector)}`);
+  if (!res.ok) {
+    console.error(`ERROR: [generic] info ${res.status}`);
+    process.exit(1);
+  }
+  console.log(await res.text());
+  process.exit(0);
+}
 if (args.includes("-J")) {
   console.log(JSON.stringify({ title: "Info", formats: [{ height: 720, vcodec: "avc1" }] }));
   process.exit(0);

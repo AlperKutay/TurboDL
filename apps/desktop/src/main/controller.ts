@@ -27,12 +27,15 @@ import {
   type PendingItem,
   type Result,
   type Settings,
+  type StreamOrigin,
 } from "@turbodl/shared";
 import { createBridgeServer, type BridgeServer } from "./bridge-server";
 import { HttpDownloadTask } from "./engine/download-task";
 import { probe } from "./engine/probe";
 import { DownloadManager, type StateFile } from "./manager";
 import { cookiesFromHeader, withCookieFile } from "./media/cookies";
+import { createResolver, streamOptions, type Resolved } from "./media/resolve";
+import { StreamTask } from "./media/stream-task";
 import { ToolManager, type ToolPaths } from "./media/tools";
 import { DEFAULT_FORMAT, formatOptionsFromInfo, loginHint, needsLogin } from "./media/ytdlp";
 import { YtdlpTask, fetchMediaInfo, type YtdlpCommand } from "./media/ytdlp-task";
@@ -100,6 +103,7 @@ export class AppController {
   private readonly defaults: Settings;
   private readonly settingsStore: JsonStore<Settings>;
   private readonly scheduler: Scheduler;
+  private readonly resolver: (record: DownloadRecord, signal: AbortSignal) => Promise<Resolved>;
   private readonly pending = new Map<string, PendingItem>();
   private bridge: BridgeServer | null = null;
   private bridgeStatus: BridgeStatus = { ok: false, port: 0 };
@@ -111,17 +115,22 @@ export class AppController {
     this.settingsStore = new JsonStore<Settings>(path.join(o.userDataDir, "settings.json"));
     this.settings = normalizeSettings(this.settingsStore.load(() => this.defaults), this.defaults);
     this.tools = o.mediaTools ?? new ToolManager({ dir: path.join(o.userDataDir, "tools"), ffmpegPath: o.ffmpegPath });
+    this.resolver = createResolver({ tools: () => this.tools.ensure(), command: o.ytdlpCommand });
     this.manager = new DownloadManager({
       store: new JsonStore<StateFile>(path.join(o.userDataDir, "state.json")),
       settings: () => this.settings,
-      createTask: (record) =>
-        record.kind === "ytdlp"
-          ? new YtdlpTask(record, {
-              tools: (onStatus) => this.tools.ensure(onStatus),
-              connections: () => this.settings.maxConnections,
-              command: o.ytdlpCommand,
-            })
-          : new HttpDownloadTask(record, { maxConnections: () => this.settings.maxConnections }),
+      createTask: (record) => {
+        if (record.kind === "ytdlp") return this.ytdlpTask(record);
+        if (record.kind === "stream") {
+          return new StreamTask(record, {
+            connections: () => this.settings.maxConnections,
+            ffmpegPath: o.ffmpegPath,
+            resolve: this.resolver,
+            fallback: (shadow) => this.ytdlpTask(shadow),
+          });
+        }
+        return new HttpDownloadTask(record, { maxConnections: () => this.settings.maxConnections });
+      },
     });
     this.scheduler = new Scheduler({
       target: this.manager,
@@ -297,6 +306,20 @@ export class AppController {
     return { ok: true, title, options, usedLogin: p.useLogin };
   }
 
+  /** Qualities of a captured HLS/DASH item, read by TurboDL itself (no yt-dlp). */
+  async probeStream(pendingId: string, index: number): Promise<FormatsResult> {
+    const p = this.pending.get(pendingId);
+    if (!p || p.type !== "media") return { ok: false, error: "This request no longer exists." };
+    const media = p.items[index];
+    if (!media || media.kind === "file") return { ok: false, error: "This item is not a stream." };
+    try {
+      const options = await streamOptions(media.kind, media.url, this.itemHeaders(p.headers, media.cookies));
+      return { ok: true, title: p.title || "video", options, usedLogin: false };
+    } catch (err) {
+      return { ok: false, error: message(err) };
+    }
+  }
+
   async confirmMedia(pendingId: string, choice: MediaChoice, decision: MediaDecision): Promise<Result> {
     const p = this.pending.get(pendingId);
     if (!p || p.type !== "media") return { ok: false, error: "This request no longer exists." };
@@ -306,22 +329,25 @@ export class AppController {
     if (choice.kind === "format") {
       const audio = choice.option.audioOnly;
       item = {
-        kind: "ytdlp",
+        kind: "stream",
         url: p.pageUrl,
         pageUrl: p.pageUrl,
         filename: `${base}.${audio ? "mp3" : "mp4"}`,
         dir,
         category: audio ? "music" : "video",
         size: null,
-        resumable: false,
+        resumable: true,
         headers: withoutCookie(p.headers),
-        ytdlp: { formatSelector: choice.option.formatSelector, audioOnly: audio, ...(p.useLogin ? { cookies: p.cookieJar } : {}) },
+        stream: {
+          origin: { type: "ytdlp", pageUrl: p.pageUrl, formatSelector: choice.option.formatSelector, ...(p.useLogin ? { cookies: p.cookieJar } : {}) },
+          output: audio ? "mp3" : "mp4",
+          tracks: [],
+        },
       };
     } else {
       const media = p.items[choice.index];
       if (!media) return { ok: false, error: "The selected media was not found." };
-      const headers = withoutCookie(p.headers);
-      if (media.cookies) headers.Cookie = media.cookies;
+      const headers = this.itemHeaders(p.headers, media.cookies);
       if (media.kind === "file") {
         let info;
         try {
@@ -341,6 +367,24 @@ export class AppController {
           size: info.size,
           resumable: info.resumable,
           headers,
+        };
+      } else if (choice.option) {
+        const audio = choice.option.audioOnly;
+        const origin: StreamOrigin =
+          media.kind === "hls"
+            ? { type: "hls", url: media.url, variant: choice.option.id === "media" ? null : choice.option.formatSelector }
+            : { type: "dash", url: media.url, video: audio ? null : choice.option.formatSelector, audio: null };
+        item = {
+          kind: "stream",
+          url: media.url,
+          pageUrl: p.pageUrl,
+          filename: `${base}.${audio ? "mp3" : "mp4"}`,
+          dir,
+          category: audio ? "music" : "video",
+          size: null,
+          resumable: true,
+          headers,
+          stream: { origin, output: audio ? "mp3" : "mp4", tracks: [] },
         };
       } else {
         const cookies = cookiesFromHeader(media.cookies, media.url);
@@ -416,6 +460,21 @@ export class AppController {
     this.settingsStore.flush();
     await this.bridge?.close();
     this.bridge = null;
+  }
+
+  private ytdlpTask(record: DownloadRecord): YtdlpTask {
+    return new YtdlpTask(record, {
+      tools: (onStatus) => this.tools.ensure(onStatus),
+      connections: () => this.settings.maxConnections,
+      command: this.o.ytdlpCommand,
+    });
+  }
+
+  /** A captured item's headers: the page's referrer and agent, and the cookies sent with that item. */
+  private itemHeaders(pageHeaders: Record<string, string>, cookies?: string): Record<string, string> {
+    const headers = withoutCookie(pageHeaders);
+    if (cookies) headers.Cookie = cookies;
+    return headers;
   }
 
   private categoryDir(category: Category): string {

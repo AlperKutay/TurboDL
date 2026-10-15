@@ -49,3 +49,18 @@ export async function launchApp(settings: Record<string, unknown> = {}): Promise
   });
   return { app, userData, baseDir, port };
 }
+
+export function httpPostJson(port: number, urlPath: string, body: unknown, origin = EXTENSION_ORIGIN_FOR_TESTS): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const data = Buffer.from(JSON.stringify(body));
+    const req = http.request(
+      { host: "127.0.0.1", port, path: urlPath, method: "POST", headers: { Origin: origin, "Content-Type": "application/json", "Content-Length": String(data.length) } },
+      (res) => {
+        res.resume();
+        resolve(res.statusCode ?? 0);
+      },
+    );
+    req.on("error", reject);
+    req.end(data);
+  });
+}

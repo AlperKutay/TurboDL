@@ -197,4 +197,69 @@ describe("HttpDownloadTask", () => {
     expect(rec.status).toBe("error");
     expect(rec.error).toBeTruthy();
   });
+
+  it("asks for at most chunkSize bytes per request and reuses the connection", async () => {
+    const data = randomBytes(2 * MB);
+    server.setFile("/chunks.bin", { data });
+    const rec = record("/chunks.bin", "chunks.bin");
+    await new HttpDownloadTask(rec, { ...options(1), chunkSize: 256 * 1024 }).start();
+    expect(rec.status).toBe("completed");
+    expect(sha(readFileSync(path.join(dir, "chunks.bin")))).toBe(sha(data));
+    const ranges = server.requests.filter((r) => r.range && r.range !== "bytes=0-0").map((r) => /bytes=(\d+)-(\d+)/.exec(r.range!)!);
+    expect(ranges.length).toBe(8);
+    for (const m of ranges) expect(Number(m[2]) - Number(m[1]) + 1).toBeLessThanOrEqual(256 * 1024);
+    // the probe's socket is closed; every chunk after that rides one kept-alive socket
+    expect(server.connections).toBeLessThanOrEqual(2);
+  });
+
+  it("keeps chunking while a slow segment is split", async () => {
+    const data = randomBytes(6 * MB);
+    server.setFile("/chunk-split.bin", { data, throttle: (start) => (start === 0 ? 64 * MB : 2 * MB) });
+    const rec = record("/chunk-split.bin", "chunk-split.bin");
+    await new HttpDownloadTask(rec, { ...options(2), chunkSize: 1 * MB }).start();
+    expect(rec.status).toBe("completed");
+    expect(sha(readFileSync(path.join(dir, "chunk-split.bin")))).toBe(sha(data));
+    for (const r of server.requests.filter((x) => x.range && x.range !== "bytes=0-0")) {
+      const m = /bytes=(\d+)-(\d+)/.exec(r.range!)!;
+      expect(Number(m[2]) - Number(m[1]) + 1).toBeLessThanOrEqual(1 * MB);
+    }
+  });
+
+  for (const status of [403, 503, 200]) {
+    it(`carries on with fewer connections when the server refuses extra ones with ${status}`, async () => {
+      const data = randomBytes(16 * MB);
+      server.setFile("/cap.bin", { data, throttle: 4 * MB, limit: { count: 2, status } });
+      const rec = record("/cap.bin", "cap.bin");
+      await new HttpDownloadTask(rec, { ...options(8), retryBaseMs: 200 }).start();
+      expect(rec.status).toBe("completed");
+      expect(rec.resumable).toBe(true);
+      expect(sha(readFileSync(path.join(dir, "cap.bin")))).toBe(sha(data));
+      expect(server.maxConcurrent).toBeLessThanOrEqual(2);
+      // refused at the start (6 of 8), not retried into the cap again and again
+      expect(server.refused).toBeLessThanOrEqual(8);
+    });
+  }
+
+  it("still fails with the server's error when every connection is refused", async () => {
+    server.setFile("/closed.bin", { data: randomBytes(4 * MB), limit: { count: 0, status: 403 } });
+    const rec = record("/closed.bin", "closed.bin");
+    await new HttpDownloadTask(rec, options(4)).start();
+    expect(rec.status).toBe("error");
+    expect(rec.error).toContain("403");
+  });
+
+  it("says how many connections the server allows, for a few seconds", async () => {
+    server.setFile("/note.bin", { data: randomBytes(4 * MB), throttle: 2 * MB, limit: { count: 2, status: 403 } });
+    const rec = record("/note.bin", "note.bin");
+    const task = new HttpDownloadTask(rec, options(4));
+    const running = task.start();
+    let seen: string | undefined;
+    for (let i = 0; i < 40 && !seen; i++) {
+      await wait(25);
+      seen = task.note;
+    }
+    task.pause();
+    await running;
+    expect(seen).toBe("The server allows at most 2 connections.");
+  });
 });
