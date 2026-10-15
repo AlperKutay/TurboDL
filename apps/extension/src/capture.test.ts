@@ -15,6 +15,8 @@ interface FakeItem {
   state: "in_progress" | "complete" | "interrupted";
   referrer: string;
   byExtensionId?: string;
+  error?: string;
+  canResume?: boolean;
 }
 
 interface Posted {
@@ -32,6 +34,8 @@ let appAccepts: boolean;
 let appRunning: boolean;
 let nativeReply: () => unknown;
 let nativeHost: string | null;
+/** behave like Firefox: runtime.getBrowserInfo exists, and pause() would cancel the download */
+let firefox: boolean;
 
 function item(patch: Partial<FakeItem> = {}): FakeItem {
   return {
@@ -61,10 +65,14 @@ beforeEach(() => {
     throw new Error("Specified native messaging host not found.");
   };
   nativeHost = null;
+  firefox = false;
   vi.resetModules();
   vi.stubGlobal("chrome", {
     runtime: {
       id: "self-extension-id",
+      get getBrowserInfo() {
+        return firefox ? async () => ({ name: "Firefox" }) : undefined;
+      },
       sendNativeMessage: async (name: string) => {
         nativeHost = name;
         calls.push("launch");
@@ -255,6 +263,52 @@ describe("download capture", () => {
     create(item());
     await vi.waitFor(() => expect(calls).toContain("erase:1"));
     expect(storage.lastConfig).toEqual({ captureEnabled: true, captureExtensions: ["zip", "mkv"], minCaptureSize: 0 });
+  });
+
+  it("in Firefox, hands a download over without pausing it, since Firefox's pause cancels the download", async () => {
+    firefox = true;
+    await start();
+    create(item());
+    await vi.waitFor(() => expect(calls).toEqual(["cancel:1", "erase:1"]));
+    expect(downloadPosts()).toHaveLength(1);
+  });
+
+  it("in Firefox, leaves the download running in the browser when TurboDL declines it", async () => {
+    firefox = true;
+    appAccepts = false;
+    await start();
+    create(item());
+    await vi.waitFor(() => expect(downloadPosts()).toHaveLength(1));
+    await settle();
+    expect(calls).toEqual([]);
+  });
+
+  it("in Firefox, leaves the download running in the browser when TurboDL cannot be started", async () => {
+    firefox = true;
+    appRunning = false;
+    storage.lastConfig = remembered;
+    await start();
+    create(item());
+    await vi.waitFor(() => expect(calls).toEqual(["launch"]));
+    await settle();
+    expect(calls).toEqual(["launch"]);
+  });
+
+  it("in Firefox, keeps a download the browser finished while TurboDL was starting", async () => {
+    firefox = true;
+    appRunning = false;
+    storage.lastConfig = remembered;
+    nativeReply = () => {
+      items.set(1, { ...items.get(1)!, state: "complete" });
+      appRunning = true;
+      return { ok: true };
+    };
+    await start();
+    create(item());
+    await vi.waitFor(() => expect(calls).toEqual(["launch"]), { timeout: 4000 });
+    await settle();
+    expect(downloadPosts()).toHaveLength(0);
+    expect(calls).toEqual(["launch"]);
   });
 
   it("never captures its own downloads", async () => {

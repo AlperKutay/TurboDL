@@ -55,19 +55,34 @@ async function evaluate(item: chrome.downloads.DownloadItem, filenameKnown: bool
   await capture(item, candidate);
 }
 
+/** Firefox (the only browser with runtime.getBrowserInfo) cancels a download on pause() instead of holding it. */
+function pauseCancels(): boolean {
+  return typeof (chrome.runtime as { getBrowserInfo?: unknown }).getBrowserInfo === "function";
+}
+
 async function capture(item: chrome.downloads.DownloadItem, candidate: CaptureCandidate): Promise<void> {
-  try {
-    await chrome.downloads.pause(item.id);
-  } catch {
-    // already finished or not pausable yet
+  // Chrome holds the download paused while TurboDL takes over; Firefox keeps downloading instead,
+  // because its pause would cancel the download and resuming needs a range request the server may refuse
+  const hold = !pauseCancels();
+  if (hold) {
+    try {
+      await chrome.downloads.pause(item.id);
+    } catch {
+      // already finished or not pausable yet
+    }
   }
   const [current] = await chrome.downloads.search({ id: item.id });
   if (!current || current.state !== "in_progress") return;
-  // TurboDL may be closed: start it through the native host while Chrome's download waits paused
-  if (!(await ensureApp())) {
-    await chrome.downloads.resume(item.id).catch(() => undefined);
+  const giveBack = async () => {
+    if (hold) await chrome.downloads.resume(item.id).catch(() => undefined);
     flashBadge();
-    return;
+  };
+  // TurboDL may be closed: start it through the native host while the browser's download waits
+  if (!(await ensureApp())) return giveBack();
+  if (!hold) {
+    // the browser kept downloading meanwhile: a download it already finished stays with the browser
+    const [now] = await chrome.downloads.search({ id: item.id });
+    if (!now || now.state !== "in_progress") return;
   }
 
   const result = await sendDownload({
@@ -84,8 +99,7 @@ async function capture(item: chrome.downloads.DownloadItem, candidate: CaptureCa
     await chrome.downloads.cancel(item.id).catch(() => undefined);
     await chrome.downloads.erase({ id: item.id }).catch(() => undefined);
   } else {
-    await chrome.downloads.resume(item.id).catch(() => undefined);
-    flashBadge();
+    await giveBack();
   }
 }
 
