@@ -3,7 +3,7 @@ import type { FileHandle } from "node:fs/promises";
 import path from "node:path";
 import { uniqueName, type DownloadRecord, type Segment } from "@turbodl/shared";
 import type { TaskHandle } from "../task";
-import { HttpError, NetworkError, abortError, isAbortError, request } from "./http";
+import { HttpError, NetworkError, delay, isAbortError, request } from "./http";
 import { probe } from "./probe";
 import { RangeNotSupportedError, SegmentWorker, writeFully } from "./segment-worker";
 import { insertSegment, isSegmentDone, planSegments, segmentsValid, splitLargest, totalReceived } from "./segments";
@@ -53,21 +53,6 @@ export function describeError(err: unknown): string {
     default:
       return e?.message ? String(e.message) : "Unknown error.";
   }
-}
-
-function delay(ms: number, signal: AbortSignal): Promise<void> {
-  return new Promise((resolve, reject) => {
-    if (signal.aborted) return reject(abortError());
-    const timer = setTimeout(() => {
-      signal.removeEventListener("abort", onAbort);
-      resolve();
-    }, ms);
-    const onAbort = () => {
-      clearTimeout(timer);
-      reject(abortError());
-    };
-    signal.addEventListener("abort", onAbort, { once: true });
-  });
 }
 
 export class HttpDownloadTask implements TaskHandle {
