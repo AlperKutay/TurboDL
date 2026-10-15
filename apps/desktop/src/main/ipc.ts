@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs";
 import { BrowserWindow, clipboard, dialog, ipcMain, shell, type OpenDialogOptions } from "electron";
-import type { DownloadDecision, MediaChoice, MediaDecision, Settings } from "@turbodl/shared";
+import { RELEASES_URL, type DownloadDecision, type MediaChoice, type MediaDecision, type Settings } from "@turbodl/shared";
 import type { AppController } from "./controller";
 
 export const EVENT_CHANNEL = "turbodl:event";
@@ -55,6 +55,7 @@ export function registerIpc(c: AppController): void {
     return clipboard.writeText(String(text));
   });
   handle("readClipboardText", () => clipboard.readText());
+  handle("openReleasesPage", () => shell.openExternal(RELEASES_URL));
   ipcMain.handle("turbodl:closeWindow", (event) => {
     BrowserWindow.fromWebContents(event.sender)?.close();
   });

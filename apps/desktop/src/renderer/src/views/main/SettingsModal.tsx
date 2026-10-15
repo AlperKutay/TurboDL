@@ -3,6 +3,13 @@ import type { InstallResult, Settings } from "@turbodl/shared";
 import { api } from "../../api";
 import { Modal } from "../../components/Modal";
 
+/** Chromium browsers load the extension folder from their extensions page. */
+const EXTENSION_PAGES = [
+  { address: "chrome://extensions", browsers: "(Chrome, Brave, Vivaldi, Arc)" },
+  { address: "edge://extensions", browsers: "(Edge)" },
+  { address: "opera://extensions", browsers: "(Opera)" },
+];
+
 export function SettingsModal({ settings, version, onClose }: { settings: Settings; version: string; onClose(): void }) {
   const [draft, setDraft] = useState(settings);
   const [extensions, setExtensions] = useState(settings.captureExtensions.join(" "));
@@ -111,20 +118,31 @@ export function SettingsModal({ settings, version, onClose }: { settings: Settin
         {install?.ok && (
           <ol className="steps">
             <li>
-              Open the extensions page: <code>chrome://extensions</code> in Chrome and Brave, <code>edge://extensions</code> in Edge.{" "}
-              <button type="button" className="link-button" onClick={() => void api.copyText("chrome://extensions")}>
-                Copy the Chrome address
-              </button>{" "}
-              <button type="button" className="link-button" onClick={() => void api.copyText("edge://extensions")}>
-                Copy the Edge address
-              </button>
+              Open your browser&apos;s extensions page:
+              <ul className="pages">
+                {EXTENSION_PAGES.map((page) => (
+                  <li key={page.address}>
+                    <code>{page.address}</code> {page.browsers}{" "}
+                    <button type="button" className="link-button" onClick={() => void api.copyText(page.address)}>
+                      Copy
+                    </button>
+                  </li>
+                ))}
+              </ul>
             </li>
-            <li>Turn on “Developer mode” (in the left menu in Edge).</li>
+            <li>Turn on “Developer mode”.</li>
             <li>Click “Load unpacked” and choose this folder:</li>
             <li className="path">{install.path}</li>
             <li>The extension starts TurboDL by itself even when it is closed, as long as TurboDL has been opened at least once.</li>
           </ol>
         )}
+        <p className="muted">
+          Firefox: install the TurboDL add-on (.xpi) from the{" "}
+          <button type="button" className="link-button" onClick={() => void api.openReleasesPage()}>
+            Releases page
+          </button>
+          .
+        </p>
       </div>
 
       <h3>System</h3>

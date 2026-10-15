@@ -735,3 +735,8 @@ td.col-name {
 .countdown .modal-footer {
   justify-content: center;
 }
+
+.steps .pages {
+  margin: 4px 0 4px 18px;
+  padding: 0;
+}

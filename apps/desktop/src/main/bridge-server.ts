@@ -2,6 +2,7 @@ import http from "node:http";
 import type { AddressInfo } from "node:net";
 import {
   APP_ID,
+  isFirefoxExtensionOrigin,
   type BridgeConfig,
   type BrowserCookie,
   type CaptureSource,
@@ -147,11 +148,15 @@ export function createBridgeServer(h: BridgeHandlers): BridgeServer {
   let port = 0;
 
   const server = http.createServer((req, res) => {
+    const origin = req.headers.origin;
+    // the pinned Chromium extension, or the Firefox build (whose origin id is random per profile)
+    const allowed = origin === h.allowedOrigin || isFirefoxExtensionOrigin(origin);
+    const corsOrigin = allowed && origin ? origin : h.allowedOrigin;
     const send = (status: number, body: unknown) => {
       if (res.headersSent) return;
       res.writeHead(status, {
         "Content-Type": "application/json; charset=utf-8",
-        "Access-Control-Allow-Origin": h.allowedOrigin,
+        "Access-Control-Allow-Origin": corsOrigin,
         Vary: "Origin",
       });
       res.end(JSON.stringify(body));
@@ -160,10 +165,10 @@ export function createBridgeServer(h: BridgeHandlers): BridgeServer {
     const handle = async () => {
       const host = req.headers.host ?? "";
       if (host !== `127.0.0.1:${port}` && host !== `localhost:${port}`) return send(403, { error: "host" });
-      if (req.headers.origin !== h.allowedOrigin) return send(403, { error: "origin" });
+      if (!allowed) return send(403, { error: "origin" });
       if (req.method === "OPTIONS") {
         res.writeHead(204, {
-          "Access-Control-Allow-Origin": h.allowedOrigin,
+          "Access-Control-Allow-Origin": corsOrigin,
           "Access-Control-Allow-Methods": "GET, POST",
           "Access-Control-Allow-Headers": "Content-Type",
           "Access-Control-Max-Age": "600",

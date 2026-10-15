@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
@@ -9,10 +9,27 @@ import { startSiteServer } from "../../extension/e2e/servers";
 import { registerNativeHost } from "../src/main/native-host";
 import { freePort, httpGet } from "./helpers";
 
-// Each browser reads its own registry key; the test backs it up and puts it back.
+/** Newest installed Opera (its launcher starts a versioned opera.exe that Playwright needs directly). */
+function operaExe(): string | null {
+  const base = path.join(process.env.LOCALAPPDATA ?? "", "Programs", "Opera");
+  if (!existsSync(base)) return null;
+  const versions = readdirSync(base).filter((d) => /^\d+(\.\d+)+$/.test(d) && existsSync(path.join(base, d, "opera.exe")));
+  const newer = (a: string, b: string) => {
+    const [x, y] = [a.split(".").map(Number), b.split(".").map(Number)];
+    for (let i = 0; i < Math.max(x.length, y.length); i++) if ((x[i] ?? 0) !== (y[i] ?? 0)) return (x[i] ?? 0) - (y[i] ?? 0);
+    return 0;
+  };
+  const latest = versions.sort(newer).pop();
+  return latest ? path.join(base, latest, "opera.exe") : null;
+}
+
+const CHROME_KEY = "HKCU\\Software\\Google\\Chrome\\NativeMessagingHosts\\com.turbodl.host";
+
+// Each browser reads a registry key (Opera reads Chrome's); the test backs it up and puts it back.
 const BROWSERS = [
-  { name: "Chromium", channel: "chromium", key: "HKCU\\Software\\Chromium\\NativeMessagingHosts\\com.turbodl.host" },
-  { name: "Edge", channel: "msedge", key: "HKCU\\Software\\Microsoft\\Edge\\NativeMessagingHosts\\com.turbodl.host" },
+  { name: "Chromium", channel: "chromium", register: "Chromium", key: "HKCU\\Software\\Chromium\\NativeMessagingHosts\\com.turbodl.host" },
+  { name: "Edge", channel: "msedge", register: "Edge", key: "HKCU\\Software\\Microsoft\\Edge\\NativeMessagingHosts\\com.turbodl.host" },
+  { name: "Opera", executablePath: operaExe(), register: "Chrome", key: CHROME_KEY },
 ];
 
 function readKey(key: string): string | null {
@@ -42,6 +59,7 @@ test.skip(process.platform !== "win32", "registry-based native messaging is exer
 
 for (const browser of BROWSERS) {
   test(`${browser.name}: with TurboDL closed, the video button starts it through the native host and hands the video over`, async () => {
+    test.skip(browser.executablePath === null, `${browser.name} is not installed`);
     const userData = mkdtempSync(path.join(os.tmpdir(), "turbodl-nm-"));
     const port = await freePort();
     mkdirSync(path.join(userData, "downloads"), { recursive: true });
@@ -56,11 +74,11 @@ for (const browser of BROWSERS) {
       execPath: electronExe,
       hostScript: path.join(appDir, "resources", "native-host", "host.cjs"),
       launchArgs: [appDir],
-      only: [browser.name],
+      only: [browser.register],
     });
     const site = await startSiteServer();
     const context = await chromium.launchPersistentContext("", {
-      channel: browser.channel,
+      ...(browser.channel ? { channel: browser.channel } : { executablePath: browser.executablePath! }),
       env: { ...process.env, TURBODL_USER_DATA: userData },
       args: [`--disable-extensions-except=${EXTENSION_DIR}`, `--load-extension=${EXTENSION_DIR}`],
     });

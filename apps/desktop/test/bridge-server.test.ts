@@ -40,7 +40,7 @@ interface CallOptions {
   contentType?: string;
 }
 
-function call(path: string, o: CallOptions = {}): Promise<{ status: number; json: any }> {
+function call(path: string, o: CallOptions = {}): Promise<{ status: number; json: any; headers: http.IncomingHttpHeaders }> {
   return new Promise((resolve, reject) => {
     const headers: Record<string, string> = { Host: o.host ?? `127.0.0.1:${port}` };
     if (o.origin !== null) headers.Origin = o.origin ?? ORIGIN;
@@ -48,7 +48,12 @@ function call(path: string, o: CallOptions = {}): Promise<{ status: number; json
     const req = http.request({ host: "127.0.0.1", port, path, method: o.method ?? "GET", headers }, (res) => {
       let text = "";
       res.on("data", (c) => (text += c));
-      res.on("end", () => resolve({ status: res.statusCode ?? 0, json: text ? JSON.parse(text) : null }));
+      res.on("end", () => {
+        const result = { status: res.statusCode ?? 0, json: text ? JSON.parse(text) : null };
+        // not enumerable: existing toEqual checks compare status and json only
+        Object.defineProperty(result, "headers", { value: res.headers, enumerable: false });
+        resolve(result as { status: number; json: any; headers: http.IncomingHttpHeaders });
+      });
     });
     req.on("error", reject);
     if (o.body !== undefined) req.write(o.body);
@@ -65,6 +70,13 @@ describe("bridge server", () => {
   it("answers ping and config over POST, because Chrome omits Origin on extension GETs", async () => {
     expect(await call("/v1/ping", { method: "POST", body: "{}" })).toEqual({ status: 200, json: { app: "turbodl", version: "1.2.3" } });
     expect((await call("/v1/config", { method: "POST", body: "{}" })).json).toEqual({ captureEnabled: true, captureExtensions: ["zip"], minCaptureSize: 0 });
+  });
+
+  it("accepts the Firefox build of the extension, whose origin id is random per profile", async () => {
+    const res = await call("/v1/ping", { method: "POST", origin: "moz-extension://11111111-2222-3333-4444-555555555555" });
+    expect(res.status).toBe(200);
+    expect(res.headers["access-control-allow-origin"]).toBe("moz-extension://11111111-2222-3333-4444-555555555555");
+    expect((await call("/v1/ping", { origin: "moz-extension://not-a-uuid" })).status).toBe(403);
   });
 
   it("rejects other origins and missing origins", async () => {

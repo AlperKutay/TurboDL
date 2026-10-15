@@ -1,32 +1,50 @@
 import { execFile } from "node:child_process";
 import { existsSync, promises as fsp } from "node:fs";
 import path from "node:path";
-import { EXTENSION_ORIGIN, NATIVE_HOST_NAME } from "@turbodl/shared";
+import { EXTENSION_ORIGIN, FIREFOX_EXTENSION_ID, NATIVE_HOST_NAME } from "@turbodl/shared";
 
-/** Chromium browsers whose extension can start the app: Windows registry key and macOS Application Support folder. */
-export const BROWSERS = [
+export interface BrowserTarget {
+  name: string;
+  /** HKCU\Software\<winKey>\NativeMessagingHosts; none: the browser reads Chrome's key (Opera does) */
+  winKey?: string;
+  /** ~/Library/Application Support/<macDir>/NativeMessagingHosts */
+  macDir?: string;
+  /** folder whose presence shows the browser is installed, when it differs from macDir */
+  macProbe?: string;
+  /** Firefox uses its own manifest (allowed_extensions instead of allowed_origins) */
+  firefox?: boolean;
+}
+
+/** Browsers whose extension can start the app: Windows registry key and macOS Application Support folder. */
+export const BROWSERS: readonly BrowserTarget[] = [
   { name: "Chrome", winKey: "Google\\Chrome", macDir: "Google/Chrome" },
   { name: "Edge", winKey: "Microsoft\\Edge", macDir: "Microsoft Edge" },
   { name: "Brave", winKey: "BraveSoftware\\Brave-Browser", macDir: "BraveSoftware/Brave-Browser" },
+  { name: "Vivaldi", winKey: "Vivaldi", macDir: "Vivaldi" },
+  { name: "Opera", macDir: "com.operasoftware.Opera" },
+  { name: "Opera GX", macDir: "com.operasoftware.OperaGX" },
+  { name: "Arc", macDir: "Arc/User Data" },
   { name: "Chromium", winKey: "Chromium", macDir: "Chromium" },
-] as const;
+  { name: "Firefox", winKey: "Mozilla", macDir: "Mozilla", macProbe: "Firefox", firefox: true },
+];
 
 export interface NativeHostManifest {
   name: string;
   description: string;
   path: string;
   type: "stdio";
-  allowed_origins: string[];
+  allowed_origins?: string[];
+  allowed_extensions?: string[];
 }
 
+const DESCRIPTION = "TurboDL: lets the extension start the app";
+
 export function hostManifest(launcherPath: string): NativeHostManifest {
-  return {
-    name: NATIVE_HOST_NAME,
-    description: "TurboDL: lets the extension start the app",
-    path: launcherPath,
-    type: "stdio",
-    allowed_origins: [`${EXTENSION_ORIGIN}/`],
-  };
+  return { name: NATIVE_HOST_NAME, description: DESCRIPTION, path: launcherPath, type: "stdio", allowed_origins: [`${EXTENSION_ORIGIN}/`] };
+}
+
+export function firefoxHostManifest(launcherPath: string): NativeHostManifest {
+  return { name: NATIVE_HOST_NAME, description: DESCRIPTION, path: launcherPath, type: "stdio", allowed_extensions: [FIREFOX_EXTENSION_ID] };
 }
 
 const PROFILE_VARS = ["LOCALAPPDATA", "APPDATA", "USERPROFILE"] as const;
@@ -89,8 +107,8 @@ export interface RegisterOptions {
   runReg?: (args: string[]) => Promise<void>;
 }
 
-/** Writes the launcher and manifest under userData and registers them with the browsers. Idempotent. */
-export async function registerNativeHost(o: RegisterOptions): Promise<{ manifestPath: string; registered: string[] }> {
+/** Writes the launcher and manifests under userData and registers them with the browsers. Idempotent. */
+export async function registerNativeHost(o: RegisterOptions): Promise<{ manifestPath: string; firefoxManifestPath: string; registered: string[] }> {
   const win = o.platform === "win32";
   const dir = path.join(o.userDataDir, "native-host");
   await fsp.mkdir(dir, { recursive: true });
@@ -100,29 +118,34 @@ export async function registerNativeHost(o: RegisterOptions): Promise<{ manifest
   const manifest = `${JSON.stringify(hostManifest(launcher), null, 2)}\n`;
   const manifestPath = path.join(dir, `${NATIVE_HOST_NAME}.json`);
   await fsp.writeFile(manifestPath, manifest);
+  const firefoxManifest = `${JSON.stringify(firefoxHostManifest(launcher), null, 2)}\n`;
+  const firefoxManifestPath = path.join(dir, "firefox", `${NATIVE_HOST_NAME}.json`);
+  await fsp.mkdir(path.dirname(firefoxManifestPath), { recursive: true });
+  await fsp.writeFile(firefoxManifestPath, firefoxManifest);
 
   const browsers = BROWSERS.filter((b) => !o.only || o.only.includes(b.name));
   const registered: string[] = [];
   for (const b of browsers) {
     try {
       if (win) {
-        await (o.runReg ?? runRegExe)(regAddArgs(b.winKey, manifestPath));
+        if (!b.winKey) continue;
+        await (o.runReg ?? runRegExe)(regAddArgs(b.winKey, b.firefox ? firefoxManifestPath : manifestPath));
       } else {
-        const support = path.join(o.homeDir, "Library", "Application Support", b.macDir);
-        if (!existsSync(support)) continue;
-        const hosts = path.join(support, "NativeMessagingHosts");
+        if (!b.macDir) continue;
+        const support = path.join(o.homeDir, "Library", "Application Support");
+        if (!existsSync(path.join(support, b.macProbe ?? b.macDir))) continue;
+        const hosts = path.join(support, b.macDir, "NativeMessagingHosts");
         await fsp.mkdir(hosts, { recursive: true });
-        await fsp.writeFile(path.join(hosts, `${NATIVE_HOST_NAME}.json`), manifest);
+        await fsp.writeFile(path.join(hosts, `${NATIVE_HOST_NAME}.json`), b.firefox ? firefoxManifest : manifest);
       }
       registered.push(b.name);
     } catch {
       // a browser we cannot register for keeps the old behaviour (downloads stay in the browser)
     }
   }
-  return { manifestPath, registered };
+  return { manifestPath, firefoxManifestPath, registered };
 }
 
-/** Started by the extension through the native host: stay in the tray. */
 /** Started by the browser (--hidden) or by a click on a Windows notification (COM activation adds -Embedding). */
 export function isBackgroundLaunch(argv: string[]): boolean {
   return argv.includes("--hidden") || argv.includes("-Embedding");

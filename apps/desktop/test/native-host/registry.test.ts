@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync } fr
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { hostManifest, isBackgroundLaunch, launcherScript, regAddArgs, registerNativeHost } from "../../src/main/native-host";
+import { firefoxHostManifest, hostManifest, isBackgroundLaunch, launcherScript, regAddArgs, registerNativeHost } from "../../src/main/native-host";
 
 const ORIGIN = "chrome-extension://fnkkncklkbdmaphmmddfmbcjkllejhea/";
 
@@ -60,7 +60,7 @@ describe("launcherScript", () => {
 });
 
 describe("registerNativeHost", () => {
-  it("writes the launcher and manifest and registers them for every Chromium browser on Windows", async () => {
+  it("writes the launcher and manifests and registers them for the Chromium browsers and Firefox on Windows", async () => {
     const calls: string[][] = [];
     const userData = path.join(root, "user");
     const result = await registerNativeHost({
@@ -76,7 +76,9 @@ describe("registerNativeHost", () => {
       },
     });
     const manifestPath = path.join(userData, "native-host", "com.turbodl.host.json");
-    expect(result).toEqual({ manifestPath, registered: ["Chrome", "Edge", "Chromium"] });
+    const firefoxManifestPath = path.join(userData, "native-host", "firefox", "com.turbodl.host.json");
+    expect(result).toEqual({ manifestPath, firefoxManifestPath, registered: ["Chrome", "Edge", "Vivaldi", "Chromium", "Firefox"] });
+    expect(JSON.parse(readFileSync(firefoxManifestPath, "utf8"))).toEqual(firefoxHostManifest(path.join(userData, "native-host", "turbodl-host.bat")));
     const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
     expect(manifest.path).toBe(path.join(userData, "native-host", "turbodl-host.bat"));
     expect(readFileSync(manifest.path, "utf8")).toContain("set ELECTRON_RUN_AS_NODE=1");
@@ -84,7 +86,9 @@ describe("registerNativeHost", () => {
       regAddArgs("Google\\Chrome", manifestPath),
       regAddArgs("Microsoft\\Edge", manifestPath),
       regAddArgs("BraveSoftware\\Brave-Browser", manifestPath),
+      regAddArgs("Vivaldi", manifestPath),
       regAddArgs("Chromium", manifestPath),
+      regAddArgs("Mozilla", firefoxManifestPath),
     ]);
     expect(calls[0]).toEqual(["add", "HKCU\\Software\\Google\\Chrome\\NativeMessagingHosts\\com.turbodl.host", "/ve", "/t", "REG_SZ", "/d", manifestPath, "/f"]);
   });
@@ -108,6 +112,9 @@ describe("registerNativeHost", () => {
     const support = path.join(root, "Library", "Application Support");
     mkdirSync(path.join(support, "Google", "Chrome"), { recursive: true });
     mkdirSync(path.join(support, "Microsoft Edge"), { recursive: true });
+    mkdirSync(path.join(support, "com.operasoftware.Opera"), { recursive: true });
+    // Firefox keeps its profiles in "Firefox" but reads native hosts from "Mozilla"
+    mkdirSync(path.join(support, "Firefox"), { recursive: true });
     const result = await registerNativeHost({
       platform: "darwin",
       userDataDir: path.join(root, "user"),
@@ -115,12 +122,28 @@ describe("registerNativeHost", () => {
       execPath: "/Applications/TurboDL.app/Contents/MacOS/TurboDL",
       hostScript: "/Applications/TurboDL.app/Contents/Resources/native-host/host.cjs",
     });
-    expect(result.registered).toEqual(["Chrome", "Edge"]);
+    expect(result.registered).toEqual(["Chrome", "Edge", "Opera", "Firefox"]);
+    expect(existsSync(path.join(support, "com.operasoftware.Opera", "NativeMessagingHosts", "com.turbodl.host.json"))).toBe(true);
+    const firefox = JSON.parse(readFileSync(path.join(support, "Mozilla", "NativeMessagingHosts", "com.turbodl.host.json"), "utf8"));
+    expect(firefox.allowed_extensions).toEqual(["turbodl@turbodl.app"]);
+    expect(firefox).not.toHaveProperty("allowed_origins");
     const chrome = JSON.parse(readFileSync(path.join(support, "Google", "Chrome", "NativeMessagingHosts", "com.turbodl.host.json"), "utf8"));
     expect(chrome.allowed_origins).toEqual([ORIGIN]);
     expect(chrome.path.endsWith("turbodl-host.sh")).toBe(true);
     expect(existsSync(path.join(support, "BraveSoftware"))).toBe(false);
     if (process.platform !== "win32") expect(statSync(chrome.path).mode & 0o111).not.toBe(0);
+  });
+});
+
+describe("firefoxHostManifest", () => {
+  it("lets only the Firefox build of the extension start the app", () => {
+    expect(firefoxHostManifest("/x/turbodl-host.sh")).toEqual({
+      name: "com.turbodl.host",
+      description: "TurboDL: lets the extension start the app",
+      path: "/x/turbodl-host.sh",
+      type: "stdio",
+      allowed_extensions: ["turbodl@turbodl.app"],
+    });
   });
 });
 
