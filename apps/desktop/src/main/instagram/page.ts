@@ -1,11 +1,14 @@
 import { BrowserWindow, session, type Session } from "electron";
-import type { BrowserCookie } from "@turbodl/shared";
+import { SavedError, type BrowserCookie } from "@turbodl/shared";
 import { chromeAgent } from "./agent";
 import { within, type PageDriver } from "./finder";
 import { INSTAGRAM_PARTITION, blockedFrame, electronCookie, isInstagramAddress } from "./partition";
+import { postsRequest, resendScript, type PostsRequest } from "./posts-request";
 
 const MAX_DOCUMENT = 4 * 1024 * 1024;
 const MAX_PAGE = 32 * 1024 * 1024;
+/** ms a re-sent posts request may take */
+const RESEND_TIMEOUT = 30_000;
 
 /** The hidden pages' contents; the sign-in window may show frames from elsewhere (Instagram's captcha). */
 const hiddenPages = new Set<number>();
@@ -63,6 +66,10 @@ export class ElectronInstagramPage implements PageDriver {
   private win: BrowserWindow | null = null;
   private readonly answers: string[] = [];
   private readonly waiting = new Set<string>();
+  /** graphql POSTs in flight, one of which may be the page's own posts request */
+  private readonly sent = new Map<string, { url: string; method: string; headers: Record<string, string>; body?: string; hasPostData?: boolean }>();
+  private request: PostsRequest | null = null;
+  private collecting = true;
   private bytes = 0;
   private closed = false;
 
@@ -92,11 +99,19 @@ export class ElectronInstagramPage implements PageDriver {
     const dbg = contents.debugger;
     dbg.attach("1.3");
     dbg.on("message", (_event, method: string, params: Record<string, any>) => {
-      if (method === "Network.responseReceived") {
+      const id = params.requestId as string;
+      if (method === "Network.requestWillBeSent") {
+        const r = params.request as { url: string; method: string; headers: Record<string, string>; postData?: string; hasPostData?: boolean };
+        if (r.method === "POST" && allowed(r.url) && r.url.includes("graphql")) this.sent.set(id, { url: r.url, method: r.method, headers: r.headers, body: r.postData, hasPostData: r.hasPostData });
+      } else if (method === "Network.responseReceived") {
         const response = params.response as { url: string; mimeType?: string };
-        if (allowed(response.url) && /json|javascript/i.test(response.mimeType ?? "")) this.waiting.add(params.requestId as string);
-      } else if (method === "Network.loadingFinished" && this.waiting.delete(params.requestId as string)) {
-        void this.keep(params.requestId as string);
+        if (allowed(response.url) && /json|javascript/i.test(response.mimeType ?? "")) this.waiting.add(id);
+      } else if (method === "Network.loadingFinished") {
+        if (this.waiting.delete(id)) void this.keep(id);
+        else this.sent.delete(id);
+      } else if (method === "Network.loadingFailed") {
+        this.waiting.delete(id);
+        this.sent.delete(id);
       }
     });
     // A window that hasn't loaded anything has no page for the DevTools protocol yet, and Network.enable waits forever.
@@ -136,6 +151,28 @@ export class ElectronInstagramPage implements PageDriver {
     await within(contents.executeJavaScript("window.scrollTo(0, document.body.scrollHeight); true").catch(() => undefined), Date.now() + 2000);
   }
 
+  /**
+   * The page's own posts request sent again from after `cursor`, from inside the page; null until the page has sent
+   * one. Throws badAnswer when it fails or takes longer than 30 s.
+   */
+  async resend(cursor: string): Promise<{ status: number; text: string } | null> {
+    const request = this.request;
+    const contents = this.win?.webContents;
+    if (!request || !contents || contents.isDestroyed()) return null;
+    const answer = (await within(contents.executeJavaScript(resendScript(request, cursor)).catch(() => undefined), Date.now() + RESEND_TIMEOUT)) as
+      | { status?: unknown; text?: unknown }
+      | undefined;
+    if (typeof answer?.status !== "number" || typeof answer.text !== "string") throw new SavedError("badAnswer");
+    return { status: answer.status, text: answer.text };
+  }
+
+  /** The first load is read: its answers are forgotten and no more are kept (each posts answer is over a megabyte). */
+  stopCollecting(): void {
+    this.collecting = false;
+    this.answers.length = 0;
+    this.bytes = 0;
+  }
+
   close(): void {
     this.closed = true;
     const win = this.win;
@@ -151,11 +188,18 @@ export class ElectronInstagramPage implements PageDriver {
 
   private async keep(requestId: string): Promise<void> {
     const dbg = this.win?.webContents.debugger;
-    if (!dbg) return;
+    const sent = this.sent.get(requestId);
+    this.sent.delete(requestId);
+    // after the first load only a graphql POST is still worth reading, while the posts request isn't known yet
+    if (!dbg || (!this.collecting && (!sent || this.request))) return;
     try {
       const { body, base64Encoded } = (await dbg.sendCommand("Network.getResponseBody", { requestId })) as { body: string; base64Encoded: boolean };
       const text = base64Encoded ? Buffer.from(body, "base64").toString("utf8") : body;
-      if (text.length > MAX_DOCUMENT || this.bytes + text.length > MAX_PAGE) return;
+      if (sent && !this.request) {
+        const form = sent.body ?? (sent.hasPostData ? ((await dbg.sendCommand("Network.getRequestPostData", { requestId })) as { postData: string }).postData : undefined);
+        this.request = postsRequest({ ...sent, body: form }, text) ?? this.request;
+      }
+      if (!this.collecting || text.length > MAX_DOCUMENT || this.bytes + text.length > MAX_PAGE) return;
       this.bytes += text.length;
       this.answers.push(text);
     } catch {
