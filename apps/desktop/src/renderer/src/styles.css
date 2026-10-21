@@ -909,3 +909,34 @@ td.col-name {
   padding: 10px 0 12px;
   border-top: 1px solid var(--border);
 }
+
+.backup-panel {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel);
+}
+
+.backup-panel img,
+.backup-panel .saved-collection-blank {
+  width: 48px;
+  height: 48px;
+  border-radius: 8px;
+  object-fit: cover;
+}
+
+.backup-text {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.backup-text progress {
+  width: 100%;
+  height: 6px;
+}

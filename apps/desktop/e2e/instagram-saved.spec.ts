@@ -55,3 +55,36 @@ test("saved: a saved collection shows its own posts", async () => {
     rmSync(userData, { recursive: true, force: true });
   }
 });
+
+test("saved: backs up a collection, and a run again fetches nothing new", async () => {
+  const { server, app, userData, baseDir } = await demo();
+  // the backup's own fetches carry Instagram as Referer; the grid's pictures don't
+  const backupFetches = () => server.requests.filter((r) => r.path.startsWith("/ig/") && r.headers.referer === "https://www.instagram.com/").length;
+  try {
+    const main = await app.firstWindow();
+    await main.getByRole("button", { name: "Saved", exact: true }).click();
+    await main.getByRole("tab", { name: /^Trips/ }).click();
+    await expect(main.getByRole("button", { name: /^Post \d+$/ })).toHaveCount(3, { timeout: 15_000 });
+
+    await main.getByRole("button", { name: "Back up this collection" }).click();
+    const confirm = main.getByRole("dialog", { name: "Back up Trips" });
+    await expect(confirm).toContainText("3 posts");
+    await expect(confirm).toContainText("estimate");
+    await confirm.getByRole("button", { name: "Start backup" }).click();
+    const panel = main.getByRole("region", { name: "Backup" });
+    await expect(panel).toContainText("Backup finished", { timeout: 30_000 });
+    await expect(panel).toContainText("New 3");
+    expect(readdirSync(path.join(baseDir, "Instagram", "Saved", "Trips")).sort()).toEqual(["t1.png", "t2.png", "t3.png"]);
+    expect(backupFetches()).toBe(3);
+
+    await main.getByRole("button", { name: "Back up this collection" }).click();
+    await main.getByRole("dialog", { name: "Back up Trips" }).getByRole("button", { name: "Start backup" }).click();
+    await expect(panel).toContainText("New 0", { timeout: 30_000 });
+    await expect(panel).toContainText("Backup finished");
+    expect(backupFetches()).toBe(3);
+  } finally {
+    await app.close();
+    await server.close();
+    rmSync(userData, { recursive: true, force: true });
+  }
+});

@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { InstagramAccount, SavedCollection, SavedPost, SavedSource } from "@turbodl/shared";
+import type { BackupPlan, BackupView, InstagramAccount, SavedCollection, SavedPost, SavedSource } from "@turbodl/shared";
 import { api } from "../../api";
 import { canLoadMore, initialSaved, loading, pageArrived, pageFailed, retry, select, toggle, type SavedState } from "../../saved-state";
+import { BackupConfirm, BackupPanel } from "./SavedBackup";
 
 const ALL: SavedCollection = { id: "all", name: "All posts", isAll: true };
 
@@ -26,13 +27,15 @@ const large = (post: SavedPost) => (post.items[0]?.kind === "image" ? post.items
  * Instagram → Saved: the account, All and its collections, a grid that loads page by page as it scrolls, posts
  * picked in order and opened in the picker with Next.
  */
-export function SavedView() {
+export function SavedView({ backup }: { backup: BackupView | null }) {
   const [account, setAccount] = useState<InstagramAccount | null>(null);
   const [collections, setCollections] = useState<SavedCollection[]>([ALL]);
   const [state, setState] = useState<SavedState>(() => select(initialSaved(), { kind: "all" }));
   const [viewing, setViewing] = useState<SavedPost | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [confirming, setConfirming] = useState<{ collection: SavedCollection; plan: BackupPlan } | null>(null);
+  const [resumes, setResumes] = useState(false);
   const current = useRef(state);
   current.current = state;
   const sentinel = useRef<HTMLDivElement>(null);
@@ -82,6 +85,22 @@ export function SavedView() {
   useEffect(() => {
     if (state.status === "idle" && state.posts.length === 0) void loadMore();
   }, [state.generation, state.status, state.posts.length, loadMore]);
+
+  const shown = state.source.kind === "collection" ? collections.find((c) => !c.isAll && state.source.kind === "collection" && c.id === state.source.id) : undefined;
+  // "Continue backup" when an earlier backup of it stopped before the end
+  useEffect(() => {
+    setResumes(false);
+    if (shown) void api.backupPlan(shown.id).then((plan) => setResumes(plan.resumes));
+  }, [shown?.id, backup?.state]);
+
+  const askBackup = async (collection: SavedCollection) => {
+    setConfirming({ collection, plan: await api.backupPlan(collection.id) });
+  };
+  const startBackup = async (collection: SavedCollection) => {
+    setConfirming(null);
+    const res = await api.startBackup(collection.id);
+    if (!res.ok) setError(res.error);
+  };
 
   const signIn = async () => {
     setBusy(true);
@@ -142,6 +161,18 @@ export function SavedView() {
           </button>
         ))}
       </div>
+
+      {backup && <BackupPanel backup={backup} />}
+      {shown && backup?.state !== "running" && (
+        <div>
+          <button type="button" className="btn" onClick={() => void askBackup(shown)}>
+            {resumes ? "Continue backup" : "Back up this collection"}
+          </button>
+        </div>
+      )}
+      {confirming && (
+        <BackupConfirm collection={confirming.collection} plan={confirming.plan} onStart={() => void startBackup(confirming.collection)} onClose={() => setConfirming(null)} />
+      )}
 
       <div className="saved-scroll">
         <ul className="ig-grid">

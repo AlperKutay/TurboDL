@@ -117,7 +117,7 @@ export function MainWindow() {
           onSection={setSection}
         />
         <main className="content">
-          {section === "saved" && <SavedView />}
+          {section === "saved" && <SavedView backup={state.instagramBackup} />}
           {section === "downloads" && (
             <DownloadTable
               items={items}
@@ -134,7 +134,7 @@ export function MainWindow() {
           {section === "downloads" && current && <DetailsPanel item={current} />}
         </main>
       </div>
-      <StatusBar downloads={state.downloads} bridge={state.bridge} />
+      <StatusBar downloads={state.downloads} bridge={state.bridge} backup={state.instagramBackup} />
 
       {menu && (
         <ContextMenu
