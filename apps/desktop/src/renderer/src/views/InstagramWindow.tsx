@@ -112,7 +112,7 @@ export function InstagramWindow({ pendingId }: { pendingId: string }) {
           <p>
             {result.at
               ? "Instagram wants to check it's you before it shows this page."
-              : "Sign in to Instagram to read this page. If you are signed in in your browser, use “Open in TurboDL” there instead."}
+              : "Instagram shows this only to signed-in visitors. Sign in to read it, or, if you are signed in in your browser, use “Open in TurboDL” there."}
           </p>
           <button type="button" className="btn btn-primary" disabled={busy} onClick={() => void signIn()}>
             {result.at ? "Continue on Instagram" : "Sign in to Instagram"}

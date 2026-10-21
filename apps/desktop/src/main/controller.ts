@@ -325,11 +325,13 @@ export class AppController {
     this.forgetInstagram(pendingId);
   }
 
-  /** Reads the link's items from its signed-in page; a new read calls off the picker's previous one. */
+  /**
+   * Reads the link's items from its page, signed in when a session is kept; without one, public posts and reels still
+   * read (stories, highlights and hidden posts answer signedOut). A new read calls off the picker's previous one.
+   */
   async findInstagram(pendingId: string): Promise<InstagramFindResult> {
     const p = this.pending.get(pendingId);
     if (!p || p.type !== "instagram") return { type: "gone" };
-    if (!this.instagramSession.signedIn()) return { type: "signedOut" };
     this.instagramSearches.get(pendingId)?.abort();
     const search = new AbortController();
     this.instagramSearches.set(pendingId, search);

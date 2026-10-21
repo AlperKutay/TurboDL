@@ -486,15 +486,25 @@ describe("Instagram links", () => {
     expect((await c.findInstagram(second)).type).toBe("items");
   });
 
-  it("asks to sign in without a session, and signing in lets the page be read", async () => {
-    const ig = fakeInstagram(items, sessionJar);
+  it("reads a public post without a session, as Instagram shows it to anyone", async () => {
+    const ig = fakeInstagram(items);
+    const c = await start({}, null, ig.deps);
+    await c.handleDownloadRequest({ url: "https://www.instagram.com/reel/C2reel/", source: "manual" });
+    expect((await c.findInstagram(ui.opened[0].pendingId)).type).toBe("items");
+    expect(ig.finds).toEqual([{ code: "C2reel", cookies: [] }]);
+    expect(ig.signIns()).toBe(0);
+  });
+
+  it("asks to sign in when Instagram shows the page only to signed-in visitors, and signing in lets it be read", async () => {
+    let reads = 0;
+    const ig = fakeInstagram(() => (reads++ === 0 ? { type: "signedOut" } : items()), sessionJar);
     const c = await start({}, null, ig.deps);
     await c.handleDownloadRequest({ url: "https://www.instagram.com/stories/highlights/17900000000000002/", source: "manual" });
     const id = ui.opened[0].pendingId;
     expect(await c.findInstagram(id)).toEqual({ type: "signedOut" });
-    expect(ig.finds).toHaveLength(0);
     expect(await c.instagramSignIn()).toBe(true);
     expect((await c.findInstagram(id)).type).toBe("items");
+    expect(ig.finds.map((f) => f.cookies)).toEqual([[], ["sessionid", "csrftoken"]]);
     expect(ig.signIns()).toBe(1);
   });
 
