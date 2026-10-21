@@ -1,4 +1,4 @@
-import type { InstagramItem, InstagramLink, SavedCollection, SavedPage, SavedSource } from "./instagram";
+import type { Highlight, InstagramItem, InstagramLink, InstagramProfile, SavedCollection, SavedPage, SavedSource } from "./instagram";
 import type { BrowserCookie, CaptureSource, MediaItem } from "./protocol";
 
 export type Category = "video" | "music" | "programs" | "archives" | "documents" | "images" | "other";
@@ -163,6 +163,26 @@ export interface InstagramAccount {
 /** A page of saved posts, or why there is none. */
 export type SavedPageResult = { type: "page"; page: SavedPage } | { type: "signedOut" } | { type: "rateLimited" } | { type: "failed"; message: string };
 
+/** A profile as its screen shows it, or why it can't. */
+export type ProfileResult =
+  | { type: "profile"; profile: InstagramProfile; highlights: Highlight[] }
+  | { type: "signedOut" }
+  | { type: "rateLimited" }
+  | { type: "failed"; message: string };
+
+/** A backed-up profile in the Profiles list. */
+export interface ProfileEntry {
+  /** the account's number */
+  id: string;
+  username: string;
+  fullName: string;
+  picture?: string;
+  /** when its last backup started, ms */
+  lastRun: number;
+  /** items its backups saved */
+  saved: number;
+}
+
 /** What a collection backup's confirmation says. */
 export interface BackupPlan {
   count?: number;
@@ -241,7 +261,9 @@ export type AppEvent =
   | { type: "countdown"; state: CountdownState | null }
   | { type: "instagramBackup"; backup: BackupView | null }
   /** a saved link came in: show the Saved section */
-  | { type: "openSaved" };
+  | { type: "openSaved" }
+  /** a profile link came in: show it in Profiles */
+  | { type: "openProfile"; username: string };
 
 export type Result = { ok: true } | { ok: false; error: string };
 
@@ -286,6 +308,17 @@ export interface TurboApi {
   backupPlan(collectionId: string): Promise<BackupPlan>;
   startBackup(collectionId: string): Promise<Result>;
   stopBackup(): Promise<void>;
+  /** opens the profile's page (once) and answers who it is */
+  profileLoad(username: string): Promise<ProfileResult>;
+  /** no cursor: the posts its page loaded */
+  profilePage(username: string, cursor?: string): Promise<SavedPageResult>;
+  openProfilePicks(username: string, postIds: string[]): Promise<Result>;
+  profileBackupPlan(username: string): Promise<BackupPlan>;
+  startProfileBackup(username: string): Promise<Result>;
+  instagramProfiles(): Promise<ProfileEntry[]>;
+  removeInstagramProfile(id: string): Promise<void>;
+  /** the profile screen closed: its page can go (unless a backup still uses it) */
+  closeProfile(username: string): Promise<void>;
   cancelCountdown(): Promise<void>;
   installExtension(): Promise<InstallResult>;
   copyText(text: string): Promise<void>;

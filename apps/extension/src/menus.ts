@@ -32,6 +32,11 @@ export function registerMenuHandlers(): void {
       }
       if (info.menuItemId === "turbodl-instagram" && info.pageUrl) {
         const target = instagramTarget(info.pageUrl, info.linkUrl);
+        // an Instagram page TurboDL doesn't read (home, explore, messages): nothing to send
+        if (!target) {
+          flashBadge();
+          return;
+        }
         const result = (await ensureApp())
           ? await sendDownload({
               url: target,

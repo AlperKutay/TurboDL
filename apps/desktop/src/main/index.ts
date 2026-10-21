@@ -7,6 +7,7 @@ import { chromeAgent } from "./instagram/agent";
 import { DEMO_COOKIE, demoInstagram } from "./instagram/demo";
 import { InstagramFinder } from "./instagram/finder";
 import { loadCollections } from "./instagram/collections";
+import { ProfileFeed } from "./instagram/profile-feed";
 import { ElectronInstagramPage, allowTestSite, instagramSession } from "./instagram/page";
 import { signInToInstagram } from "./instagram/signin";
 import { EVENT_CHANNEL, broadcast, registerIpc } from "./ipc";
@@ -93,6 +94,7 @@ async function start(): Promise<void> {
           signIn: (at) => signInToInstagram(at),
           collections: (username, cookies) => loadCollections(() => new ElectronInstagramPage(cookies), username, { site: instagramTestSite }),
           signOut: () => instagramSession().clearStorageData(),
+          openProfile: (username, cookies) => new ProfileFeed(new ElectronInstagramPage(cookies), username, { site: instagramTestSite }),
           crypt: {
             available: () => safeStorage.isEncryptionAvailable(),
             encrypt: (text) => safeStorage.encryptString(text),

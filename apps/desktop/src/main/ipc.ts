@@ -63,6 +63,17 @@ export function registerIpc(c: AppController): void {
   handle("backupPlan", (id: unknown) => c.backupPlan(String(id)));
   handle("startBackup", (id: unknown) => c.startBackup(String(id)));
   handle("stopBackup", () => c.stopBackup());
+  const name = (v: unknown) => (typeof v === "string" ? v : "");
+  handle("profileLoad", (username: unknown) => c.profileLoad(name(username)));
+  handle("profilePage", (username: unknown, cursor: unknown) => c.profilePage(name(username), typeof cursor === "string" ? cursor : undefined));
+  handle("openProfilePicks", (username: unknown, ids: unknown) =>
+    c.openProfilePicks(name(username), Array.isArray(ids) ? ids.filter((id): id is string => typeof id === "string") : []),
+  );
+  handle("profileBackupPlan", (username: unknown) => c.profileBackupPlan(name(username)));
+  handle("startProfileBackup", (username: unknown) => c.startProfileBackup(name(username)));
+  handle("instagramProfiles", () => c.instagramProfiles());
+  handle("removeInstagramProfile", (id: unknown) => c.removeInstagramProfile(name(id)));
+  handle("closeProfile", (username: unknown) => c.closeProfile(name(username)));
   handle("cancelCountdown", () => c.cancelCountdown());
   handle("installExtension", async () => {
     const result = await c.installExtension();

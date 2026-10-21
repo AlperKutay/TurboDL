@@ -25,8 +25,22 @@ describe("Open in TurboDL on Instagram", () => {
     ]) {
       expect(matches(page), page).toBe(true);
     }
-    for (const page of ["https://www.instagram.com/", "https://www.instagram.com/sample.user/", "https://www.instagram.com/explore/", "https://www.instagram.com/direct/inbox/"]) {
+    for (const page of ["https://www.instagram.com/", "https://www.instagram.com/sample.user"]) {
       expect(matches(page), page).toBe(false);
+    }
+  });
+
+  it("shows on profiles too, and opens the profile a right-clicked picture links to", () => {
+    for (const page of ["https://www.instagram.com/sample.user/", "https://www.instagram.com/sample.user/reels/", "https://www.instagram.com/sample.user/tagged/"]) {
+      expect(matches(page), page).toBe(true);
+      expect(instagramTarget(page), page).toBe(page);
+    }
+    expect(instagramTarget("https://www.instagram.com/p/C1abcDEF/", "https://www.instagram.com/sample.user/")).toBe("https://www.instagram.com/sample.user/");
+  });
+
+  it("sends nothing from Instagram's own pages TurboDL doesn't read", () => {
+    for (const page of ["https://www.instagram.com/explore/", "https://www.instagram.com/direct/inbox/", "https://www.instagram.com/accounts/edit/"]) {
+      expect(instagramTarget(page), page).toBeNull();
     }
   });
 
@@ -39,7 +53,7 @@ describe("Open in TurboDL on Instagram", () => {
   it("opens the post a right-clicked picture links to, otherwise the page itself", () => {
     const page = "https://www.instagram.com/p/C1abcDEF/";
     expect(instagramTarget(page, "https://www.instagram.com/p/C2other/")).toBe("https://www.instagram.com/p/C2other/");
-    expect(instagramTarget(page, "https://www.instagram.com/sample.user/")).toBe(page);
+    expect(instagramTarget(page, "https://www.instagram.com/explore/")).toBe(page);
     expect(instagramTarget(page, "https://example.com/")).toBe(page);
     expect(instagramTarget(page)).toBe(page);
   });
