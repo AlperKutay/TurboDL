@@ -586,8 +586,11 @@ describe("Instagram Saved", () => {
   const carousel = (pk: string, ...children: object[]) => ({ pk, code: `C${pk}`, image_versions2: picture(pk), carousel_media: children });
 
   /** Instagram's saved feeds stood in for: every feed answers these posts on one page. */
-  function fakeSaved(o: { posts?: object[]; collections?: { id: string; name: string; count?: number; isAll: boolean }[] } = {}) {
+  function fakeSaved(o: { posts?: object[]; collections?: { id: string; name: string; count?: number; isAll: boolean }[]; limitFirst?: boolean } = {}) {
     const asked: string[] = [];
+    /** each request with the fake clock's time when it was sent */
+    const times: { url: string; at: number }[] = [];
+    let feeds = 0;
     const waits: number[] = [];
     let now = 0;
     let signOuts = 0;
@@ -599,7 +602,9 @@ describe("Instagram Saved", () => {
       agent: "TestAgent/1",
       get: async (url) => {
         asked.push(url);
+        times.push({ url, at: now });
         if (url.endsWith("/web_form_data/")) return { status: 200, body: JSON.stringify({ form_data: { username: "sample.user" }, status: "ok" }) };
+        if (o.limitFirst && feeds++ === 0) return { status: 429, body: "" };
         return { status: 200, body: JSON.stringify({ items: posts.map((media) => ({ media })), more_available: false, status: "ok" }) };
       },
       collections: async () => o.collections ?? [{ id: "100", name: "All posts", count: 40, isAll: true }, { id: "102", name: "Trips", count: 2, isAll: false }],
@@ -612,7 +617,16 @@ describe("Instagram Saved", () => {
         signOuts++;
       },
     };
-    return { deps, asked, waits, signOuts: () => signOuts };
+    return {
+      deps,
+      asked,
+      times,
+      waits,
+      signOuts: () => signOuts,
+      advance: (ms: number) => {
+        now += ms;
+      },
+    };
   }
 
   beforeEach(() => {
@@ -710,6 +724,59 @@ describe("Instagram Saved", () => {
     const plan = await c.backupPlan("102");
     expect(plan).toMatchObject({ count: 10, bytes: (10 * (2 * 8_000_000 + 3 * 600_000)) / 2, large: false, resumes: false });
     expect(plan.freeBytes).toBeGreaterThan(0);
+  });
+
+  it("spaces every saved-feed request 1.5 s apart, a backup's and the grid's alike", async () => {
+    const saved = fakeSaved();
+    const c = await signedIn(saved.deps);
+    await c.savedCollections(true);
+    await c.startBackup("102");
+    await c.savedPage({ kind: "all" });
+    await backupEnds(c);
+    const feeds = saved.times.filter((t) => t.url.includes("/feed/"));
+    expect(feeds).toHaveLength(2);
+    expect(feeds[1].at - feeds[0].at).toBeGreaterThanOrEqual(1500);
+  });
+
+  it("sends only the latest feed's request when the grid switched feeds before the others were sent", async () => {
+    const saved = fakeSaved();
+    const c = await signedIn(saved.deps);
+    await Promise.all([c.savedPage({ kind: "collection", id: "102" }), c.savedPage({ kind: "collection", id: "103" }), c.savedPage({ kind: "all" })]);
+    expect(saved.asked.filter((u) => u.includes("/feed/"))).toEqual(["https://www.instagram.com/api/v1/feed/saved/posts/"]);
+  });
+
+  it("asks Instagram nothing for a while after it asked to slow down, neither for the grid nor for a backup", async () => {
+    const saved = fakeSaved({ limitFirst: true });
+    const c = await signedIn(saved.deps);
+    await c.savedCollections(true);
+    expect((await c.savedPage({ kind: "all" })).type).toBe("rateLimited");
+    const sent = saved.asked.length;
+    expect((await c.savedPage({ kind: "all" })).type).toBe("rateLimited");
+    expect((await c.startBackup("102")).ok).toBe(false);
+    expect(saved.asked.length).toBe(sent);
+    saved.advance(2 * 60_000);
+    expect((await c.savedPage({ kind: "all" })).type).toBe("page");
+  });
+
+  it("waits, when quitting, for a backup's item in flight to be dropped", async () => {
+    let cleaned = false;
+    const saved = fakeSaved();
+    saved.deps.fetch = (_url, _file, { signal }) =>
+      new Promise((_, reject) =>
+        signal?.addEventListener("abort", () =>
+          setTimeout(() => {
+            cleaned = true;
+            reject(new Error("Cancelled."));
+          }, 50),
+        ),
+      );
+    const c = await signedIn(saved.deps);
+    await c.savedCollections(true);
+    await c.startBackup("102");
+    await new Promise((r) => setTimeout(r, 30));
+    await c.shutdown();
+    controller = null;
+    expect(cleaned).toBe(true);
   });
 
   it("opens Saved for a saved link, taking the browser's session", async () => {

@@ -477,8 +477,8 @@ export class AppController {
     return this.saved.startBackup(collectionId);
   }
 
-  async stopBackup(): Promise<void> {
-    this.saved.stopBackup();
+  stopBackup(): Promise<void> {
+    return this.saved.stopBackup();
   }
 
   /** A saved link: the browser's session is taken, and the main window shows Saved. */
@@ -690,7 +690,8 @@ export class AppController {
   }
 
   async shutdown(): Promise<void> {
-    this.saved.stopBackup();
+    // a backup's item in flight removes its temporary file before the app goes
+    await Promise.race([this.saved.stopBackup(), new Promise((r) => setTimeout(r, 3000))]);
     this.scheduler.stop();
     await this.manager.shutdown();
     this.settingsStore.flush();

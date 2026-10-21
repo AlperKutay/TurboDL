@@ -37,8 +37,11 @@ export interface SavedServiceDeps {
   onBackup(view: BackupView): void;
 }
 
-/** ms between saved page requests while browsing */
+/** ms between saved-feed requests, the grid's and backups' alike */
 const PAGE_GAP = 1500;
+/** ms nothing is asked of the saved feeds after Instagram asked to slow down */
+const HOLD = 2 * 60_000;
+const SLOW_DOWN = "Instagram asked TurboDL to slow down. Try again in a few minutes.";
 const VIDEO_BYTES = 8_000_000;
 const PHOTO_BYTES = 600_000;
 const LARGE_COLLECTION = 1000;
@@ -54,7 +57,12 @@ export class SavedService {
   /** posts served per feed ("all" or a collection id) */
   private readonly samples = new Map<string, SavedPost[]>();
   private nextPageAt = 0;
+  /** after Instagram asked to slow down: no saved-feed request before this */
+  private heldUntil = 0;
+  /** the grid's latest request; one that waited while another feed was asked for is dropped */
+  private latestBrowse = { ticket: 0, feed: "" };
   private backup: BackupRun | null = null;
+  private starting = false;
   private readonly ledgers: LedgerStore;
   private readonly cacheFile: string;
   private readonly client: SavedClient;
@@ -120,13 +128,21 @@ export class SavedService {
     return list;
   }
 
-  /** One page of a feed, never sooner than 1.5 s after the last one asked. */
+  /**
+   * One page of a feed for the grid, never sooner than 1.5 s after the last saved-feed request (a backup's too), and
+   * not at all while Instagram's "slow down" holds, or when another feed was asked for meanwhile.
+   */
   async page(source: SavedSource, cursor?: string): Promise<SavedPageResult> {
     if (!this.deps.session.signedIn()) return { type: "signedOut" };
+    const key = source.kind === "all" ? "all" : source.id;
+    const ticket = ++this.latestBrowse.ticket;
+    this.latestBrowse.feed = key;
+    if (this.held()) return { type: "rateLimited" };
     await this.pace();
+    if (this.latestBrowse.ticket !== ticket && this.latestBrowse.feed !== key) return { type: "failed", message: "Another feed was asked for." };
+    if (this.held()) return { type: "rateLimited" };
     try {
-      const page = await this.client.page(source, cursor);
-      const key = source.kind === "all" ? "all" : source.id;
+      const page = await this.ask(() => this.client.page(source, cursor));
       const sample = this.samples.get(key) ?? [];
       for (const post of page.posts) {
         this.posts.set(post.id, post);
@@ -162,11 +178,23 @@ export class SavedService {
   }
 
   /** Starts backing up one of the account's own collections; one backup at a time. */
-  startBackup(collectionId: string): Result {
-    if (this.backup?.isRunning) return { ok: false, error: "A backup is already running." };
+  async startBackup(collectionId: string): Promise<Result> {
+    if (this.backup?.isRunning || this.starting) return { ok: false, error: "A backup is already running." };
+    this.starting = true;
+    try {
+      // a stopped run records its last item before this one reads the ledger
+      await this.backup?.settled();
+      return this.begin(collectionId);
+    } finally {
+      this.starting = false;
+    }
+  }
+
+  private begin(collectionId: string): Result {
+    if (this.held()) return { ok: false, error: SLOW_DOWN };
     const collection = this.collection(collectionId);
     if (!collection || collection.isAll) return { ok: false, error: "Only your own collections can be backed up." };
-    const run = new BackupRun(
+    const run: BackupRun = new BackupRun(
       {
         id: collection.id,
         name: collection.name,
@@ -176,21 +204,29 @@ export class SavedService {
         allowsEarlyStop: true,
       },
       {
-        page: (source, cursor, signal) => this.client.page(source, cursor, signal),
+        page: async (source, cursor, signal) => {
+          await this.pace(signal);
+          if (this.held()) throw new SavedError("rateLimited");
+          return this.ask(() => this.client.page(source, cursor, signal));
+        },
         fetch: this.deps.fetch,
         ledgers: this.ledgers,
         wait: (ms, signal) => this.deps.wait(ms, signal),
         headers: { Referer: "https://www.instagram.com/", ...(this.deps.agent ? { "User-Agent": this.deps.agent } : {}) },
       },
-      (view) => this.deps.onBackup(view),
+      // a run replaced by a newer one reports nothing more
+      (view) => {
+        if (this.backup === run) this.deps.onBackup(view);
+      },
     );
     this.backup = run;
     void run.start();
     return { ok: true };
   }
 
-  stopBackup(): void {
-    this.backup?.stop();
+  /** Resolves once the item in flight is dropped. */
+  stopBackup(): Promise<void> {
+    return this.backup?.stop() ?? Promise.resolve();
   }
 
   backupView(): BackupView | null {
@@ -215,11 +251,26 @@ export class SavedService {
     return path.join(this.deps.baseDir(), "Instagram", "Saved", name);
   }
 
-  private async pace(): Promise<void> {
+  /** Takes the next 1.5 s slot for a saved-feed request and waits for it. */
+  private async pace(signal?: AbortSignal): Promise<void> {
     const now = this.deps.now();
     const at = Math.max(now, this.nextPageAt);
     this.nextPageAt = at + PAGE_GAP;
-    if (at > now) await this.deps.wait(at - now);
+    if (at > now) await this.deps.wait(at - now, signal).catch(() => undefined);
+  }
+
+  /** A saved-feed request; Instagram asking to slow down holds every other one for a while. */
+  private async ask<T>(request: () => Promise<T>): Promise<T> {
+    try {
+      return await request();
+    } catch (err) {
+      if (err instanceof SavedError && err.kind === "rateLimited") this.heldUntil = this.deps.now() + HOLD;
+      throw err;
+    }
+  }
+
+  private held(): boolean {
+    return this.deps.now() < this.heldUntil;
   }
 
   private readCache(): { username: string; list: SavedCollection[] } | null {

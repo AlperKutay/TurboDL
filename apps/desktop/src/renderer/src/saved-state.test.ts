@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { SavedPage, SavedPost } from "@turbodl/shared";
-import { canLoadMore, initialSaved, pageArrived, pageFailed, select, toggle } from "./saved-state";
+import { backupAction, canLoadMore, initialSaved, pageArrived, pageFailed, select, toggle } from "./saved-state";
 
 const post = (id: string): SavedPost => ({ id, items: [{ kind: "image", url: `https://cdn.example/${id}.jpg`, mediaId: id }] });
 const page = (ids: string[], next?: string): SavedPage => ({ posts: ids.map(post), ...(next ? { next } : {}) });
@@ -37,6 +37,13 @@ describe("saved-state", () => {
     const trips = select(s, { kind: "collection", id: "102" });
     expect([trips.posts, trips.picked, trips.next, trips.status]).toEqual([[], [], undefined, "idle"]);
     expect(trips.source).toEqual({ kind: "collection", id: "102" });
+  });
+
+  it("offers what a backup's state calls for: sign-in when Instagram signed TurboDL out", () => {
+    expect(backupAction("running")).toBe("stop");
+    expect(backupAction("signedOut")).toBe("signIn");
+    for (const state of ["stopped", "rateLimited", "failed"] as const) expect(backupAction(state)).toBe("continue");
+    expect(backupAction("finished")).toBe("none");
   });
 
   it("stops asking after Instagram pushes back, until asked again", () => {

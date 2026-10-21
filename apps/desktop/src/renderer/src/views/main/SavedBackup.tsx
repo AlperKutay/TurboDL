@@ -1,6 +1,8 @@
+import { useState } from "react";
 import { formatBytes, type BackupPlan, type BackupView, type SavedCollection } from "@turbodl/shared";
 import { api } from "../../api";
 import { Modal } from "../../components/Modal";
+import { backupAction } from "../../saved-state";
 
 /** What starting a backup means: how many posts, roughly how large, and the warnings that go with it. */
 export function BackupConfirm({ collection, plan, onStart, onClose }: { collection: SavedCollection; plan: BackupPlan; onStart(): void; onClose(): void }) {
@@ -41,9 +43,26 @@ const STATES: Record<BackupView["state"], string> = {
   failed: "Backup failed",
 };
 
-/** The running or last backup: its post, Done · Left · Failed, and Stop or Continue. */
-export function BackupPanel({ backup }: { backup: BackupView }) {
+/** The running or last backup: its post, Done · Left · Failed · New, and Stop, Continue or sign-in. */
+export function BackupPanel({ backup, onSignedIn }: { backup: BackupView; onSignedIn(): void }) {
   const running = backup.state === "running";
+  const action = backupAction(backup.state);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const resume = async () => {
+    setError(null);
+    const res = await api.startBackup(backup.targetId);
+    if (!res.ok) setError(res.error);
+  };
+  // signed out midway: sign in again, then go on where it stopped
+  const signIn = async () => {
+    setBusy(true);
+    const ok = await api.instagramSignIn();
+    setBusy(false);
+    if (!ok) return setError("Not signed in to Instagram.");
+    onSignedIn();
+    await resume();
+  };
   return (
     <section className="backup-panel" aria-label="Backup">
       {backup.cover ? <img src={backup.cover} alt="" draggable={false} /> : <span className="saved-collection-blank" />}
@@ -57,17 +76,22 @@ export function BackupPanel({ backup }: { backup: BackupView }) {
           Done {backup.done} · Left {backup.left ?? "?"} · Failed {backup.failed} · New {backup.saved}
         </span>
         {running && <progress max={1} value={backup.progress} />}
+        {error && <span className="error-text">{error}</span>}
       </div>
-      {running ? (
+      {action === "stop" && (
         <button type="button" className="btn" onClick={() => void api.stopBackup()}>
           Stop
         </button>
-      ) : (
-        backup.state !== "finished" && (
-          <button type="button" className="btn" onClick={() => void api.startBackup(backup.targetId)}>
-            Continue
-          </button>
-        )
+      )}
+      {action === "continue" && (
+        <button type="button" className="btn" onClick={() => void resume()}>
+          Continue
+        </button>
+      )}
+      {action === "signIn" && (
+        <button type="button" className="btn btn-primary" disabled={busy} onClick={() => void signIn()}>
+          Sign in to Instagram
+        </button>
       )}
     </section>
   );

@@ -162,7 +162,7 @@ export function SavedView({ backup }: { backup: BackupView | null }) {
         ))}
       </div>
 
-      {backup && <BackupPanel backup={backup} />}
+      {backup && <BackupPanel backup={backup} onSignedIn={() => void api.instagramAccount().then(setAccount)} />}
       {shown && backup?.state !== "running" && (
         <div>
           <button type="button" className="btn" onClick={() => void askBackup(shown)}>

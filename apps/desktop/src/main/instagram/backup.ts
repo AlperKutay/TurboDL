@@ -105,12 +105,19 @@ export class BackupRun {
     return this.running;
   }
 
-  /** Stops at once; the item in flight is dropped, everything saved so far is already recorded. */
-  stop(): void {
-    if (!this.isRunning) return;
-    this.state = "stopped";
-    this.stopper?.abort();
-    this.report();
+  /** Stops at once; resolves once the item in flight is dropped. Everything saved so far is already recorded. */
+  stop(): Promise<void> {
+    if (this.isRunning) {
+      this.state = "stopped";
+      this.stopper?.abort();
+      this.report();
+    }
+    return this.settled();
+  }
+
+  /** Resolves when no run is going on any more (a stopped one included). */
+  settled(): Promise<void> {
+    return this.running ?? Promise.resolve();
   }
 
   private async run(signal: AbortSignal): Promise<void> {

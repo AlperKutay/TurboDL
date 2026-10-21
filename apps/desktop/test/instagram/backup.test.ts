@@ -26,6 +26,8 @@ interface Setup {
   ledger?: BackupLedger;
   /** a fetch that never ends until it is called off */
   hang?: string;
+  /** ms a called-off fetch takes to clean up after itself */
+  cleanup?: number;
   count?: number;
 }
 
@@ -38,6 +40,7 @@ function setup(o: Setup = {}) {
   const fetched: string[] = [];
   const waits: number[] = [];
   const views: BackupView[] = [];
+  const cleaned: string[] = [];
   const target: BackupTarget = { id: "102", name: "Trips", count: o.count ?? 3, source: { kind: "collection", id: "102" }, dir: path.join(root, "Trips"), allowsEarlyStop: true };
   const run = new BackupRun(
     target,
@@ -51,7 +54,14 @@ function setup(o: Setup = {}) {
       fetch: async (url, file, { signal }) => {
         fetched.push(url);
         if (url === o.hang) {
-          await new Promise((_, reject) => signal?.addEventListener("abort", () => reject(new Error("Cancelled."))));
+          await new Promise((_, reject) =>
+            signal?.addEventListener("abort", () =>
+              setTimeout(() => {
+                cleaned.push(url);
+                reject(new Error("Cancelled."));
+              }, o.cleanup ?? 0),
+            ),
+          );
         }
         if (o.failing?.includes(url)) throw new Error("boom");
         writeFileSync(file, "x");
@@ -65,7 +75,7 @@ function setup(o: Setup = {}) {
     },
     (view) => views.push(view),
   );
-  return { run, asked, fetched, waits, views, ledgers, target };
+  return { run, asked, fetched, waits, views, ledgers, target, cleaned };
 }
 
 describe("BackupRun", () => {
@@ -135,6 +145,14 @@ describe("BackupRun", () => {
     expect(existsSync(path.join(target.dir, "12.mp4"))).toBe(false);
     expect(ledgers.load("102").saved).toEqual(["11"]);
     expect(views[views.length - 1].state).toBe("stopped");
+  });
+
+  it("stops only once the item in flight has been dropped", async () => {
+    const { run, cleaned } = setup({ hang: "https://cdn.example/12.mp4", cleanup: 50 });
+    void run.start();
+    await new Promise((r) => setTimeout(r, 30));
+    await run.stop();
+    expect(cleaned).toEqual(["https://cdn.example/12.mp4"]);
   });
 
   it("counts a file already on disk as saved without fetching it again", async () => {

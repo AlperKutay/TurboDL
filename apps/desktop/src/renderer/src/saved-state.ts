@@ -1,4 +1,4 @@
-import type { SavedPage, SavedPageResult, SavedPost, SavedSource } from "@turbodl/shared";
+import type { BackupView, SavedPage, SavedPageResult, SavedPost, SavedSource } from "@turbodl/shared";
 
 /** The Saved grid: one feed, loaded page by page, and the posts picked in it. */
 export interface SavedState {
@@ -47,6 +47,13 @@ export function pageFailed(state: SavedState, generation: number, result: Exclud
 /** After a failure or Instagram asking to slow down, when the owner asks again. */
 export function retry(state: SavedState): SavedState {
   return state.status === "failed" || state.status === "rateLimited" ? { ...state, status: "idle", error: undefined } : state;
+}
+
+/** What a backup's panel offers: Stop while it runs, sign-in when Instagram signed TurboDL out, else Continue. */
+export function backupAction(state: BackupView["state"]): "stop" | "continue" | "signIn" | "none" {
+  if (state === "running") return "stop";
+  if (state === "signedOut") return "signIn";
+  return state === "finished" ? "none" : "continue";
 }
 
 export function toggle(state: SavedState, postId: string): SavedState {
