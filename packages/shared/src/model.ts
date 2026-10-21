@@ -153,6 +153,25 @@ export interface PendingInstagram {
 
 export type PendingItem = PendingDownload | PendingMedia | PendingInstagram;
 
+/** A collection backup as its progress panel shows it. */
+export interface BackupView {
+  targetId: string;
+  name: string;
+  state: "running" | "stopped" | "finished" | "signedOut" | "rateLimited" | "failed";
+  error?: string;
+  /** posts with every item saved, earlier runs' included */
+  done: number;
+  failed: number;
+  /** posts still to go, when Instagram said how many there are */
+  left?: number;
+  /** items this run saved */
+  saved: number;
+  /** the post being saved now */
+  cover?: string;
+  /** of the item being fetched now, 0…1 */
+  progress: number;
+}
+
 /** What the Instagram picker shows: the items, a sign-in to do, nothing found, or a request already closed. */
 export type InstagramFindResult =
   | { type: "items"; items: InstagramItem[] }

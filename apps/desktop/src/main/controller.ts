@@ -37,6 +37,7 @@ import {
 import { createBridgeServer, type BridgeServer } from "./bridge-server";
 import { HttpDownloadTask } from "./engine/download-task";
 import type { FindOutcome } from "./instagram/finder";
+import { instagramExtension } from "./instagram/files";
 import { InstagramSession, type Crypt } from "./instagram/session";
 import { probe } from "./engine/probe";
 import { DownloadManager, type StateFile } from "./manager";
@@ -667,11 +668,4 @@ export class AppController {
     this.bridge = null;
     await this.startBridge();
   }
-}
-
-/** A photo's or video's extension, from its address (Instagram serves .jpg, .webp, .heic, .mp4). */
-function instagramExtension(item: InstagramItem): string {
-  const ext = getExtension(new URL(item.url).pathname).toLowerCase();
-  if (item.kind === "video") return ext === "mp4" || ext === "mov" ? ext : "mp4";
-  return ["jpg", "jpeg", "png", "webp", "heic"].includes(ext) ? ext : "jpg";
 }
