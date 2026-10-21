@@ -43,6 +43,9 @@ import { createBridgeServer, type BridgeServer } from "./bridge-server";
 import { HttpDownloadTask } from "./engine/download-task";
 import { delay } from "./engine/http";
 import { fetchMedia } from "./instagram/fetch-media";
+import { Backups } from "./instagram/backups";
+import { LedgerStore } from "./instagram/ledger";
+import { InstagramPacer } from "./instagram/pacer";
 import { httpGet, type HttpGet } from "./instagram/saved-client";
 import { SavedService } from "./instagram/saved-service";
 import type { FindOutcome } from "./instagram/finder";
@@ -181,24 +184,35 @@ export class AppController {
   /** the check page each picker's page landed on */
   private readonly instagramChecks = new Map<string, string>();
   private readonly saved: SavedService;
+  /** the account's one pace and one backup slot, Saved and profiles alike */
+  private readonly pacer: InstagramPacer;
+  private readonly backups: Backups;
 
   constructor(private readonly o: ControllerOptions) {
     this.instagram = o.instagram ?? NO_INSTAGRAM;
     this.instagramSession = new InstagramSession(path.join(o.userDataDir, "instagram-session.bin"), this.instagram.crypt);
     this.instagramSession.load();
     const ig = this.instagram;
+    const wait = (ms: number, signal?: AbortSignal) => (ig.wait ? ig.wait(ms, signal) : delay(ms, signal ?? new AbortController().signal));
+    this.pacer = new InstagramPacer(() => (ig.now ? ig.now() : Date.now()), wait);
+    this.backups = new Backups({
+      ledgers: new LedgerStore(path.join(o.userDataDir, "instagram-backups")),
+      fetch: ig.fetch ?? fetchMedia,
+      wait,
+      headers: () => ({ Referer: "https://www.instagram.com/", ...(ig.agent ? { "User-Agent": ig.agent } : {}) }),
+      held: () => this.pacer.held(),
+      onBackup: (backup) => this.o.ui.broadcast({ type: "instagramBackup", backup }),
+    });
     this.saved = new SavedService({
       session: this.instagramSession,
       agent: ig.agent,
       get: ig.get ?? httpGet,
       collections: (username, cookies) => (ig.collections ? ig.collections(username, cookies) : Promise.resolve(null)),
-      fetch: ig.fetch ?? fetchMedia,
-      wait: (ms, signal) => (ig.wait ? ig.wait(ms, signal) : delay(ms, signal ?? new AbortController().signal)),
-      now: () => (ig.now ? ig.now() : Date.now()),
       signOut: () => (ig.signOut ? ig.signOut() : Promise.resolve()),
       userDataDir: o.userDataDir,
       baseDir: () => this.settings.baseDir,
-      onBackup: (backup) => this.o.ui.broadcast({ type: "instagramBackup", backup }),
+      pacer: this.pacer,
+      backups: this.backups,
     });
     this.defaults = defaultSettings(o.downloadsDir);
     this.settingsStore = new JsonStore<Settings>(path.join(o.userDataDir, "settings.json"));
@@ -252,7 +266,7 @@ export class AppController {
       bridge: this.bridgeStatus,
       countdown: this.countdown,
       version: this.o.version,
-      instagramBackup: this.saved.backupView(),
+      instagramBackup: this.backups.view(),
     };
   }
 
@@ -478,7 +492,7 @@ export class AppController {
   }
 
   stopBackup(): Promise<void> {
-    return this.saved.stopBackup();
+    return this.backups.stop();
   }
 
   /** A saved link: the browser's session is taken, and the main window shows Saved. */
@@ -691,7 +705,7 @@ export class AppController {
 
   async shutdown(): Promise<void> {
     // a backup's item in flight removes its temporary file before the app goes
-    await Promise.race([this.saved.stopBackup(), new Promise((r) => setTimeout(r, 3000))]);
+    await Promise.race([this.backups.stop(), new Promise((r) => setTimeout(r, 3000))]);
     this.scheduler.stop();
     await this.manager.shutdown();
     this.settingsStore.flush();

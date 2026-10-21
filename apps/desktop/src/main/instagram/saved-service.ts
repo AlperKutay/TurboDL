@@ -1,11 +1,9 @@
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { statfs } from "node:fs/promises";
+import { readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import {
   SavedError,
   sanitizeFilename,
   type BackupPlan,
-  type BackupView,
   type InstagramAccount,
   type InstagramItem,
   type Result,
@@ -14,37 +12,26 @@ import {
   type SavedPost,
   type SavedSource,
 } from "@turbodl/shared";
-import { BackupRun } from "./backup";
-import type { fetchMedia } from "./fetch-media";
-import { LedgerStore } from "./ledger";
+import type { Backups } from "./backups";
+import { failedPage, type InstagramPacer } from "./pacer";
 import { SavedClient, type HttpGet } from "./saved-client";
 import type { InstagramSession } from "./session";
 
 export interface SavedServiceDeps {
   session: InstagramSession;
-  /** the user agent Instagram and its CDN get */
+  /** the user agent Instagram gets */
   agent: string;
   get: HttpGet;
   /** the account's collections from its saved page; null when it listed none in time */
   collections(username: string, cookies: ReturnType<InstagramSession["cookies"]>): Promise<SavedCollection[] | null>;
-  fetch: typeof fetchMedia;
-  wait(ms: number, signal?: AbortSignal): Promise<void>;
-  now(): number;
   /** forgets the session in the hidden pages' partition too */
   signOut(): Promise<void>;
   userDataDir: string;
   baseDir(): string;
-  onBackup(view: BackupView): void;
+  pacer: InstagramPacer;
+  backups: Backups;
 }
 
-/** ms between saved-feed requests, the grid's and backups' alike */
-const PAGE_GAP = 1500;
-/** ms nothing is asked of the saved feeds after Instagram asked to slow down */
-const HOLD = 2 * 60_000;
-const SLOW_DOWN = "Instagram asked TurboDL to slow down. Try again in a few minutes.";
-const VIDEO_BYTES = 8_000_000;
-const PHOTO_BYTES = 600_000;
-const LARGE_COLLECTION = 1000;
 /** posts kept per feed for estimates */
 const SAMPLE = 500;
 
@@ -56,19 +43,12 @@ export class SavedService {
   private readonly posts = new Map<string, SavedPost>();
   /** posts served per feed ("all" or a collection id) */
   private readonly samples = new Map<string, SavedPost[]>();
-  private nextPageAt = 0;
-  /** after Instagram asked to slow down: no saved-feed request before this */
-  private heldUntil = 0;
   /** the grid's latest request; one that waited while another feed was asked for is dropped */
   private latestBrowse = { ticket: 0, feed: "" };
-  private backup: BackupRun | null = null;
-  private starting = false;
-  private readonly ledgers: LedgerStore;
   private readonly cacheFile: string;
   private readonly client: SavedClient;
 
   constructor(private readonly deps: SavedServiceDeps) {
-    this.ledgers = new LedgerStore(path.join(deps.userDataDir, "instagram-backups"));
     this.cacheFile = path.join(deps.userDataDir, "instagram-collections.json");
     this.client = new SavedClient(() => deps.session.cookies(), deps.agent, deps.get);
   }
@@ -92,7 +72,7 @@ export class SavedService {
   }
 
   async signOut(): Promise<void> {
-    this.stopBackup();
+    await this.deps.backups.stop();
     this.deps.session.clear();
     this.account = undefined;
     this.list = null;
@@ -129,20 +109,21 @@ export class SavedService {
   }
 
   /**
-   * One page of a feed for the grid, never sooner than 1.5 s after the last saved-feed request (a backup's too), and
-   * not at all while Instagram's "slow down" holds, or when another feed was asked for meanwhile.
+   * One page of a feed for the grid, in the account's pace (a backup's requests too), not at all while Instagram's
+   * "slow down" holds, or when another feed was asked for meanwhile.
    */
   async page(source: SavedSource, cursor?: string): Promise<SavedPageResult> {
     if (!this.deps.session.signedIn()) return { type: "signedOut" };
+    const { pacer } = this.deps;
     const key = source.kind === "all" ? "all" : source.id;
     const ticket = ++this.latestBrowse.ticket;
     this.latestBrowse.feed = key;
-    if (this.held()) return { type: "rateLimited" };
-    await this.pace();
+    if (pacer.held()) return { type: "rateLimited" };
+    await pacer.pace();
     if (this.latestBrowse.ticket !== ticket && this.latestBrowse.feed !== key) return { type: "failed", message: "Another feed was asked for." };
-    if (this.held()) return { type: "rateLimited" };
+    if (pacer.held()) return { type: "rateLimited" };
     try {
-      const page = await this.ask(() => this.client.page(source, cursor));
+      const page = await pacer.ask(() => this.client.page(source, cursor));
       const sample = this.samples.get(key) ?? [];
       for (const post of page.posts) {
         this.posts.set(post.id, post);
@@ -151,8 +132,7 @@ export class SavedService {
       this.samples.set(key, sample);
       return { type: "page", page };
     } catch (err) {
-      if (err instanceof SavedError && (err.kind === "signedOut" || err.kind === "rateLimited")) return { type: err.kind };
-      return { type: "failed", message: failureText(err) };
+      return failedPage(err);
     }
   }
 
@@ -161,76 +141,32 @@ export class SavedService {
     return postIds.flatMap((id) => this.posts.get(id)?.items ?? []);
   }
 
-  async plan(collectionId: string): Promise<BackupPlan> {
+  plan(collectionId: string): Promise<BackupPlan> {
     const collection = this.collection(collectionId);
-    const count = collection?.count;
-    const sample = this.samples.get(collectionId) ?? [];
-    const sampleBytes = sample.flatMap((p) => p.items).reduce((sum, item) => sum + (item.kind === "video" ? VIDEO_BYTES : PHOTO_BYTES), 0);
-    const ledger = this.ledgers.load(collectionId);
-    const freeBytes = await free(collection ? this.folder(collection) : this.deps.baseDir());
-    return {
-      ...(count !== undefined ? { count } : {}),
-      ...(count !== undefined && sample.length > 0 ? { bytes: (count * sampleBytes) / sample.length } : {}),
-      ...(freeBytes !== undefined ? { freeBytes } : {}),
-      large: (count ?? 0) > LARGE_COLLECTION,
-      resumes: ledger.saved.length > 0 && !ledger.reachedEnd,
-    };
+    return this.deps.backups.plan(collectionId, collection?.count, this.samples.get(collectionId) ?? [], collection ? this.folder(collection) : this.deps.baseDir());
   }
 
-  /** Starts backing up one of the account's own collections; one backup at a time. */
+  /** Starts backing up one of the account's own collections, in the account's one backup slot. */
   async startBackup(collectionId: string): Promise<Result> {
-    if (this.backup?.isRunning || this.starting) return { ok: false, error: "A backup is already running." };
-    this.starting = true;
-    try {
-      // a stopped run records its last item before this one reads the ledger
-      await this.backup?.settled();
-      return this.begin(collectionId);
-    } finally {
-      this.starting = false;
-    }
-  }
-
-  private begin(collectionId: string): Result {
-    if (this.held()) return { ok: false, error: SLOW_DOWN };
+    if (this.deps.backups.isRunning()) return { ok: false, error: "A backup is already running." };
     const collection = this.collection(collectionId);
     if (!collection || collection.isAll) return { ok: false, error: "Only your own collections can be backed up." };
-    const run: BackupRun = new BackupRun(
+    const { pacer } = this.deps;
+    const source: SavedSource = { kind: "collection", id: collection.id };
+    return this.deps.backups.start(
       {
         id: collection.id,
         name: collection.name,
         ...(collection.count !== undefined ? { count: collection.count } : {}),
-        source: { kind: "collection", id: collection.id },
         dir: this.folder(collection),
         allowsEarlyStop: true,
       },
-      {
-        page: async (source, cursor, signal) => {
-          await this.pace(signal);
-          if (this.held()) throw new SavedError("rateLimited");
-          return this.ask(() => this.client.page(source, cursor, signal));
-        },
-        fetch: this.deps.fetch,
-        ledgers: this.ledgers,
-        wait: (ms, signal) => this.deps.wait(ms, signal),
-        headers: { Referer: "https://www.instagram.com/", ...(this.deps.agent ? { "User-Agent": this.deps.agent } : {}) },
-      },
-      // a run replaced by a newer one reports nothing more
-      (view) => {
-        if (this.backup === run) this.deps.onBackup(view);
+      async (cursor, signal) => {
+        await pacer.pace(signal);
+        if (pacer.held()) throw new SavedError("rateLimited");
+        return pacer.ask(() => this.client.page(source, cursor, signal));
       },
     );
-    this.backup = run;
-    void run.start();
-    return { ok: true };
-  }
-
-  /** Resolves once the item in flight is dropped. */
-  stopBackup(): Promise<void> {
-    return this.backup?.stop() ?? Promise.resolve();
-  }
-
-  backupView(): BackupView | null {
-    return this.backup?.view() ?? null;
   }
 
   private async username(): Promise<string> {
@@ -251,28 +187,6 @@ export class SavedService {
     return path.join(this.deps.baseDir(), "Instagram", "Saved", name);
   }
 
-  /** Takes the next 1.5 s slot for a saved-feed request and waits for it. */
-  private async pace(signal?: AbortSignal): Promise<void> {
-    const now = this.deps.now();
-    const at = Math.max(now, this.nextPageAt);
-    this.nextPageAt = at + PAGE_GAP;
-    if (at > now) await this.deps.wait(at - now, signal).catch(() => undefined);
-  }
-
-  /** A saved-feed request; Instagram asking to slow down holds every other one for a while. */
-  private async ask<T>(request: () => Promise<T>): Promise<T> {
-    try {
-      return await request();
-    } catch (err) {
-      if (err instanceof SavedError && err.kind === "rateLimited") this.heldUntil = this.deps.now() + HOLD;
-      throw err;
-    }
-  }
-
-  private held(): boolean {
-    return this.deps.now() < this.heldUntil;
-  }
-
   private readCache(): { username: string; list: SavedCollection[] } | null {
     try {
       const data = JSON.parse(readFileSync(this.cacheFile, "utf8")) as { username?: unknown; list?: unknown };
@@ -280,22 +194,5 @@ export class SavedService {
     } catch {
       return null;
     }
-  }
-}
-
-function failureText(err: unknown): string {
-  if (err instanceof SavedError) return err.kind === "http" ? err.message : "Instagram's answer couldn't be read.";
-  return err instanceof Error ? err.message : String(err);
-}
-
-/** Free bytes on the drive of `dir` (or of its nearest folder that exists). */
-async function free(dir: string): Promise<number | undefined> {
-  let at = dir;
-  while (!existsSync(at) && path.dirname(at) !== at) at = path.dirname(at);
-  try {
-    const s = await statfs(at);
-    return s.bavail * s.bsize;
-  } catch {
-    return undefined;
   }
 }

@@ -1,18 +1,17 @@
 import { existsSync, mkdirSync } from "node:fs";
 import path from "node:path";
-import { SavedError, sanitizeFilename, type BackupView, type InstagramItem, type SavedPage, type SavedPost, type SavedSource } from "@turbodl/shared";
+import { SavedError, sanitizeFilename, type BackupView, type InstagramItem, type SavedPage, type SavedPost } from "@turbodl/shared";
 import type { fetchMedia } from "./fetch-media";
 import { instagramExtension } from "./files";
 import { allowsEarlyStop, type LedgerStore } from "./ledger";
 
-/** What a backup goes through: one of the account's collections. */
+/** What a backup goes through: one of the account's collections, or a profile. */
 export interface BackupTarget {
-  /** the ledger's name; it stays when the collection is renamed */
+  /** the ledger's name; it stays when the collection or the account is renamed */
   id: string;
   name: string;
   /** how many posts it holds, when Instagram says */
   count?: number;
-  source: SavedSource;
   /** where its files go */
   dir: string;
   /** a later run may stop at the first page already saved: where the newest come first and old ones don't change */
@@ -20,7 +19,8 @@ export interface BackupTarget {
 }
 
 export interface BackupDeps {
-  page(source: SavedSource, cursor?: string, signal?: AbortSignal): Promise<SavedPage>;
+  /** no cursor: the first page */
+  page(cursor?: string, signal?: AbortSignal): Promise<SavedPage>;
   fetch: typeof fetchMedia;
   ledgers: LedgerStore;
   /** resolves after `ms`, or early when `signal` aborts; tests record instead of sleeping */
@@ -137,7 +137,7 @@ export class BackupRun {
       if (signal.aborted) return;
       let page: SavedPage;
       try {
-        page = await deps.page(target.source, cursor, signal);
+        page = await deps.page(cursor, signal);
       } catch (err) {
         if (signal.aborted) return;
         if (err instanceof SavedError && (err.kind === "signedOut" || err.kind === "rateLimited")) this.state = err.kind;

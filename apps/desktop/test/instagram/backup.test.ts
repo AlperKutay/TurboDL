@@ -41,11 +41,11 @@ function setup(o: Setup = {}) {
   const waits: number[] = [];
   const views: BackupView[] = [];
   const cleaned: string[] = [];
-  const target: BackupTarget = { id: "102", name: "Trips", count: o.count ?? 3, source: { kind: "collection", id: "102" }, dir: path.join(root, "Trips"), allowsEarlyStop: true };
+  const target: BackupTarget = { id: "102", name: "Trips", count: o.count ?? 3, dir: path.join(root, "Trips"), allowsEarlyStop: true };
   const run = new BackupRun(
     target,
     {
-      page: async (_source, cursor) => {
+      page: async (cursor) => {
         asked.push(cursor);
         const k = cursor ? Number(cursor) : 0;
         if (o.pushBack?.page === k) throw o.pushBack.error;
