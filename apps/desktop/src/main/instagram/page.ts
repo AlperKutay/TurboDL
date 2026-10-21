@@ -1,7 +1,8 @@
 import { BrowserWindow, session, type Session } from "electron";
 import { SavedError, type BrowserCookie } from "@turbodl/shared";
 import { chromeAgent } from "./agent";
-import { within, type PageDriver } from "./finder";
+import { within } from "./finder";
+import type { ProfileDriver } from "./profile-feed";
 import { INSTAGRAM_PARTITION, blockedFrame, electronCookie, isInstagramAddress } from "./partition";
 import { postsRequest, resendScript, type PostsRequest } from "./posts-request";
 
@@ -62,7 +63,7 @@ export async function applyCookies(s: Session, cookies: BrowserCookie[]): Promis
  * An Instagram page in a window that is never shown: sandboxed, no preload, only Instagram addresses. Its JSON
  * answers are read from the DevTools protocol in the main process, so nothing is injected into the page.
  */
-export class ElectronInstagramPage implements PageDriver {
+export class ElectronInstagramPage implements ProfileDriver {
   private win: BrowserWindow | null = null;
   private readonly answers: string[] = [];
   private readonly waiting = new Set<string>();
