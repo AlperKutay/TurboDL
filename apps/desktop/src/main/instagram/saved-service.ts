@@ -167,6 +167,7 @@ export class SavedService {
         if (pacer.held()) throw new SavedError("rateLimited");
         return pacer.ask(() => this.client.page(source, cursor, signal));
       },
+      () => this.startBackup(collectionId),
     );
   }
 

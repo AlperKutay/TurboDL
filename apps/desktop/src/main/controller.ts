@@ -537,6 +537,11 @@ export class AppController {
     return this.backups.stop();
   }
 
+  /** Starts the last backup again (Continue), whatever it backs up. */
+  continueBackup(): Promise<Result> {
+    return this.backups.continueLast();
+  }
+
   profileLoad(username: string): Promise<ProfileResult> {
     return this.profiles.load(username);
   }

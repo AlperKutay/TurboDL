@@ -313,6 +313,8 @@ export interface TurboApi {
   backupPlan(collectionId: string): Promise<BackupPlan>;
   startBackup(collectionId: string): Promise<Result>;
   stopBackup(): Promise<void>;
+  /** starts the last backup again, whatever it backs up */
+  continueBackup(): Promise<Result>;
   /** opens the profile's page (once) and answers who it is */
   profileLoad(username: string): Promise<ProfileResult>;
   /** no cursor: the posts its page loaded */

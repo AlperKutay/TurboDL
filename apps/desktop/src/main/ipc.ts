@@ -63,6 +63,7 @@ export function registerIpc(c: AppController): void {
   handle("backupPlan", (id: unknown) => c.backupPlan(String(id)));
   handle("startBackup", (id: unknown) => c.startBackup(String(id)));
   handle("stopBackup", () => c.stopBackup());
+  handle("continueBackup", () => c.continueBackup());
   const name = (v: unknown) => (typeof v === "string" ? v : "");
   handle("profileLoad", (username: unknown) => c.profileLoad(name(username)));
   handle("profilePage", (username: unknown, cursor: unknown) => c.profilePage(name(username), typeof cursor === "string" ? cursor : undefined));

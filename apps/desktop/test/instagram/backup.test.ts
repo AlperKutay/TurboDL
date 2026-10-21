@@ -28,6 +28,7 @@ interface Setup {
   hang?: string;
   /** ms a called-off fetch takes to clean up after itself */
   cleanup?: number;
+  pageGap?: [number, number];
   count?: number;
 }
 
@@ -41,7 +42,15 @@ function setup(o: Setup = {}) {
   const waits: number[] = [];
   const views: BackupView[] = [];
   const cleaned: string[] = [];
-  const target: BackupTarget = { id: "102", kind: "collection", name: "Trips", count: o.count ?? 3, dir: path.join(root, "Trips"), allowsEarlyStop: true };
+  const target: BackupTarget = {
+    id: "102",
+    kind: "collection",
+    name: "Trips",
+    count: o.count ?? 3,
+    dir: path.join(root, "Trips"),
+    allowsEarlyStop: true,
+    ...(o.pageGap ? { pageGap: o.pageGap } : {}),
+  };
   const run = new BackupRun(
     target,
     {
@@ -162,6 +171,20 @@ describe("BackupRun", () => {
     await run.start();
     expect(fetched).not.toContain("https://cdn.example/11.jpg");
     expect(ledgers.load("102").saved).toContain("11");
+  });
+
+  it("counts a post that shows nothing as failed, tried again next run, and goes on", async () => {
+    const { run, ledgers } = setup({ pages: [[post("1", item("11")), post("9"), post("2", item("2"))]] });
+    await run.start();
+    expect(run.view()).toMatchObject({ state: "finished", done: 2, failed: 1 });
+    expect(ledgers.load("102")).toMatchObject({ saved: ["11", "2"], failedPosts: ["9"] });
+  });
+
+  it("waits the target's own gap before each next page", async () => {
+    const { run, waits } = setup({ pageGap: [3000, 6000], ledger: { saved: ["11", "12", "2"], failedPosts: [], reachedEnd: false } });
+    await run.start();
+    // page 1 all saved before; page 2 after 3–6 s (4.5 s at 0.5); post 3 fetched → 2.25 s
+    expect(waits).toEqual([4500, 2250]);
   });
 
   it("waits between posts it fetched and before each next page, never after posts already done", async () => {

@@ -984,6 +984,19 @@ describe("Instagram profiles", () => {
     expect(ig.closed).toEqual(["sample.user"]);
   });
 
+  it("continues the last backup, of whatever kind, even after its profile was left", async () => {
+    const ig = fakeProfiles({ "sample.user": SAMPLE, "other.user": { profile: person("53", "other.user"), pages: [[]] } }, { hangFetch: true });
+    const c = await signedIn(ig.deps);
+    expect(await c.continueBackup()).toEqual({ ok: false, error: "There is no backup to continue." });
+    await c.profileLoad("sample.user");
+    await c.startProfileBackup("sample.user");
+    await c.profileLoad("other.user");
+    await c.stopBackup();
+    expect(await c.continueBackup()).toEqual({ ok: true });
+    expect(c.snapshot().instagramBackup).toMatchObject({ state: "running", name: "sample.user" });
+    await c.stopBackup();
+  });
+
   it("keeps a link's request to open a screen until the main window takes it, once", async () => {
     const ig = fakeProfiles({ "sample.user": SAMPLE });
     const c = await start({}, null, ig.deps);

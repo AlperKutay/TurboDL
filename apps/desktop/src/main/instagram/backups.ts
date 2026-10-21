@@ -26,6 +26,8 @@ export interface BackupsDeps {
 export class Backups {
   private run: BackupRun | null = null;
   private starting = false;
+  /** how the last backup is started again (Continue) */
+  private again: (() => Promise<Result>) | null = null;
 
   constructor(private readonly deps: BackupsDeps) {}
 
@@ -33,8 +35,11 @@ export class Backups {
     return this.run?.isRunning === true || this.starting;
   }
 
-  /** Starts `target`; refused while another runs. A stopped run records its last item before this one reads the ledger. */
-  async start(target: BackupTarget, page: BackupDeps["page"]): Promise<Result> {
+  /**
+   * Starts `target`; refused while another runs. A stopped run records its last item before this one reads the ledger.
+   * `again` starts it once more, for Continue.
+   */
+  async start(target: BackupTarget, page: BackupDeps["page"], again: () => Promise<Result>): Promise<Result> {
     if (this.isRunning()) return { ok: false, error: "A backup is already running." };
     this.starting = true;
     try {
@@ -49,11 +54,17 @@ export class Backups {
         },
       );
       this.run = run;
+      this.again = again;
       void run.start();
       return { ok: true };
     } finally {
       this.starting = false;
     }
+  }
+
+  /** Starts the last backup again, whatever it backs up. */
+  continueLast(): Promise<Result> {
+    return this.again ? this.again() : Promise.resolve({ ok: false, error: "There is no backup to continue." });
   }
 
   /** Resolves once the item in flight is dropped. */

@@ -51,6 +51,7 @@ export class ProfileService {
   private current: { key: string; source: ProfileSource } | null = null;
   /** the page a running backup pages through; it stays open until the backup ends */
   private backupSource: ProfileSource | null = null;
+  private backupKey = "";
   private readonly profiles = new Map<string, InstagramProfile>();
   private readonly posts = new Map<string, SavedPost>();
   private readonly samples = new Map<string, SavedPost[]>();
@@ -109,13 +110,16 @@ export class ProfileService {
     return this.deps.backups.plan(profile ? `profile-${profile.id}` : "", profile?.postCount, this.samples.get(key) ?? [], this.folder(profile?.username ?? username));
   }
 
-  /** Backs up the open profile into its username's folder, its ledger keyed by the account's number. */
+  /**
+   * Backs up a profile into its username's folder, its ledger keyed by the account's number: through the open
+   * profile's page, or a page of its own when the profile isn't open (Continue after leaving it).
+   */
   async startBackup(username: string): Promise<Result> {
     if (this.deps.backups.isRunning()) return { ok: false, error: "A backup is already running." };
     const key = username.toLowerCase();
-    const profile = this.profiles.get(key);
-    const source = this.current?.key === key ? this.current.source : null;
-    if (!profile || !source) return { ok: false, error: "Open the profile first." };
+    const opened = await this.pageFor(key);
+    if ("error" in opened) return { ok: false, error: opened.error };
+    const { profile, source } = opened;
     if (isLocked(profile)) return { ok: false, error: "This account is private." };
     const result = await this.deps.backups.start(
       {
@@ -127,10 +131,15 @@ export class ProfileService {
         allowsEarlyStop: true,
       },
       (cursor, signal) => this.paged(source, cursor, signal),
+      () => this.startBackup(key),
     );
-    if (!result.ok) return result;
+    if (!result.ok) {
+      if (this.current?.source !== source && this.backupSource !== source) source.close();
+      return result;
+    }
     this.deps.index.record(profile, this.deps.now());
     this.backupSource = source;
+    this.backupKey = key;
     void this.deps.backups.settled().then(() => {
       if (this.backupSource !== source) return;
       this.backupSource = null;
@@ -158,9 +167,32 @@ export class ProfileService {
     this.backupSource = null;
   }
 
+  /** The open profile's page and profile, a running backup's, or a page of its own for a backup. */
+  private async pageFor(key: string): Promise<{ profile: InstagramProfile; source: ProfileSource } | { error: string }> {
+    const known = this.profiles.get(key);
+    if (this.current?.key === key && known) return { profile: known, source: this.current.source };
+    if (this.backupKey === key && this.backupSource && known) return { profile: known, source: this.backupSource };
+    if (!this.deps.session.signedIn()) return { error: "Sign in to Instagram first." };
+    const source = this.deps.open(key, this.deps.session.cookies());
+    try {
+      const profile = await source.profile();
+      this.profiles.set(key, profile);
+      return { profile, source };
+    } catch (err) {
+      source.close();
+      const failed = failedPage(err);
+      return { error: failed.type === "failed" ? failed.message : failed.type === "signedOut" ? "Sign in to Instagram again." : "Instagram asked TurboDL to slow down. Try again in a few minutes." };
+    }
+  }
+
   private sourceFor(key: string): ProfileSource {
     if (this.current?.key === key) return this.current.source;
     this.release();
+    // a running backup's page is the profile's page too
+    if (this.backupKey === key && this.backupSource) {
+      this.current = { key, source: this.backupSource };
+      return this.backupSource;
+    }
     const source = this.deps.open(key, this.deps.session.cookies());
     this.current = { key, source };
     return source;

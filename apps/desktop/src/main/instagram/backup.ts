@@ -17,6 +17,8 @@ export interface BackupTarget {
   dir: string;
   /** a later run may stop at the first page already saved: where the newest come first and old ones don't change */
   allowsEarlyStop: boolean;
+  /** ms before each next page, picked at random in the range, where a page costs more than a feed request */
+  pageGap?: [number, number];
 }
 
 export interface BackupDeps {
@@ -130,12 +132,15 @@ export class BackupRun {
     const failedPosts = new Set(ledger.failedPosts);
     let reachedEnd = ledger.reachedEnd;
     const record = () => deps.ledgers.save(target.id, { saved: [...saved], failedPosts: [...failedPosts], reachedEnd });
-    const isDone = (post: SavedPost) => post.items.every((item) => saved.has(itemId(post, item)));
+    // a post with nothing to save (a highlight whose page showed nothing) is never done
+    const isDone = (post: SavedPost) => post.items.length > 0 && post.items.every((item) => saved.has(itemId(post, item)));
+    const random = deps.random ?? Math.random;
+    const pageGap = target.pageGap ? target.pageGap[0] + random() * (target.pageGap[1] - target.pageGap[0]) : PAGE_GAP;
     // newest posts come first, so after a clean complete pass a page already saved means nothing new is below it
     const earlyStop = target.allowsEarlyStop && allowsEarlyStop(ledger);
     let cursor: string | undefined;
     for (;;) {
-      if (cursor !== undefined) await this.pause(PAGE_GAP, signal);
+      if (cursor !== undefined) await this.pause(pageGap, signal);
       if (signal.aborted) return;
       let page: SavedPage;
       try {
@@ -155,6 +160,14 @@ export class BackupRun {
       }
       for (const post of page.posts) {
         if (signal.aborted) return;
+        if (post.items.length === 0) {
+          // nothing came back for it: not done, tried again next run
+          failedPosts.add(post.id);
+          this.failed++;
+          record();
+          this.report();
+          continue;
+        }
         if (isDone(post)) {
           this.done++;
           this.report();
@@ -185,7 +198,7 @@ export class BackupRun {
         }
         record();
         this.report();
-        if (asked) await this.pause(POST_GAP[0] + (deps.random ?? Math.random)() * (POST_GAP[1] - POST_GAP[0]), signal);
+        if (asked) await this.pause(POST_GAP[0] + random() * (POST_GAP[1] - POST_GAP[0]), signal);
       }
       if (!page.next) {
         reachedEnd = true;

@@ -40,6 +40,7 @@ const api: TurboApi = {
   backupPlan: (id) => invoke("backupPlan", id),
   startBackup: (id) => invoke("startBackup", id),
   stopBackup: () => invoke("stopBackup"),
+  continueBackup: () => invoke("continueBackup"),
   profileLoad: (username) => invoke("profileLoad", username),
   profilePage: (username, cursor) => invoke("profilePage", username, cursor),
   openProfilePicks: (username, ids) => invoke("openProfilePicks", username, ids),

@@ -51,7 +51,7 @@ export function BackupPanel({ backup, onSignedIn }: { backup: BackupView; onSign
   const [busy, setBusy] = useState(false);
   const resume = async () => {
     setError(null);
-    const res = backup.kind === "collection" ? await api.startBackup(backup.targetId) : await api.startProfileBackup(backup.name);
+    const res = await api.continueBackup();
     if (!res.ok) setError(res.error);
   };
   // signed out midway: sign in again, then go on where it stopped
