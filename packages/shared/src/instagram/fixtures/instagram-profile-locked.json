@@ -1,0 +1,5 @@
+[
+ "{\"data\": {\"viewer\": {\"username\": \"viewer.account\", \"full_name\": \"Viewer\", \"is_private\": true, \"id\": \"5100000000000000099\", \"profile_pic_url\": \"https://cdn.example/viewer.jpg\"}}}",
+ "{\"data\": {\"user\": {\"pk\": \"5100000000000000001\", \"id\": \"5100000000000000001\", \"username\": \"sample.user\", \"full_name\": \"Sample User\", \"is_private\": true, \"media_count\": 12, \"follower_count\": 10, \"profile_pic_url\": \"https://cdn.example/sample.jpg\", \"friendship_status\": {\"following\": false, \"followed_by\": false}}}}",
+ "{\"data\": {\"xdt_api__v1__feed__user_timeline_graphql_connection\": {\"edges\": [], \"page_info\": {\"end_cursor\": null, \"has_next_page\": false, \"has_previous_page\": false, \"start_cursor\": null}}}}"
+]

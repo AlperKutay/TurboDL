@@ -1,0 +1,32 @@
+{
+ "data": {
+  "xdt_shortcode_media": {
+   "__typename": "XDTGraphSidecar",
+   "shortcode": "C3graph",
+   "display_url": "https://scontent.cdninstagram.example/v/t51/sidecar_cover.jpg",
+   "edge_sidecar_to_children": {
+    "edges": [
+     {"node": {
+      "__typename": "XDTGraphImage",
+      "shortcode": "C3child1",
+      "is_video": false,
+      "display_url": "https://scontent.cdninstagram.example/v/t51/child1_display.jpg",
+      "display_resources": [
+       {"src": "https://scontent.cdninstagram.example/v/t51/child1_640.jpg", "config_width": 640, "config_height": 640},
+       {"src": "https://scontent.cdninstagram.example/v/t51/child1_1080.jpg", "config_width": 1080, "config_height": 1080}
+      ]
+     }},
+     {"node": {
+      "__typename": "XDTGraphVideo",
+      "shortcode": "C3child2",
+      "is_video": true,
+      "video_url": "https://scontent.cdninstagram.example/o1/v/t16/child2.mp4",
+      "video_duration": 8.2,
+      "display_url": "https://scontent.cdninstagram.example/v/t51/child2_cover.jpg",
+      "dimensions": {"width": 720, "height": 1280}
+     }}
+    ]
+   }
+  }
+ }
+}

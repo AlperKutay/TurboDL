@@ -1,0 +1,13 @@
+{"require":[["ScheduledServerJS","handle",null,[{"__bbox":{"require":[["RelayPrefetchedStreamCache","next",[],["adp_PolarisStoriesV3HighlightsPageStandaloneQueryRelayPreloader",{"__bbox":{"complete":true,"result":{"data":{"xdt_api__v1__feed__reels_media__connection":{"edges":[
+ {"node":{"__typename":"XDTReelDict","id":"highlight:17900000000000002","reel_type":"highlight_reel","title":"Summer","user":{"username":"someone"},"items":[
+  {"__typename":"XDTMediaDict","pk":"3900000000000000011","id":"3900000000000000011_1000000001","code":"DH11","media_type":2,"product_type":"story","original_width":720,"original_height":1280,"video_duration":9.5,
+   "video_versions":[{"type":101,"url":"https://instagram.cdn.example/o1/v/t2/summer_one.mp4?efg=a"}],
+   "image_versions2":{"candidates":[{"width":720,"height":1280,"url":"https://instagram.cdn.example/v/t51/summer_one_720.jpg"},{"width":360,"height":640,"url":"https://instagram.cdn.example/v/t51/summer_one_360.jpg"}]}},
+  {"__typename":"XDTMediaDict","pk":"3900000000000000012","id":"3900000000000000012_1000000001","code":"DH12","media_type":1,"product_type":"story","original_width":1080,"original_height":1920,
+   "image_versions2":{"candidates":[{"width":1080,"height":1920,"url":"https://instagram.cdn.example/v/t51/summer_two_1080.jpg"}]}}
+ ]},"cursor":"highlight:17900000000000002"},
+ {"node":{"__typename":"XDTReelDict","id":"highlight:17900000000000003","reel_type":"highlight_reel","title":"Winter","user":{"username":"someone"},"items":[
+  {"__typename":"XDTMediaDict","pk":"3900000000000000021","id":"3900000000000000021_1000000001","code":"DH21","media_type":1,"product_type":"story","original_width":1080,"original_height":1920,
+   "image_versions2":{"candidates":[{"width":1080,"height":1920,"url":"https://instagram.cdn.example/v/t51/winter_one_1080.jpg"}]}}
+ ]},"cursor":"highlight:17900000000000003"}
+],"page_info":{"end_cursor":"highlight:17900000000000003","has_next_page":false,"has_previous_page":false,"start_cursor":"highlight:17900000000000002"}}}}}}]]]}}]]]}

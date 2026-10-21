@@ -1,0 +1,86 @@
+{
+ "data": {
+  "xdt_api__v1__feed__user_timeline_graphql_connection": {
+   "edges": [
+    {
+     "cursor": "edge-05",
+     "node": {
+      "pk": "3800000000000000005",
+      "id": "3800000000000000005_5100000000000000001",
+      "code": "C0005",
+      "media_type": 1,
+      "product_type": "feed",
+      "original_width": 1080,
+      "original_height": 1350,
+      "video_duration": null,
+      "image_versions2": {
+       "candidates": [
+        {
+         "width": 640,
+         "height": 800,
+         "url": "https://cdn.example/photo05_640.jpg"
+        },
+        {
+         "width": 320,
+         "height": 400,
+         "url": "https://cdn.example/photo05_320.jpg"
+        }
+       ]
+      },
+      "timeline_pinned_user_ids": [],
+      "user": {
+       "pk": "5100000000000000001",
+       "username": "sample.user",
+       "is_private": false,
+       "friendship_status": {
+        "following": false
+       }
+      }
+     }
+    },
+    {
+     "cursor": "edge-06",
+     "node": {
+      "pk": "3800000000000000006",
+      "id": "3800000000000000006_5100000000000000001",
+      "code": "C0006",
+      "media_type": 1,
+      "product_type": "feed",
+      "original_width": 1080,
+      "original_height": 1350,
+      "video_duration": null,
+      "image_versions2": {
+       "candidates": [
+        {
+         "width": 640,
+         "height": 800,
+         "url": "https://cdn.example/photo06_640.jpg"
+        },
+        {
+         "width": 320,
+         "height": 400,
+         "url": "https://cdn.example/photo06_320.jpg"
+        }
+       ]
+      },
+      "timeline_pinned_user_ids": [],
+      "user": {
+       "pk": "5100000000000000001",
+       "username": "sample.user",
+       "is_private": false,
+       "friendship_status": {
+        "following": false
+       }
+      }
+     }
+    }
+   ],
+   "page_info": {
+    "end_cursor": null,
+    "has_next_page": false,
+    "has_previous_page": false,
+    "start_cursor": "start"
+   }
+  }
+ }
+}

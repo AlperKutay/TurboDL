@@ -1,0 +1,67 @@
+{
+ "items": [
+  {"media": {
+   "pk": "3700000000000000001", "id": "3700000000000000001_1000000001", "code": "DS1post", "media_type": 8,
+   "product_type": "carousel_container", "taken_at": 1790000000, "carousel_media_count": 2,
+   "saved_collection_ids": ["17900000000000102"], "has_viewer_saved": true,
+   "user": {"pk": "1000000001", "username": "someone"},
+   "image_versions2": {"candidates": [
+    {"width": 640, "height": 800, "url": "https://scontent.cdninstagram.example/v/t51/post1_640.jpg?stp=a"},
+    {"width": 320, "height": 400, "url": "https://scontent.cdninstagram.example/v/t51/post1_320.jpg?stp=a"}
+   ]},
+   "carousel_media": [
+    {"pk": "3700000000000000011", "id": "3700000000000000011_1000000001", "media_type": 1,
+     "original_width": 1080, "original_height": 1350,
+     "image_versions2": {"candidates": [
+      {"width": 1080, "height": 1350, "url": "https://scontent.cdninstagram.example/v/t51/child11_1080.jpg?stp=a"},
+      {"width": 640, "height": 800, "url": "https://scontent.cdninstagram.example/v/t51/child11_640.jpg?stp=a"},
+      {"width": 320, "height": 400, "url": "https://scontent.cdninstagram.example/v/t51/child11_320.jpg?stp=a"},
+      {"width": 240, "height": 300, "url": "https://scontent.cdninstagram.example/v/t51/child11_240.jpg?stp=a"}
+     ]}},
+    {"pk": "3700000000000000012", "id": "3700000000000000012_1000000001", "media_type": 2,
+     "original_width": 720, "original_height": 1280, "video_duration": 9.5,
+     "image_versions2": {"candidates": [
+      {"width": 720, "height": 1280, "url": "https://scontent.cdninstagram.example/v/t51/child12_cover.jpg?stp=a"}
+     ]},
+     "video_versions": [
+      {"type": 101, "width": 720, "height": 1280, "url": "https://scontent.cdninstagram.example/o1/v/t16/child12_720.mp4?efg=a"}
+     ]}
+   ]
+  }},
+  {"media": {
+   "pk": "3700000000000000002", "id": "3700000000000000002_1000000002", "code": "DS2reel", "media_type": 2,
+   "product_type": "clips", "taken_at": 1790000100, "video_duration": 30.0,
+   "original_width": 1080, "original_height": 1920,
+   "saved_collection_ids": ["17900000000000102"], "has_viewer_saved": true,
+   "user": {"pk": "1000000002", "username": "someone_else"},
+   "image_versions2": {"candidates": [
+    {"width": 640, "height": 1136, "url": "https://scontent.cdninstagram.example/v/t51/reel2_640.jpg?stp=a"}
+   ]},
+   "video_versions": [
+    {"type": 101, "width": 1080, "height": 1920, "url": "https://scontent.cdninstagram.example/o1/v/t16/reel2_1080.mp4?efg=a"},
+    {"type": 102, "width": 480, "height": 852, "url": "https://scontent.cdninstagram.example/o1/v/t16/reel2_480.mp4?efg=a"}
+   ]
+  }},
+  {"media": {
+   "pk": "3700000000000000003", "id": "3700000000000000003_1000000003", "code": "DS3photo", "media_type": 1,
+   "product_type": "feed", "taken_at": 1790000200, "original_width": 1080, "original_height": 1080,
+   "saved_collection_ids": ["17900000000000100"], "has_viewer_saved": true,
+   "user": {"pk": "1000000003", "username": "a_third"},
+   "image_versions2": {"candidates": [
+    {"width": 1080, "height": 1080, "url": "https://scontent.cdninstagram.example/v/t51/photo3_1080.jpg?stp=a"},
+    {"width": 320, "height": 320, "url": "https://scontent.cdninstagram.example/v/t51/photo3_320.jpg?stp=a"}
+   ]}
+  }},
+  {"media": {
+   "pk": "3700000000000000005", "id": "3700000000000000005_1000000003", "code": "DS5empty", "media_type": 8,
+   "product_type": "carousel_container", "taken_at": 1790000300, "carousel_media": [],
+   "saved_collection_ids": ["17900000000000100"], "has_viewer_saved": true,
+   "user": {"pk": "1000000003", "username": "a_third"}
+  }}
+ ],
+ "num_results": 4,
+ "more_available": true,
+ "next_max_id": "QVFE+/next=page_2",
+ "auto_load_more_enabled": false,
+ "status": "ok"
+}
