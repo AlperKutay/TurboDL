@@ -103,7 +103,8 @@ async function start(): Promise<void> {
           agent: chromeAgent(app.userAgentFallback),
         },
   });
-  if (instagramDemoBase) c.instagramSession.take([DEMO_COOKIE]);
+  // test runs: the demo, or the real pages against a stand-in site, start signed in
+  if (instagramDemoBase || instagramTestSite) c.instagramSession.take([DEMO_COOKIE]);
   controller = c;
   registerIpc(c);
   // let the extension start TurboDL; test runs (TURBODL_USER_DATA) must not touch the real browser registration

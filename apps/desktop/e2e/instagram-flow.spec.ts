@@ -82,3 +82,54 @@ test("picks two photos of an Instagram post and downloads them into the Instagra
     rmSync(userData, { recursive: true, force: true });
   }
 });
+
+test("reads a profile from its real page and pages on by re-sending the page's own request", async () => {
+  const server = await startTestServer();
+  const base = server.url("").replace(/\/$/, "");
+  [0, 1, 2].forEach((n) => server.setFile(`/ig/${n}.png`, { data: randomBytes(2048), contentType: "image/png" }));
+  const node = (k: number) => ({ pk: `38000000000000000${k}`, code: `C000${k}`, image_versions2: { candidates: [{ url: `${base}/ig/${k % 3}.png`, width: 640, height: 640 }] } });
+  const connection = (ks: number[], cursor?: string) =>
+    JSON.stringify({
+      data: {
+        xdt_api__v1__feed__user_timeline_graphql_connection: {
+          edges: ks.map((k) => ({ node: node(k) })),
+          page_info: { end_cursor: cursor ?? null, has_next_page: Boolean(cursor) },
+        },
+      },
+    });
+  const user = { pk: "5100000000000000001", username: "sample.user", full_name: "Sample User", is_private: false, media_count: 6, friendship_status: { following: true } };
+  const variables = JSON.stringify({ after: "cursor-1", first: 12, username: "sample.user" });
+  // the page as Instagram sends it: the profile and its first posts in the page, the next ones asked for at once
+  const page = `<!doctype html><html><body>
+<script type="application/json">${JSON.stringify({ data: { user } })}</script>
+<script type="application/json">${connection([1, 2], "cursor-1")}</script>
+<script>
+const xhr = new XMLHttpRequest();
+xhr.open("POST", "/api/graphql");
+xhr.setRequestHeader("Content-Type", "application/x-www-form-urlencoded");
+xhr.setRequestHeader("X-FB-Friendly-Name", "PolarisProfilePostsTabContentQuery_connection");
+xhr.send("variables=" + encodeURIComponent(${JSON.stringify(variables)}) + "&doc_id=1");
+</script></body></html>`;
+  server.setFile("/sample.user/", { data: Buffer.from(page), contentType: "text/html" });
+  const answered: string[] = [];
+  server.setHandler("/api/graphql", (body) => {
+    const after = JSON.parse(new URLSearchParams(body).get("variables") ?? "{}").after as string;
+    answered.push(after);
+    return { data: Buffer.from(after === "cursor-1" ? connection([3, 4], "cursor-2") : connection([5, 6])), contentType: "text/javascript" };
+  });
+  const { app, userData } = await launchApp({}, { TURBODL_INSTAGRAM_SITE: base });
+  try {
+    const main = await app.firstWindow();
+    await main.getByRole("button", { name: "Add URL" }).click();
+    await main.getByPlaceholder("https://…").fill("https://www.instagram.com/sample.user/");
+    await main.getByRole("button", { name: "Add", exact: true }).click();
+    await expect(main.getByText("@sample.user")).toBeVisible({ timeout: 30_000 });
+    await expect(main.getByRole("button", { name: /^Post \d+$/ })).toHaveCount(6, { timeout: 30_000 });
+    // the page's own request (cursor-1), then TurboDL's re-send of it (cursor-2)
+    expect(answered).toEqual(["cursor-1", "cursor-2"]);
+  } finally {
+    await app.close();
+    await server.close();
+    rmSync(userData, { recursive: true, force: true });
+  }
+});

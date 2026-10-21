@@ -138,7 +138,8 @@ export class ElectronInstagramPage implements ProfileDriver {
     } catch {
       // the page is between loads
     }
-    return [...this.answers, ...embedded];
+    // in the order the page got them: what it came with, then what it fetched
+    return [...embedded, ...this.answers];
   }
 
   finalUrl(): string {
