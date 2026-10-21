@@ -5,7 +5,22 @@ import { Modal } from "../../components/Modal";
 import { backupAction } from "../../saved-state";
 
 /** What starting a backup means: how many posts, roughly how large, where they go, and the warnings that go with it. */
-export function BackupConfirm({ title, folder, plan, onStart, onClose }: { title: string; folder: string; plan: BackupPlan; onStart(): void; onClose(): void }) {
+export function BackupConfirm({
+  title,
+  folder,
+  unit = "posts",
+  plan,
+  onStart,
+  onClose,
+}: {
+  title: string;
+  folder: string;
+  /** what the count counts */
+  unit?: string;
+  plan: BackupPlan;
+  onStart(): void;
+  onClose(): void;
+}) {
   const tooBig = plan.bytes !== undefined && plan.freeBytes !== undefined && plan.bytes > plan.freeBytes;
   return (
     <Modal
@@ -23,7 +38,7 @@ export function BackupConfirm({ title, folder, plan, onStart, onClose }: { title
       }
     >
       <p>
-        {plan.count !== undefined ? `${plan.count.toLocaleString()} posts` : "Instagram doesn't say how many posts it holds."}{" "}
+        {plan.count !== undefined ? `${plan.count.toLocaleString()} ${unit}` : `Instagram doesn't say how many ${unit} it holds.`}{" "}
         {plan.bytes !== undefined ? `About ${formatBytes(plan.bytes)} (an estimate from the posts loaded so far).` : "No size estimate yet."}
       </p>
       <p className="muted">Every photo and video goes into {folder}. A later backup saves only what is new.</p>

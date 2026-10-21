@@ -107,3 +107,71 @@ test("profiles: an open profile stays open across sections; All profiles shows t
     rmSync(userData, { recursive: true, force: true });
   }
 });
+
+test("highlights: picks two highlights, their stories into the highlights folder", async () => {
+  const { server, app, userData, baseDir } = await demo();
+  try {
+    const main = await app.firstWindow();
+    await openProfile(main, "demo.person");
+    await main.getByRole("tab", { name: "Highlights" }).click();
+    await main.getByRole("button", { name: "Summer", exact: true }).click();
+    await main.getByRole("button", { name: "Winter", exact: true }).click();
+    const dialogOpened = app.waitForEvent("window");
+    await main.getByRole("button", { name: "Next (2)" }).click();
+    const dialog = await dialogOpened;
+    const download = dialog.getByRole("button", { name: /^Download (all )?\d+$/ });
+    await expect(download).toHaveText("Download all 4", { timeout: 15_000 });
+    await download.click();
+    await main.getByRole("button", { name: "All downloads" }).click();
+    await expect(main.locator("tr[data-status='completed']")).toHaveCount(4, { timeout: 30_000 });
+    expect(readdirSync(path.join(baseDir, "Instagram", "demo.person · Highlights")).sort()).toEqual([
+      "h17900000000000002-1.png",
+      "h17900000000000002-2.png",
+      "h17900000000000003-1.png",
+      "h17900000000000003-2.png",
+    ]);
+  } finally {
+    await app.close();
+    await server.close();
+    rmSync(userData, { recursive: true, force: true });
+  }
+});
+
+test("highlights: backs them up, and a run again saves nothing new", async () => {
+  const { server, app, userData, baseDir } = await demo();
+  try {
+    const main = await app.firstWindow();
+    await openProfile(main, "demo.person");
+    await main.getByRole("tab", { name: "Highlights" }).click();
+    await main.getByRole("button", { name: "Back up highlights" }).click();
+    const confirm = main.getByRole("dialog", { name: "Back up @demo.person's highlights" });
+    await expect(confirm).toContainText("2 highlights");
+    await confirm.getByRole("button", { name: "Start backup" }).click();
+    const panel = main.getByRole("region", { name: "Backup" });
+    await expect(panel).toContainText("Backup finished", { timeout: 30_000 });
+    await expect(panel).toContainText("New 4");
+    expect(readdirSync(path.join(baseDir, "Instagram", "demo.person · Highlights"))).toHaveLength(4);
+    await main.getByRole("button", { name: "Back up highlights" }).click();
+    await main.getByRole("dialog", { name: "Back up @demo.person's highlights" }).getByRole("button", { name: "Start backup" }).click();
+    await expect(panel).toContainText("New 0", { timeout: 30_000 });
+    await expect(panel).toContainText("Backup finished");
+  } finally {
+    await app.close();
+    await server.close();
+    rmSync(userData, { recursive: true, force: true });
+  }
+});
+
+test("highlights: a profile without any says so", async () => {
+  const { server, app, userData } = await demo();
+  try {
+    const main = await app.firstWindow();
+    await openProfile(main, "demo.plain");
+    await main.getByRole("tab", { name: "Highlights" }).click();
+    await expect(main.getByText("No highlights")).toBeVisible({ timeout: 15_000 });
+  } finally {
+    await app.close();
+    await server.close();
+    rmSync(userData, { recursive: true, force: true });
+  }
+});

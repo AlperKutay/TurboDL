@@ -1016,3 +1016,29 @@ td.col-name {
 .profile-row .muted:last-child {
   margin-left: auto;
 }
+
+.profile-side {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 0;
+}
+
+.profile-side[hidden] {
+  display: none;
+}
+
+.hl-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.hl-title {
+  overflow: hidden;
+  font-size: 12px;
+  text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
