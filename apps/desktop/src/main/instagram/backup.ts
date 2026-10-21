@@ -135,12 +135,13 @@ export class BackupRun {
     // a post with nothing to save (a highlight whose page showed nothing) is never done
     const isDone = (post: SavedPost) => post.items.length > 0 && post.items.every((item) => saved.has(itemId(post, item)));
     const random = deps.random ?? Math.random;
-    const pageGap = target.pageGap ? target.pageGap[0] + random() * (target.pageGap[1] - target.pageGap[0]) : PAGE_GAP;
+    // a new draw before each page, so the pages never come at a steady beat
+    const pageGap = () => (target.pageGap ? target.pageGap[0] + random() * (target.pageGap[1] - target.pageGap[0]) : PAGE_GAP);
     // newest posts come first, so after a clean complete pass a page already saved means nothing new is below it
     const earlyStop = target.allowsEarlyStop && allowsEarlyStop(ledger);
     let cursor: string | undefined;
     for (;;) {
-      if (cursor !== undefined) await this.pause(pageGap, signal);
+      if (cursor !== undefined) await this.pause(pageGap(), signal);
       if (signal.aborted) return;
       let page: SavedPage;
       try {

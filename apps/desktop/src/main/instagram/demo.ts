@@ -23,7 +23,7 @@ export function demoInstagram(base: string): InstagramDeps {
   const trips = [photo("t1", 2), photo("t2", 1), photo("t3", 0)];
   const feed = (posts: object[], next?: string) => JSON.stringify({ items: posts.map((media) => ({ media })), more_available: Boolean(next), ...(next ? { next_max_id: next } : {}), status: "ok" });
   return {
-    find: async (link) => ({
+    find: async (link) => (link.kind === "highlight" && link.id === "17900000000000099" ? { type: "signedOut" } : {
       type: "items",
       // a highlight's two stories, named after it; any other link three photos
       items:
@@ -51,6 +51,11 @@ export function demoInstagram(base: string): InstagramDeps {
             { id: "17900000000000002", title: "Summer", cover: `${base}/ig/1.png` },
             { id: "17900000000000003", title: "Winter", cover: `${base}/ig/2.png` },
           ],
+        },
+        "demo.expired": {
+          profile: { id: "5100000000000000010", username: "demo.expired", fullName: "Demo Expired", isPrivate: false, following: true, postCount: 1 },
+          pages: [[post(1)]],
+          highlights: [{ id: "17900000000000099", title: "Gone", cover: `${base}/ig/0.png` }],
         },
         "demo.plain": {
           profile: { id: "5100000000000000009", username: "demo.plain", fullName: "Demo Plain", isPrivate: false, following: true, postCount: 3 },

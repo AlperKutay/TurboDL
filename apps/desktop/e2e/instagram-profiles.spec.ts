@@ -175,3 +175,42 @@ test("highlights: a profile without any says so", async () => {
     rmSync(userData, { recursive: true, force: true });
   }
 });
+
+test("highlights: signed out partway through reading says so and offers to sign in again", async () => {
+  const { server, app, userData } = await demo();
+  try {
+    const main = await app.firstWindow();
+    await openProfile(main, "demo.expired");
+    await main.getByRole("tab", { name: "Highlights" }).click();
+    await main.getByRole("button", { name: "Gone", exact: true }).click();
+    await main.getByRole("button", { name: "Next (1)" }).click();
+    await expect(main.getByText("Instagram signed TurboDL out.")).toBeVisible({ timeout: 15_000 });
+    await expect(main.getByRole("button", { name: "Sign in again" })).toBeVisible();
+    // the pick stays for after signing in
+    await expect(main.getByRole("button", { name: "Gone", exact: true })).toHaveAttribute("aria-pressed", "true");
+  } finally {
+    await app.close();
+    await server.close();
+    rmSync(userData, { recursive: true, force: true });
+  }
+});
+
+test("profiles: each side keeps its picks when switching between Posts and Highlights", async () => {
+  const { server, app, userData } = await demo();
+  try {
+    const main = await app.firstWindow();
+    await openProfile(main, "demo.person");
+    await main.getByRole("button", { name: "Post 1", exact: true }).click();
+    await main.getByRole("tab", { name: "Highlights" }).click();
+    await main.getByRole("button", { name: "Winter", exact: true }).click();
+    await main.getByRole("tab", { name: "Posts" }).click();
+    await expect(main.getByRole("button", { name: "Post 1", exact: true })).toHaveAttribute("aria-pressed", "true");
+    await expect(main.getByRole("button", { name: "Next (1)" })).toBeVisible();
+    await main.getByRole("tab", { name: "Highlights" }).click();
+    await expect(main.getByRole("button", { name: "Winter", exact: true })).toHaveAttribute("aria-pressed", "true");
+  } finally {
+    await app.close();
+    await server.close();
+    rmSync(userData, { recursive: true, force: true });
+  }
+});

@@ -29,6 +29,8 @@ interface Setup {
   /** ms a called-off fetch takes to clean up after itself */
   cleanup?: number;
   pageGap?: [number, number];
+  /** what `random` answers, in turn (the last one stays) */
+  randoms?: number[];
   count?: number;
 }
 
@@ -79,7 +81,7 @@ function setup(o: Setup = {}) {
       wait: async (ms) => {
         waits.push(ms);
       },
-      random: () => 0.5,
+      random: () => (o.randoms && o.randoms.length > 1 ? (o.randoms.shift() as number) : (o.randoms?.[0] ?? 0.5)),
       headers: { Referer: "https://www.instagram.com/" },
     },
     (view) => views.push(view),
@@ -185,6 +187,13 @@ describe("BackupRun", () => {
     await run.start();
     // page 1 all saved before; page 2 after 3–6 s (4.5 s at 0.5); post 3 fetched → 2.25 s
     expect(waits).toEqual([4500, 2250]);
+  });
+
+  it("draws a new gap before each next page", async () => {
+    const pages = [[post("1", item("11"))], [post("2", item("2"))], [post("3", item("3"))]];
+    const { run, waits } = setup({ pages, pageGap: [3000, 6000], randoms: [0, 1], ledger: { saved: ["11", "2", "3"], failedPosts: [], reachedEnd: false } });
+    await run.start();
+    expect(waits).toEqual([3000, 6000]);
   });
 
   it("waits between posts it fetched and before each next page, never after posts already done", async () => {

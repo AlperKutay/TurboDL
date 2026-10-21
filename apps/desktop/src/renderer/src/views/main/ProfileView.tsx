@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { isLocked, type BackupPlan, type BackupView, type Highlight, type InstagramProfile, type ProfileResult } from "@turbodl/shared";
 import { api } from "../../api";
-import { nextLoad, togglePick } from "../../highlight-state";
+import { readHighlights, togglePick } from "../../highlight-state";
 import { usePressPreview } from "../../press-preview";
 import { PickBar, PostGrid, useFeed } from "./PostGrid";
 import { BackupConfirm, BackupPanel } from "./SavedBackup";
@@ -81,7 +81,7 @@ export function ProfileView({ username, backup }: { username: string; backup: Ba
         <ProfilePosts profile={profile} backup={backup} busy={busy} onSignIn={() => void signIn()} />
       </div>
       <div className="profile-side" hidden={tab !== "highlights"}>
-        <ProfileHighlights profile={profile} highlights={highlights} backup={backup} />
+        <ProfileHighlights profile={profile} highlights={highlights} backup={backup} busy={busy} onSignIn={() => void signIn()} />
       </div>
     </>
   );
@@ -146,15 +146,36 @@ function ProfilePosts({ profile, backup, busy, onSignIn }: { profile: InstagramP
  * The profile's highlights in its tray's order: pick some (numbered), hold one to see its cover large; Next reads the
  * picked ones one at a time and opens their stories in the picker. Backed up all at once into their own folder.
  */
-function ProfileHighlights({ profile, highlights, backup }: { profile: InstagramProfile; highlights: Highlight[]; backup: BackupView | null }) {
+function ProfileHighlights({
+  profile,
+  highlights,
+  backup,
+  busy,
+  onSignIn,
+}: {
+  profile: InstagramProfile;
+  highlights: Highlight[];
+  backup: BackupView | null;
+  busy: boolean;
+  onSignIn(): void;
+}) {
   const { username } = profile;
   const [picked, setPicked] = useState<string[]>([]);
   const [loading, setLoading] = useState<{ index: number; total: number } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [confirming, setConfirming] = useState<BackupPlan | null>(null);
   const [resumes, setResumes] = useState(false);
-  const cancelled = useRef(false);
+  const [signedOut, setSignedOut] = useState(false);
+  /** bumped by every Next, Cancel and the screen going: an older reading stops and its answers count for nothing */
+  const reading = useRef(0);
   const { viewing, pressable, endedHold } = usePressPreview<Highlight>();
+
+  useEffect(
+    () => () => {
+      reading.current++;
+    },
+    [],
+  );
 
   useEffect(() => {
     void api.highlightsBackupPlan(username).then((plan) => setResumes(plan.resumes));
@@ -162,20 +183,18 @@ function ProfileHighlights({ profile, highlights, backup }: { profile: Instagram
 
   // each picked highlight's page is read in turn; one that shows nothing is left out
   const next = async () => {
+    const mine = ++reading.current;
+    const stillWanted = () => reading.current === mine;
     setError(null);
-    cancelled.current = false;
-    for (let loaded = 0; ; loaded++) {
-      const step = nextLoad(picked, loaded);
-      if (!step) break;
-      setLoading({ index: step.index, total: step.total });
-      const res = await api.loadHighlight(username, step.id);
-      if (cancelled.current) return setLoading(null);
-      if (res.type === "signedOut" || res.type === "rateLimited") {
-        setLoading(null);
-        return setError(res.type === "signedOut" ? "Instagram signed TurboDL out. Sign in again." : "Instagram asked TurboDL to slow down. Try again later.");
-      }
-    }
+    setSignedOut(false);
+    const outcome = await readHighlights(picked, (id) => api.loadHighlight(username, id), {
+      stillWanted,
+      onProgress: (index, total) => setLoading({ index, total }),
+    });
+    if (!stillWanted()) return;
     setLoading(null);
+    if (outcome === "signedOut") return setSignedOut(true);
+    if (outcome === "rateLimited") return setError("Instagram asked TurboDL to slow down. Try again later.");
     const res = await api.openHighlightPicks(username, picked);
     if (res.ok) setPicked([]);
     else setError(res.error);
@@ -246,7 +265,7 @@ function ProfileHighlights({ profile, highlights, backup }: { profile: Instagram
             type="button"
             className="btn"
             onClick={() => {
-              cancelled.current = true;
+              reading.current++;
               setLoading(null);
             }}
           >
@@ -254,7 +273,17 @@ function ProfileHighlights({ profile, highlights, backup }: { profile: Instagram
           </button>
         </div>
       ) : (
-        <PickBar picked={picked.length} error={error} onNext={() => void next()} />
+        <>
+          {signedOut && (
+            <p>
+              Instagram signed TurboDL out.{" "}
+              <button type="button" className="link-button" disabled={busy} onClick={onSignIn}>
+                Sign in again
+              </button>
+            </p>
+          )}
+          <PickBar picked={picked.length} error={error} onNext={() => void next()} />
+        </>
       )}
     </>
   );
