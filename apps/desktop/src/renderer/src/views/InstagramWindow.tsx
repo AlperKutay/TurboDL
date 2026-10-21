@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import type { InstagramFindResult, InstagramItem, PendingInstagram } from "@turbodl/shared";
 import { api } from "../api";
 import { Icon } from "../components/Icon";
+import { usePressPreview } from "../press-preview";
 import "./dialogs.css";
 
 const TITLES: Record<PendingInstagram["link"]["kind"], string> = {
@@ -22,13 +23,13 @@ const picture = (item: InstagramItem, large: boolean) => (item.kind === "image" 
 
 /**
  * An Instagram post's, story's or highlight's photos and videos, read from its signed-in page: tap to pick
- * (numbered), hover to see one large; nothing picked downloads them all.
+ * (numbered), hold to see one large; nothing picked downloads them all.
  */
 export function InstagramWindow({ pendingId }: { pendingId: string }) {
   const [pending, setPending] = useState<PendingInstagram | null | undefined>(undefined);
   const [result, setResult] = useState<InstagramFindResult | "loading">("loading");
   const [picked, setPicked] = useState<number[]>([]);
-  const [viewing, setViewing] = useState<number | null>(null);
+  const { viewing, pressable, endedHold } = usePressPreview<number>();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -144,9 +145,10 @@ export function InstagramWindow({ pendingId }: { pendingId: string }) {
                     className="ig-tile"
                     aria-label={`Item ${i + 1}`}
                     aria-pressed={number >= 0}
-                    onClick={() => toggle(i)}
-                    onMouseEnter={() => setViewing(i)}
-                    onMouseLeave={() => setViewing(null)}
+                    onClick={() => {
+                      if (!endedHold()) toggle(i);
+                    }}
+                    {...pressable(i)}
                   >
                     {cover ? <img src={cover} alt="" draggable={false} /> : <span className="ig-blank" />}
                     <span className="ig-pick">{number >= 0 ? number + 1 : ""}</span>
@@ -156,7 +158,7 @@ export function InstagramWindow({ pendingId }: { pendingId: string }) {
               );
             })}
           </ul>
-          <p className="muted">Click to pick · hover to see it large</p>
+          <p className="muted">Click to pick · hold to see it large</p>
         </>
       )}
       {large && picture(large, true) && (

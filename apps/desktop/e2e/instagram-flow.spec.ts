@@ -63,8 +63,19 @@ test("picks two photos of an Instagram post and downloads them into the Instagra
 
     const download = dialog.getByRole("button", { name: /^Download (all )?\d+$/ });
     await expect(download).toHaveText("Download all 3", { timeout: 30_000 });
+    // pointing at an item shows nothing; holding it shows it large and picks nothing
+    const second = dialog.getByRole("button", { name: "Item 2", exact: true });
+    await second.hover();
+    await dialog.waitForTimeout(600);
+    await expect(dialog.locator(".ig-large")).toHaveCount(0);
+    await dialog.mouse.down();
+    await expect(dialog.locator(".ig-large")).toBeVisible();
+    await dialog.mouse.up();
+    await expect(dialog.locator(".ig-large")).toHaveCount(0);
+    await expect(second).toHaveAttribute("aria-pressed", "false");
     await dialog.getByRole("button", { name: "Item 1", exact: true }).click();
     await dialog.getByRole("button", { name: "Item 3", exact: true }).click();
+    await expect(dialog.locator(".ig-large")).toHaveCount(0);
     await expect(download).toHaveText("Download 2");
     await download.click();
 

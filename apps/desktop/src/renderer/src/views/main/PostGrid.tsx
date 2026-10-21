@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type Dispatch, type RefCallback, type SetStateAction } from "react";
 import type { SavedPageResult, SavedPost } from "@turbodl/shared";
+import { usePressPreview } from "../../press-preview";
 import { canLoadMore, initialSaved, loading, pageArrived, pageFailed, retry, select, toggle, type FeedSource, type SavedState } from "../../saved-state";
 
 function length(seconds: number): string {
@@ -53,7 +54,7 @@ export function useFeed(initial: FeedSource, fetchPage: (source: FeedSource, cur
   return { state, setState, sentinel };
 }
 
-/** Posts as tiles: click to pick (numbered), hover to see one large; the feed's state below them. */
+/** Posts as tiles: click to pick (numbered), hold to see one large; the feed's state below them. */
 export function PostGrid({
   state,
   setState,
@@ -69,7 +70,7 @@ export function PostGrid({
   busy: boolean;
   onSignIn(): void;
 }) {
-  const [viewing, setViewing] = useState<SavedPost | null>(null);
+  const { viewing, pressable, endedHold } = usePressPreview<SavedPost>();
   return (
     <>
       <div className="saved-scroll">
@@ -84,9 +85,10 @@ export function PostGrid({
                   className="ig-tile"
                   aria-label={`Post ${i + 1}`}
                   aria-pressed={number >= 0}
-                  onClick={() => setState((s) => toggle(s, post.id))}
-                  onMouseEnter={() => setViewing(post)}
-                  onMouseLeave={() => setViewing(null)}
+                  onClick={() => {
+                    if (!endedHold()) setState((s) => toggle(s, post.id));
+                  }}
+                  {...pressable(post)}
                 >
                   {post.cover ? <img src={post.cover} alt="" draggable={false} /> : <span className="ig-blank" />}
                   <span className="ig-pick">{number >= 0 ? number + 1 : ""}</span>
@@ -141,7 +143,7 @@ export function PickBar({ picked, error, onNext }: { picked: number; error: stri
   return (
     <div className="saved-actions">
       {error && <span className="error-text">{error}</span>}
-      <span className="muted">Click to pick · hover to see it large</span>
+      <span className="muted">Click to pick · hold to see it large</span>
       <button type="button" className="btn btn-primary" disabled={picked === 0} onClick={onNext}>
         Next ({picked})
       </button>

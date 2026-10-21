@@ -88,3 +88,28 @@ test("saved: backs up a collection, and a run again fetches nothing new", async 
     rmSync(userData, { recursive: true, force: true });
   }
 });
+
+test("saved: holding a post shows it large; pointing at it doesn't, and a hold picks nothing", async () => {
+  const { server, app, userData } = await demo();
+  try {
+    const main = await app.firstWindow();
+    await main.getByRole("button", { name: "Saved", exact: true }).click();
+    const tile = main.getByRole("button", { name: "Post 2", exact: true });
+    await expect(tile).toBeVisible({ timeout: 15_000 });
+    await tile.hover();
+    await main.waitForTimeout(600);
+    await expect(main.locator(".ig-large")).toHaveCount(0);
+    await main.mouse.down();
+    await expect(main.locator(".ig-large")).toBeVisible();
+    await main.mouse.up();
+    await expect(main.locator(".ig-large")).toHaveCount(0);
+    await expect(tile).toHaveAttribute("aria-pressed", "false");
+    await tile.click();
+    await expect(tile).toHaveAttribute("aria-pressed", "true");
+    await expect(main.locator(".ig-large")).toHaveCount(0);
+  } finally {
+    await app.close();
+    await server.close();
+    rmSync(userData, { recursive: true, force: true });
+  }
+});
