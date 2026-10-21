@@ -4,8 +4,9 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import type { AppEvent, PendingItem } from "@turbodl/shared";
-import { AppController, type ControllerUi } from "../src/main/controller";
+import type { AppEvent, BrowserCookie, PendingItem } from "@turbodl/shared";
+import { AppController, type ControllerUi, type InstagramDeps } from "../src/main/controller";
+import type { FindOutcome } from "../src/main/instagram/finder";
 import { FFMPEG, makeClips, serveFolder, type Clips } from "./fixtures/media";
 import { startTestServer, type TestServer } from "./fixtures/test-server";
 
@@ -75,7 +76,7 @@ afterEach(async () => {
   rmSync(root, { recursive: true, force: true });
 });
 
-async function start(settings: Record<string, unknown> = {}, ffmpegPath: string | null = null): Promise<AppController> {
+async function start(settings: Record<string, unknown> = {}, ffmpegPath: string | null = null, instagram?: InstagramDeps): Promise<AppController> {
   const userData = path.join(root, "user");
   mkdirSync(userData, { recursive: true });
   const port = (settings.bridgePort as number | undefined) ?? (await freePort());
@@ -93,6 +94,7 @@ async function start(settings: Record<string, unknown> = {}, ffmpegPath: string 
     ui,
     mediaTools: { ensure: async () => ({ ytdlp: "unused", deno: null, ffmpeg: null }), updateIfStale: async () => undefined },
     ytdlpCommand: () => ({ file: process.execPath, args: [FAKE_YTDLP] }),
+    instagram,
   });
   await controller.init();
   return controller;
@@ -381,5 +383,123 @@ describe("AppController", () => {
       expect(await c.probeStream(id, 1)).toEqual({ ok: false, error: "This item is not a stream." });
       expect(await c.probeStream("gone", 0)).toEqual({ ok: false, error: "This request no longer exists." });
     });
+  });
+});
+
+describe("Instagram links", () => {
+  const sessionJar: BrowserCookie[] = [
+    { domain: ".instagram.com", hostOnly: false, path: "/", secure: true, expires: 0, name: "sessionid", value: "s" },
+    { domain: ".instagram.com", hostOnly: false, path: "/", secure: true, expires: 0, name: "csrftoken", value: "c" },
+  ];
+  const memoryCrypt = { available: () => false, encrypt: (t: string) => Buffer.from(t), decrypt: (b: Buffer) => b.toString() };
+
+  /** Instagram stood in for: what a page shows and what a sign-in gives. */
+  function fakeInstagram(outcome: () => FindOutcome, signIn: BrowserCookie[] | null = null) {
+    const finds: { code: string; cookies: string[] }[] = [];
+    let signIns = 0;
+    const deps: InstagramDeps = {
+      find: async (link, cookies) => {
+        finds.push({ code: link.kind === "post" ? link.code : link.kind, cookies: cookies.map((c) => c.name) });
+        return outcome();
+      },
+      signIn: async () => {
+        signIns++;
+        return signIn;
+      },
+      crypt: memoryCrypt,
+      agent: "TestAgent/1",
+    };
+    return { deps, finds, signIns: () => signIns };
+  }
+
+  const items = () => ({
+    type: "items" as const,
+    items: [
+      { kind: "image" as const, url: server.url("/ig/photo.jpg"), mediaId: "3800000000000000001" },
+      { kind: "video" as const, url: server.url("/ig/clip.mp4"), mediaId: "3800000000000000002" },
+    ],
+  });
+
+  beforeEach(() => {
+    server.setFile("/ig/photo.jpg", { data: Buffer.alloc(1500, 3), contentType: "image/jpeg" });
+    server.setFile("/ig/clip.mp4", { data: Buffer.alloc(2500, 4), contentType: "video/mp4" });
+  });
+
+  async function waitDone(c: AppController, count: number) {
+    for (let i = 0; i < 100 && c.manager.list().filter((d) => d.status === "completed").length < count; i++) await new Promise((r) => setTimeout(r, 50));
+  }
+
+  it("opens a post link in the Instagram picker without fetching the page itself", async () => {
+    const ig = fakeInstagram(items);
+    const c = await start({}, null, ig.deps);
+    const res = await c.handleDownloadRequest({ url: "https://www.instagram.com/p/C1abcDEF/?igsh=x", source: "context-menu", cookieJar: sessionJar });
+    expect(res).toEqual({ accepted: true });
+    const pending = ui.opened[0];
+    expect(pending).toMatchObject({ type: "instagram", link: { kind: "post", code: "C1abcDEF" }, defaultDir: path.join(root, "dl", "Instagram") });
+    expect(server.requests).toHaveLength(0);
+  });
+
+  it("takes the extension's cookie jar as the Instagram session", async () => {
+    const ig = fakeInstagram(items);
+    const c = await start({}, null, ig.deps);
+    await c.handleDownloadRequest({ url: "https://www.instagram.com/reel/C2reel/", source: "context-menu", cookieJar: sessionJar });
+    await c.findInstagram(ui.opened[0].pendingId);
+    expect(ig.finds).toEqual([{ code: "C2reel", cookies: ["sessionid", "csrftoken"] }]);
+  });
+
+  it("adds one download per pick, named by Instagram's id, with the CDN's headers and no cookies", async () => {
+    const ig = fakeInstagram(items);
+    const c = await start({}, null, ig.deps);
+    await c.handleDownloadRequest({ url: "https://www.instagram.com/p/C1abcDEF/", source: "context-menu", cookieJar: sessionJar });
+    const id = ui.opened[0].pendingId;
+    expect((await c.findInstagram(id)).type).toBe("items");
+    expect(await c.confirmInstagram(id, [1], "now")).toEqual({ ok: true });
+    const [record] = c.manager.list();
+    expect(record).toMatchObject({ filename: "3800000000000000002.mp4", dir: path.join(root, "dl", "Instagram"), category: "video" });
+    expect(c.manager.get(record.id)?.headers).toEqual({ Referer: "https://www.instagram.com/", "User-Agent": "TestAgent/1" });
+    expect(ui.closed).toEqual([id]);
+    await waitDone(c, 1);
+    expect(readFileSync(path.join(root, "dl", "Instagram", "3800000000000000002.mp4")).length).toBe(2500);
+  });
+
+  it("downloads every item when none is picked", async () => {
+    const ig = fakeInstagram(items);
+    const c = await start({}, null, ig.deps);
+    await c.handleDownloadRequest({ url: "https://www.instagram.com/p/C1abcDEF/", source: "manual", cookieJar: sessionJar });
+    const id = ui.opened[0].pendingId;
+    await c.findInstagram(id);
+    await c.confirmInstagram(id, [], "now");
+    expect(c.manager.list().map((d) => d.filename).sort()).toEqual(["3800000000000000001.jpg", "3800000000000000002.mp4"]);
+  });
+
+  it("gives each link its own picker; closing one leaves the other", async () => {
+    const ig = fakeInstagram(items);
+    const c = await start({}, null, ig.deps);
+    await c.handleDownloadRequest({ url: "https://www.instagram.com/p/C1abcDEF/", source: "context-menu", cookieJar: sessionJar });
+    await c.handleDownloadRequest({ url: "https://www.instagram.com/p/C1abcDEF/", source: "context-menu", cookieJar: sessionJar });
+    const [first, second] = ui.opened.map((p) => p.pendingId);
+    expect(first).not.toBe(second);
+    c.cancelPending(first);
+    expect(await c.findInstagram(first)).toEqual({ type: "gone" });
+    expect((await c.findInstagram(second)).type).toBe("items");
+  });
+
+  it("asks to sign in without a session, and signing in lets the page be read", async () => {
+    const ig = fakeInstagram(items, sessionJar);
+    const c = await start({}, null, ig.deps);
+    await c.handleDownloadRequest({ url: "https://www.instagram.com/stories/highlights/17900000000000002/", source: "manual" });
+    const id = ui.opened[0].pendingId;
+    expect(await c.findInstagram(id)).toEqual({ type: "signedOut" });
+    expect(ig.finds).toHaveLength(0);
+    expect(await c.instagramSignIn()).toBe(true);
+    expect((await c.findInstagram(id)).type).toBe("items");
+    expect(ig.signIns()).toBe(1);
+  });
+
+  it("sends an Instagram page from the media button to the picker too", async () => {
+    const ig = fakeInstagram(items);
+    const c = await start({}, null, ig.deps);
+    await c.handleMediaRequest({ pageUrl: "https://www.instagram.com/reel/C2reel/", title: "x", items: [], cookieJar: sessionJar });
+    expect(ui.opened[0]).toMatchObject({ type: "instagram", link: { kind: "post", code: "C2reel" } });
   });
 });

@@ -44,6 +44,11 @@ export function registerIpc(c: AppController): void {
   handle("probeMediaFormats", (id: string) => c.probeMediaFormats(id));
   handle("probeStream", (id: string, index: number) => c.probeStream(String(id), Number(index)));
   handle("confirmMedia", (id: string, choice: MediaChoice, decision: MediaDecision) => c.confirmMedia(id, choice, decision));
+  handle("findInstagram", (id: string) => c.findInstagram(String(id)));
+  handle("confirmInstagram", (id: string, indices: unknown, mode: unknown) =>
+    c.confirmInstagram(String(id), Array.isArray(indices) ? indices.map(Number).filter(Number.isInteger) : [], mode === "later" ? "later" : "now"),
+  );
+  handle("instagramSignIn", () => c.instagramSignIn());
   handle("cancelCountdown", () => c.cancelCountdown());
   handle("installExtension", async () => {
     const result = await c.installExtension();

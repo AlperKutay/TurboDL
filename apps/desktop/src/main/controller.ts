@@ -19,6 +19,9 @@ import {
   type DownloadRequest,
   type DownloadResponse,
   type FormatsResult,
+  type InstagramFindResult,
+  type InstagramItem,
+  type InstagramLink,
   type InstallResult,
   type MediaChoice,
   type MediaDecision,
@@ -28,9 +31,13 @@ import {
   type Result,
   type Settings,
   type StreamOrigin,
+  type BrowserCookie,
+  parseInstagramLink,
 } from "@turbodl/shared";
 import { createBridgeServer, type BridgeServer } from "./bridge-server";
 import { HttpDownloadTask } from "./engine/download-task";
+import type { FindOutcome } from "./instagram/finder";
+import { InstagramSession, type Crypt } from "./instagram/session";
 import { probe } from "./engine/probe";
 import { DownloadManager, type StateFile } from "./manager";
 import { cookiesFromHeader, withCookieFile } from "./media/cookies";
@@ -70,6 +77,30 @@ export interface ControllerOptions {
   mediaTools?: MediaTools;
   /** test seam: runs a stand-in instead of the real yt-dlp */
   ytdlpCommand?: YtdlpCommand;
+  /** Instagram: reading pages, signing in, keeping the session (Electron in the app, stand-ins in tests) */
+  instagram?: InstagramDeps;
+}
+
+export interface InstagramDeps {
+  find(link: InstagramLink, cookies: BrowserCookie[]): Promise<FindOutcome>;
+  /** Instagram's sign-in in TurboDL; the cookies once signed in, null when closed first */
+  signIn(): Promise<BrowserCookie[] | null>;
+  crypt: Crypt;
+  /** the user agent media downloads present to Instagram's CDN */
+  agent: string;
+}
+
+const NO_INSTAGRAM: InstagramDeps = {
+  find: async () => ({ type: "nothing" }),
+  signIn: async () => null,
+  crypt: { available: () => false, encrypt: (text) => Buffer.from(text), decrypt: (data) => data.toString() },
+  agent: "",
+};
+
+/** Links whose items TurboDL reads itself: posts, reels, stories, highlights. */
+function instagramItemsLink(url: string): InstagramLink | null {
+  const link = parseInstagramLink(url);
+  return link && (link.kind === "post" || link.kind === "story" || link.kind === "highlight") ? link : null;
 }
 
 export function buildHeaders(cookies?: string, referrer?: string, userAgent?: string): Record<string, string> {
@@ -109,8 +140,15 @@ export class AppController {
   private bridgeStatus: BridgeStatus = { ok: false, port: 0 };
   private countdown: CountdownState | null = null;
   private ownClipboardText: string | null = null;
+  private readonly instagram: InstagramDeps;
+  readonly instagramSession: InstagramSession;
+  /** what each open Instagram picker was shown */
+  private readonly instagramItems = new Map<string, InstagramItem[]>();
 
   constructor(private readonly o: ControllerOptions) {
+    this.instagram = o.instagram ?? NO_INSTAGRAM;
+    this.instagramSession = new InstagramSession(path.join(o.userDataDir, "instagram-session.bin"), this.instagram.crypt);
+    this.instagramSession.load();
     this.defaults = defaultSettings(o.downloadsDir);
     this.settingsStore = new JsonStore<Settings>(path.join(o.userDataDir, "settings.json"));
     this.settings = normalizeSettings(this.settingsStore.load(() => this.defaults), this.defaults);
@@ -175,6 +213,11 @@ export class AppController {
   }
 
   async handleDownloadRequest(req: DownloadRequest): Promise<DownloadResponse> {
+    const instagram = instagramItemsLink(req.url);
+    if (instagram) {
+      this.openInstagram(req.url, instagram, req.cookieJar);
+      return { accepted: true };
+    }
     const headers = buildHeaders(req.cookies, req.referrer, req.userAgent);
     let info;
     try {
@@ -217,6 +260,11 @@ export class AppController {
   }
 
   async handleMediaRequest(req: MediaRequest): Promise<void> {
+    const instagram = instagramItemsLink(req.pageUrl);
+    if (instagram) {
+      this.openInstagram(req.pageUrl, instagram, req.cookieJar);
+      return;
+    }
     this.openPending({
       type: "media",
       pendingId: newId(),
@@ -258,6 +306,54 @@ export class AppController {
 
   cancelPending(pendingId: string): void {
     this.pending.delete(pendingId);
+    this.instagramItems.delete(pendingId);
+  }
+
+  /** Reads the link's items from its signed-in page. */
+  async findInstagram(pendingId: string): Promise<InstagramFindResult> {
+    const p = this.pending.get(pendingId);
+    if (!p || p.type !== "instagram") return { type: "gone" };
+    if (!this.instagramSession.signedIn()) return { type: "signedOut" };
+    const outcome = await this.instagram.find(p.link, this.instagramSession.cookies());
+    if (!this.pending.has(pendingId)) return { type: "gone" };
+    if (outcome.type === "items") this.instagramItems.set(pendingId, outcome.items);
+    return outcome;
+  }
+
+  /** Queues the picked items (none picked: all of them), one download each, named by Instagram's id. */
+  async confirmInstagram(pendingId: string, indices: number[], mode: "now" | "later"): Promise<Result> {
+    const p = this.pending.get(pendingId);
+    const items = this.instagramItems.get(pendingId);
+    if (!p || p.type !== "instagram" || !items) return { ok: false, error: "This request no longer exists." };
+    const chosen = indices.length > 0 ? indices.map((i) => items[i]).filter((item): item is InstagramItem => item !== undefined) : items;
+    if (chosen.length === 0) return { ok: false, error: "Nothing was picked." };
+    const fallback = p.link.kind === "post" ? p.link.code : p.link.kind === "story" ? p.link.item : p.link.kind === "highlight" ? p.link.id : "instagram";
+    chosen.forEach((item, k) => {
+      const filename = sanitizeFilename(`${item.mediaId ?? `${fallback}-${k + 1}`}.${instagramExtension(item)}`);
+      this.manager.add(
+        {
+          kind: "http",
+          url: item.url,
+          pageUrl: p.pageUrl,
+          filename,
+          dir: p.defaultDir,
+          category: item.kind === "video" ? "video" : "images",
+          size: null,
+          resumable: true,
+          headers: { Referer: "https://www.instagram.com/", ...(this.instagram.agent ? { "User-Agent": this.instagram.agent } : {}) },
+        },
+        mode,
+      );
+    });
+    this.instagramItems.delete(pendingId);
+    this.finishPending(pendingId);
+    return { ok: true };
+  }
+
+  /** Instagram's own sign-in in TurboDL; its cookies become the session. */
+  async instagramSignIn(): Promise<boolean> {
+    const cookies = await this.instagram.signIn();
+    return cookies !== null && this.instagramSession.take(cookies);
   }
 
   confirmDownload(pendingId: string, decision: DownloadDecision): Result {
@@ -486,6 +582,11 @@ export class AppController {
     return this.manager.list().some((d) => d.url === url && d.status !== "completed");
   }
 
+  private openInstagram(pageUrl: string, link: InstagramLink, cookieJar?: BrowserCookie[]): void {
+    if (cookieJar) this.instagramSession.take(cookieJar);
+    this.openPending({ type: "instagram", pendingId: newId(), pageUrl, link, defaultDir: path.join(this.settings.baseDir, "Instagram") });
+  }
+
   private openPending(item: PendingItem): void {
     this.pending.set(item.pendingId, item);
     this.o.ui.openPending(item);
@@ -529,4 +630,11 @@ export class AppController {
     this.bridge = null;
     await this.startBridge();
   }
+}
+
+/** A photo's or video's extension, from its address (Instagram serves .jpg, .webp, .heic, .mp4). */
+function instagramExtension(item: InstagramItem): string {
+  const ext = getExtension(new URL(item.url).pathname).toLowerCase();
+  if (item.kind === "video") return ext === "mp4" || ext === "mov" ? ext : "mp4";
+  return ["jpg", "jpeg", "png", "webp", "heic"].includes(ext) ? ext : "jpg";
 }

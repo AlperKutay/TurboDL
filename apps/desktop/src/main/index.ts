@@ -1,8 +1,12 @@
-import { existsSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { Notification, app, clipboard, shell, type Tray } from "electron";
+import { Notification, app, clipboard, safeStorage, shell, type Tray } from "electron";
 import { ClipboardWatcher } from "./clipboard-watcher";
 import { AppController } from "./controller";
+import { chromeAgent } from "./instagram/agent";
+import { InstagramFinder } from "./instagram/finder";
+import { ElectronInstagramPage } from "./instagram/page";
+import { signInToInstagram } from "./instagram/signin";
 import { EVENT_CHANNEL, broadcast, registerIpc } from "./ipc";
 import { isBackgroundLaunch, registerNativeHost } from "./native-host";
 import { CompletionNotifier, notificationIdentity, revealDownload } from "./notifications";
@@ -68,12 +72,22 @@ async function start(): Promise<void> {
     ffmpegPath: ffmpegPath(),
     ui: {
       broadcast: (event) => broadcast(EVENT_CHANNEL, event),
-      openPending: (item) => wm.openDialog(item.pendingId, item.type === "media" ? "media" : "new"),
+      openPending: (item) => wm.openDialog(item.pendingId, item.type === "download" ? "new" : item.type),
       closePending: (pendingId) => wm.closeDialog(pendingId),
       showMain: () => wm.showMain(),
       notifyCompleted: (record) => notifier.show(path.join(record.dir, record.filename)),
       setLaunchAtLogin: (enabled) => app.setLoginItemSettings({ openAtLogin: enabled, args: ["--hidden"] }),
       quit: () => app.quit(),
+    },
+    instagram: {
+      find: (link, cookies) => new InstagramFinder(() => new ElectronInstagramPage(cookies), { report: instagramReport() }).find(link),
+      signIn: () => signInToInstagram(),
+      crypt: {
+        available: () => safeStorage.isEncryptionAvailable(),
+        encrypt: (text) => safeStorage.encryptString(text),
+        decrypt: (data) => safeStorage.decryptString(data),
+      },
+      agent: chromeAgent(app.userAgentFallback),
     },
   });
   controller = c;
@@ -100,4 +114,14 @@ async function start(): Promise<void> {
   const hidden = isBackgroundLaunch(process.argv) || app.getLoginItemSettings().wasOpenedAtLogin;
   if (!hidden) wm.showMain();
   void tray;
+}
+
+/** TURBODL_INSTAGRAM_REPORTS=<folder>: what an Instagram page held when nothing was found on it, for debugging. */
+function instagramReport(): ((url: string, documents: string[]) => void) | undefined {
+  const dir = process.env.TURBODL_INSTAGRAM_REPORTS;
+  if (!dir) return undefined;
+  return (url, documents) => {
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(path.join(dir, `${Date.now()}-instagram.json`), JSON.stringify({ url, documents }, null, 1));
+  };
 }

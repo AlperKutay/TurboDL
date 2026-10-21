@@ -1,3 +1,4 @@
+import type { InstagramItem, InstagramLink } from "./instagram";
 import type { BrowserCookie, CaptureSource, MediaItem } from "./protocol";
 
 export type Category = "video" | "music" | "programs" | "archives" | "documents" | "images" | "other";
@@ -140,7 +141,20 @@ export interface PendingMedia {
   useLogin: boolean;
 }
 
-export type PendingItem = PendingDownload | PendingMedia;
+/** An Instagram post, story or highlight link, read from its signed-in page and picked from in its own window. */
+export interface PendingInstagram {
+  type: "instagram";
+  pendingId: string;
+  pageUrl: string;
+  link: InstagramLink;
+  /** <baseDir>/Instagram */
+  defaultDir: string;
+}
+
+export type PendingItem = PendingDownload | PendingMedia | PendingInstagram;
+
+/** What the Instagram picker shows: the items, a sign-in to do, nothing found, or a request already closed. */
+export type InstagramFindResult = { type: "items"; items: InstagramItem[] } | { type: "signedOut" } | { type: "nothing" } | { type: "gone" };
 
 export interface MediaFormatOption {
   id: string;
@@ -205,6 +219,11 @@ export interface TurboApi {
   probeMediaFormats(pendingId: string): Promise<FormatsResult>;
   probeStream(pendingId: string, index: number): Promise<FormatsResult>;
   confirmMedia(pendingId: string, choice: MediaChoice, decision: MediaDecision): Promise<Result>;
+  findInstagram(pendingId: string): Promise<InstagramFindResult>;
+  /** `indices` empty: every item */
+  confirmInstagram(pendingId: string, indices: number[], mode: "now" | "later"): Promise<Result>;
+  /** Opens Instagram's sign-in in TurboDL; true once a session was kept. */
+  instagramSignIn(): Promise<boolean>;
   cancelCountdown(): Promise<void>;
   installExtension(): Promise<InstallResult>;
   copyText(text: string): Promise<void>;
