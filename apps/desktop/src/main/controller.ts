@@ -10,6 +10,11 @@ import {
   sanitizeFilename,
   type AppEvent,
   type AppSnapshot,
+  type BackupPlan,
+  type InstagramAccount,
+  type SavedCollection,
+  type SavedPageResult,
+  type SavedSource,
   type BridgeConfig,
   type BridgeStatus,
   type Category,
@@ -36,6 +41,10 @@ import {
 } from "@turbodl/shared";
 import { createBridgeServer, type BridgeServer } from "./bridge-server";
 import { HttpDownloadTask } from "./engine/download-task";
+import { delay } from "./engine/http";
+import { fetchMedia } from "./instagram/fetch-media";
+import { httpGet, type HttpGet } from "./instagram/saved-client";
+import { SavedService } from "./instagram/saved-service";
 import type { FindOutcome } from "./instagram/finder";
 import { instagramExtension } from "./instagram/files";
 import { InstagramSession, type Crypt } from "./instagram/session";
@@ -90,6 +99,17 @@ export interface InstagramDeps {
   crypt: Crypt;
   /** the user agent media downloads present to Instagram's CDN */
   agent: string;
+  /** Saved: the REST transport (default: the engine's request) */
+  get?: HttpGet;
+  /** Saved: the account's collections from its saved page, read in a hidden page */
+  collections?(username: string, cookies: BrowserCookie[]): Promise<SavedCollection[] | null>;
+  /** backups: one photo or video to disk */
+  fetch?: typeof fetchMedia;
+  /** pacing (default: a timer) */
+  wait?(ms: number, signal?: AbortSignal): Promise<void>;
+  now?(): number;
+  /** forgets the session in the hidden pages' partition */
+  signOut?(): Promise<void>;
 }
 
 const NO_INSTAGRAM: InstagramDeps = {
@@ -160,11 +180,26 @@ export class AppController {
   private readonly instagramSearches = new Map<string, AbortController>();
   /** the check page each picker's page landed on */
   private readonly instagramChecks = new Map<string, string>();
+  private readonly saved: SavedService;
 
   constructor(private readonly o: ControllerOptions) {
     this.instagram = o.instagram ?? NO_INSTAGRAM;
     this.instagramSession = new InstagramSession(path.join(o.userDataDir, "instagram-session.bin"), this.instagram.crypt);
     this.instagramSession.load();
+    const ig = this.instagram;
+    this.saved = new SavedService({
+      session: this.instagramSession,
+      agent: ig.agent,
+      get: ig.get ?? httpGet,
+      collections: (username, cookies) => (ig.collections ? ig.collections(username, cookies) : Promise.resolve(null)),
+      fetch: ig.fetch ?? fetchMedia,
+      wait: (ms, signal) => (ig.wait ? ig.wait(ms, signal) : delay(ms, signal ?? new AbortController().signal)),
+      now: () => (ig.now ? ig.now() : Date.now()),
+      signOut: () => (ig.signOut ? ig.signOut() : Promise.resolve()),
+      userDataDir: o.userDataDir,
+      baseDir: () => this.settings.baseDir,
+      onBackup: (backup) => this.o.ui.broadcast({ type: "instagramBackup", backup }),
+    });
     this.defaults = defaultSettings(o.downloadsDir);
     this.settingsStore = new JsonStore<Settings>(path.join(o.userDataDir, "settings.json"));
     this.settings = normalizeSettings(this.settingsStore.load(() => this.defaults), this.defaults);
@@ -217,6 +252,7 @@ export class AppController {
       bridge: this.bridgeStatus,
       countdown: this.countdown,
       version: this.o.version,
+      instagramBackup: this.saved.backupView(),
     };
   }
 
@@ -232,6 +268,10 @@ export class AppController {
     const instagram = instagramItemsLink(req.url);
     if (instagram) {
       this.openInstagram(req.url, instagram, req.cookieJar);
+      return { accepted: true };
+    }
+    if (parseInstagramLink(req.url)?.kind === "saved") {
+      this.openSaved(req.cookieJar);
       return { accepted: true };
     }
     if (isInstagramPage(req.url)) return { accepted: false, reason: "TurboDL opens Instagram posts, reels, stories and highlights." };
@@ -280,6 +320,10 @@ export class AppController {
     const instagram = instagramItemsLink(req.pageUrl);
     if (instagram) {
       this.openInstagram(req.pageUrl, instagram, req.cookieJar);
+      return;
+    }
+    if (parseInstagramLink(req.pageUrl)?.kind === "saved") {
+      this.openSaved(req.cookieJar);
       return;
     }
     this.openPending({
@@ -333,6 +377,11 @@ export class AppController {
   async findInstagram(pendingId: string): Promise<InstagramFindResult> {
     const p = this.pending.get(pendingId);
     if (!p || p.type !== "instagram") return { type: "gone" };
+    // picked in Saved: the items came with the pick
+    if (p.link.kind === "saved") {
+      const known = this.instagramItems.get(pendingId);
+      return known ? { type: "items", items: known } : { type: "gone" };
+    }
     this.instagramSearches.get(pendingId)?.abort();
     const search = new AbortController();
     this.instagramSearches.set(pendingId, search);
@@ -385,6 +434,58 @@ export class AppController {
   async instagramSignIn(pendingId?: string): Promise<boolean> {
     const cookies = await this.instagram.signIn(pendingId ? this.instagramChecks.get(pendingId) : undefined);
     return cookies !== null && this.instagramSession.take(cookies);
+  }
+
+  instagramAccount(): Promise<InstagramAccount> {
+    return this.saved.accountInfo();
+  }
+
+  instagramSignOut(): Promise<void> {
+    return this.saved.signOut();
+  }
+
+  savedCollections(refresh: boolean): Promise<SavedCollection[] | "signedOut"> {
+    return this.saved.collections(refresh);
+  }
+
+  savedPage(source: SavedSource, cursor?: string): Promise<SavedPageResult> {
+    return this.saved.page(source, cursor);
+  }
+
+  /** The picker over the picked posts' items, in pick order, nothing picked in it yet. */
+  async openSavedPicks(postIds: string[]): Promise<Result> {
+    const items = this.saved.pickedItems(postIds);
+    if (items.length === 0) return { ok: false, error: "Nothing was picked." };
+    const username = (await this.saved.usernameIfAny()) ?? "";
+    const pendingId = newId();
+    this.instagramItems.set(pendingId, items);
+    this.openPending({
+      type: "instagram",
+      pendingId,
+      pageUrl: username ? `https://www.instagram.com/${encodeURIComponent(username)}/saved/` : "https://www.instagram.com/",
+      link: { kind: "saved", username },
+      defaultDir: path.join(this.settings.baseDir, "Instagram"),
+    });
+    return { ok: true };
+  }
+
+  backupPlan(collectionId: string): Promise<BackupPlan> {
+    return this.saved.plan(collectionId);
+  }
+
+  async startBackup(collectionId: string): Promise<Result> {
+    return this.saved.startBackup(collectionId);
+  }
+
+  async stopBackup(): Promise<void> {
+    this.saved.stopBackup();
+  }
+
+  /** A saved link: the browser's session is taken, and the main window shows Saved. */
+  private openSaved(cookieJar?: BrowserCookie[]): void {
+    if (cookieJar) this.instagramSession.take(cookieJar);
+    this.o.ui.showMain();
+    this.o.ui.broadcast({ type: "openSaved" });
   }
 
   private forgetInstagram(pendingId: string): void {
@@ -589,6 +690,7 @@ export class AppController {
   }
 
   async shutdown(): Promise<void> {
+    this.saved.stopBackup();
     this.scheduler.stop();
     await this.manager.shutdown();
     this.settingsStore.flush();

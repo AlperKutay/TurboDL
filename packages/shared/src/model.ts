@@ -1,4 +1,4 @@
-import type { InstagramItem, InstagramLink } from "./instagram";
+import type { InstagramItem, InstagramLink, SavedCollection, SavedPage, SavedSource } from "./instagram";
 import type { BrowserCookie, CaptureSource, MediaItem } from "./protocol";
 
 export type Category = "video" | "music" | "programs" | "archives" | "documents" | "images" | "other";
@@ -153,6 +153,29 @@ export interface PendingInstagram {
 
 export type PendingItem = PendingDownload | PendingMedia | PendingInstagram;
 
+/** The Instagram account TurboDL keeps a session for. */
+export interface InstagramAccount {
+  signedIn: boolean;
+  /** when Instagram said it */
+  username?: string;
+}
+
+/** A page of saved posts, or why there is none. */
+export type SavedPageResult = { type: "page"; page: SavedPage } | { type: "signedOut" } | { type: "rateLimited" } | { type: "failed"; message: string };
+
+/** What a collection backup's confirmation says. */
+export interface BackupPlan {
+  count?: number;
+  /** an estimate from the posts loaded so far */
+  bytes?: number;
+  /** free space where the backup goes */
+  freeBytes?: number;
+  /** over 1,000 posts */
+  large: boolean;
+  /** an earlier backup stopped before the end */
+  resumes: boolean;
+}
+
 /** A collection backup as its progress panel shows it. */
 export interface BackupView {
   targetId: string;
@@ -206,6 +229,8 @@ export interface AppSnapshot {
   bridge: BridgeStatus;
   countdown: CountdownState | null;
   version: string;
+  /** the Instagram backup running or last run */
+  instagramBackup: BackupView | null;
 }
 
 export type AppEvent =
@@ -213,7 +238,10 @@ export type AppEvent =
   | { type: "removed"; ids: string[] }
   | { type: "settings"; settings: Settings }
   | { type: "bridge"; status: BridgeStatus }
-  | { type: "countdown"; state: CountdownState | null };
+  | { type: "countdown"; state: CountdownState | null }
+  | { type: "instagramBackup"; backup: BackupView | null }
+  /** a saved link came in: show the Saved section */
+  | { type: "openSaved" };
 
 export type Result = { ok: true } | { ok: false; error: string };
 
@@ -248,6 +276,16 @@ export interface TurboApi {
   confirmInstagram(pendingId: string, indices: number[], mode: "now" | "later"): Promise<Result>;
   /** Opens Instagram's sign-in in TurboDL (on the check page this picker's page landed on); true once a session was kept. */
   instagramSignIn(pendingId?: string): Promise<boolean>;
+  instagramAccount(): Promise<InstagramAccount>;
+  instagramSignOut(): Promise<void>;
+  /** the kept list at once; `refresh` reads it from Instagram's saved page */
+  savedCollections(refresh: boolean): Promise<SavedCollection[] | "signedOut">;
+  savedPage(source: SavedSource, cursor?: string): Promise<SavedPageResult>;
+  /** opens the picker over the picked posts' items, in pick order */
+  openSavedPicks(postIds: string[]): Promise<Result>;
+  backupPlan(collectionId: string): Promise<BackupPlan>;
+  startBackup(collectionId: string): Promise<Result>;
+  stopBackup(): Promise<void>;
   cancelCountdown(): Promise<void>;
   installExtension(): Promise<InstallResult>;
   copyText(text: string): Promise<void>;

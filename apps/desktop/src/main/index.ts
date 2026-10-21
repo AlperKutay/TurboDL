@@ -6,7 +6,8 @@ import { AppController } from "./controller";
 import { chromeAgent } from "./instagram/agent";
 import { DEMO_COOKIE, demoInstagram } from "./instagram/demo";
 import { InstagramFinder } from "./instagram/finder";
-import { ElectronInstagramPage, allowTestSite } from "./instagram/page";
+import { loadCollections } from "./instagram/collections";
+import { ElectronInstagramPage, allowTestSite, instagramSession } from "./instagram/page";
 import { signInToInstagram } from "./instagram/signin";
 import { EVENT_CHANNEL, broadcast, registerIpc } from "./ipc";
 import { isBackgroundLaunch, registerNativeHost } from "./native-host";
@@ -90,6 +91,8 @@ async function start(): Promise<void> {
       : {
           find: (link, cookies, signal) => new InstagramFinder(() => new ElectronInstagramPage(cookies), { report: instagramReport(), site: instagramTestSite }).find(link, signal),
           signIn: (at) => signInToInstagram(at),
+          collections: (username, cookies) => loadCollections(() => new ElectronInstagramPage(cookies), username, { site: instagramTestSite }),
+          signOut: () => instagramSession().clearStorageData(),
           crypt: {
             available: () => safeStorage.isEncryptionAvailable(),
             encrypt: (text) => safeStorage.encryptString(text),

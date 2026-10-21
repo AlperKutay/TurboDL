@@ -1,8 +1,8 @@
 import { parseInstagramLink } from "@turbodl/shared";
 
-const PATHS = ["/p/*", "/reel/*", "/reels/*", "/tv/*", "/stories/*", "/s/*", "/*/p/*", "/*/reel/*"];
+const PATHS = ["/p/*", "/reel/*", "/reels/*", "/tv/*", "/stories/*", "/s/*", "/*/p/*", "/*/reel/*", "/*/saved/*"];
 
-/** Where "Open in TurboDL" shows: the Instagram pages TurboDL reads (posts, reels, stories, highlights). */
+/** Where "Open in TurboDL" shows: the Instagram pages TurboDL reads (posts, reels, stories, highlights) and the saved pages. */
 export const INSTAGRAM_PAGES = ["https://www.instagram.com", "https://instagram.com"].flatMap((site) => PATHS.map((path) => site + path));
 
 /** The post, reel, story or highlight a right-clicked picture links to, otherwise the page itself. */

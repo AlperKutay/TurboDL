@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import http from "node:http";
 import net from "node:net";
 import os from "node:os";
@@ -572,5 +572,153 @@ describe("Instagram links", () => {
     const c = await start({}, null, ig.deps);
     await c.handleMediaRequest({ pageUrl: "https://www.instagram.com/sample.user/", title: "x", items: [], cookieJar: sessionJar });
     expect(ui.opened[0]).toMatchObject({ type: "media", cookieJar: [] });
+  });
+});
+
+describe("Instagram Saved", () => {
+  const sessionJar: BrowserCookie[] = [
+    { domain: ".instagram.com", hostOnly: false, path: "/", secure: true, expires: 0, name: "sessionid", value: "s" },
+    { domain: ".instagram.com", hostOnly: false, path: "/", secure: true, expires: 0, name: "csrftoken", value: "c" },
+  ];
+  const picture = (name: string) => ({ candidates: [{ url: server.url(`/ig/${name}.jpg`), width: 640, height: 640 }] });
+  const photo = (pk: string) => ({ pk, code: `C${pk}`, image_versions2: picture(pk) });
+  const video = (pk: string) => ({ pk, code: `C${pk}`, image_versions2: picture(`${pk}-cover`), video_versions: [{ url: server.url(`/ig/${pk}.mp4`), width: 640, height: 640 }] });
+  const carousel = (pk: string, ...children: object[]) => ({ pk, code: `C${pk}`, image_versions2: picture(pk), carousel_media: children });
+
+  /** Instagram's saved feeds stood in for: every feed answers these posts on one page. */
+  function fakeSaved(o: { posts?: object[]; collections?: { id: string; name: string; count?: number; isAll: boolean }[] } = {}) {
+    const asked: string[] = [];
+    const waits: number[] = [];
+    let now = 0;
+    let signOuts = 0;
+    const posts = o.posts ?? [carousel("3", photo("31"), video("32")), photo("1")];
+    const deps: InstagramDeps = {
+      find: async () => ({ type: "nothing" }),
+      signIn: async () => null,
+      crypt: { available: () => false, encrypt: (t: string) => Buffer.from(t), decrypt: (b: Buffer) => b.toString() },
+      agent: "TestAgent/1",
+      get: async (url) => {
+        asked.push(url);
+        if (url.endsWith("/web_form_data/")) return { status: 200, body: JSON.stringify({ form_data: { username: "sample.user" }, status: "ok" }) };
+        return { status: 200, body: JSON.stringify({ items: posts.map((media) => ({ media })), more_available: false, status: "ok" }) };
+      },
+      collections: async () => o.collections ?? [{ id: "100", name: "All posts", count: 40, isAll: true }, { id: "102", name: "Trips", count: 2, isAll: false }],
+      wait: async (ms) => {
+        waits.push(ms);
+        now += ms;
+      },
+      now: () => now,
+      signOut: async () => {
+        signOuts++;
+      },
+    };
+    return { deps, asked, waits, signOuts: () => signOuts };
+  }
+
+  beforeEach(() => {
+    for (const name of ["1", "3", "31", "32-cover", "41-cover", "42", "43"]) server.setFile(`/ig/${name}.jpg`, { data: Buffer.alloc(800, 5), contentType: "image/jpeg" });
+    server.setFile("/ig/32.mp4", { data: Buffer.alloc(1600, 6), contentType: "video/mp4" });
+  });
+
+  async function signedIn(deps: InstagramDeps) {
+    const c = await start({}, null, deps);
+    c.instagramSession.take(sessionJar);
+    return c;
+  }
+
+  async function backupEnds(c: AppController) {
+    for (let i = 0; i < 200 && c.snapshot().instagramBackup?.state === "running"; i++) await new Promise((r) => setTimeout(r, 25));
+    return c.snapshot().instagramBackup;
+  }
+
+  it("shows the signed-in account's username, and asks Instagram nothing without a session", async () => {
+    const saved = fakeSaved();
+    const c = await start({}, null, saved.deps);
+    expect(await c.instagramAccount()).toEqual({ signedIn: false });
+    expect(saved.asked).toHaveLength(0);
+    c.instagramSession.take(sessionJar);
+    expect(await c.instagramAccount()).toEqual({ signedIn: true, username: "sample.user" });
+  });
+
+  it("forgets the session on sign-out", async () => {
+    const saved = fakeSaved();
+    const c = await signedIn(saved.deps);
+    await c.instagramSignOut();
+    expect(await c.instagramAccount()).toEqual({ signedIn: false });
+    expect(saved.signOuts()).toBe(1);
+  });
+
+  it("never asks for saved pages closer than 1.5 s apart", async () => {
+    const saved = fakeSaved();
+    const c = await signedIn(saved.deps);
+    await Promise.all([c.savedPage({ kind: "all" }), c.savedPage({ kind: "all" })]);
+    expect(saved.waits).toEqual([1500]);
+  });
+
+  it("opens picked posts in the picker, their items in pick order, without reading a page", async () => {
+    const saved = fakeSaved();
+    const c = await signedIn(saved.deps);
+    const answer = await c.savedPage({ kind: "all" });
+    expect(answer.type === "page" && answer.page.posts.map((p) => p.id)).toEqual(["3", "1"]);
+    expect(await c.openSavedPicks(["1", "3"])).toEqual({ ok: true });
+    const pending = ui.opened[0];
+    expect(pending).toMatchObject({ type: "instagram", link: { kind: "saved", username: "sample.user" }, defaultDir: path.join(root, "dl", "Instagram") });
+    const found = await c.findInstagram(pending.pendingId);
+    expect(found.type === "items" && found.items.map((i) => i.mediaId)).toEqual(["1", "31", "32"]);
+  });
+
+  it("backs up only the owner's collections, one at a time", async () => {
+    const saved = fakeSaved();
+    const c = await signedIn(saved.deps);
+    await c.savedCollections(true);
+    expect((await c.startBackup("100")).ok).toBe(false);
+    expect(await c.startBackup("102")).toEqual({ ok: true });
+    expect(await c.startBackup("102")).toEqual({ ok: false, error: "A backup is already running." });
+    await c.stopBackup();
+  });
+
+  it("backs a collection up into its folder and reports its progress", async () => {
+    const saved = fakeSaved();
+    const c = await signedIn(saved.deps);
+    await c.savedCollections(true);
+    await c.startBackup("102");
+    expect(await backupEnds(c)).toMatchObject({ state: "finished", name: "Trips", done: 2, left: 0, saved: 3 });
+    expect(readFileSync(path.join(root, "dl", "Instagram", "Saved", "Trips", "32.mp4")).length).toBe(1600);
+    expect(existsSync(path.join(root, "dl", "Instagram", "Saved", "Trips", "31.jpg"))).toBe(true);
+    expect(ui.events.some((e) => e.type === "instagramBackup" && e.backup?.state === "running")).toBe(true);
+  });
+
+  it("names a collection's folder safely", async () => {
+    const saved = fakeSaved({ collections: [{ id: "105", name: "Trips: 2024/25?", isAll: false }] });
+    const c = await signedIn(saved.deps);
+    await c.savedCollections(true);
+    await c.startBackup("105");
+    await backupEnds(c);
+    const folders = readdirSync(path.join(root, "dl", "Instagram", "Saved"));
+    expect(folders).toHaveLength(1);
+    expect(folders[0]).not.toMatch(/[:/?]/);
+  });
+
+  it("estimates a backup from the posts loaded so far", async () => {
+    const saved = fakeSaved({
+      posts: [carousel("3", video("31"), photo("32")), carousel("4", video("41"), photo("42"), photo("43"))],
+      collections: [{ id: "102", name: "Trips", count: 10, isAll: false }],
+    });
+    const c = await signedIn(saved.deps);
+    await c.savedCollections(true);
+    await c.savedPage({ kind: "collection", id: "102" });
+    const plan = await c.backupPlan("102");
+    expect(plan).toMatchObject({ count: 10, bytes: (10 * (2 * 8_000_000 + 3 * 600_000)) / 2, large: false, resumes: false });
+    expect(plan.freeBytes).toBeGreaterThan(0);
+  });
+
+  it("opens Saved for a saved link, taking the browser's session", async () => {
+    const saved = fakeSaved();
+    const c = await start({}, null, saved.deps);
+    expect(await c.handleDownloadRequest({ url: "https://www.instagram.com/sample.user/saved/", source: "context-menu", cookieJar: sessionJar })).toEqual({ accepted: true });
+    expect(ui.shown).toBe(1);
+    expect(ui.events).toContainEqual({ type: "openSaved" });
+    expect(c.instagramSession.signedIn()).toBe(true);
+    expect(ui.opened).toHaveLength(0);
   });
 });

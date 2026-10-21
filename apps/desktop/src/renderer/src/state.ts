@@ -22,6 +22,10 @@ export function applyEvent(state: AppSnapshot, event: AppEvent): AppSnapshot {
       return { ...state, bridge: event.status };
     case "countdown":
       return { ...state, countdown: event.state };
+    case "instagramBackup":
+      return { ...state, instagramBackup: event.backup };
+    case "openSaved":
+      return state;
   }
 }
 

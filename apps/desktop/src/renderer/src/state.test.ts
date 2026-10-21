@@ -31,9 +31,15 @@ const snapshot = (downloads: DownloadView[]): AppSnapshot => ({
   bridge: { ok: true, port: 47123 },
   countdown: null,
   version: "1",
+  instagramBackup: null,
 });
 
 describe("applyEvent", () => {
+  it("keeps the Instagram backup's latest progress", () => {
+    const backup = { targetId: "102", name: "Trips", state: "running" as const, done: 1, failed: 0, saved: 2, progress: 0.5 };
+    expect(applyEvent(snapshot([]), { type: "instagramBackup", backup }).instagramBackup).toEqual(backup);
+  });
+
   it("upserts downloads keeping order", () => {
     const s = applyEvent(snapshot([view("a"), view("b")]), { type: "downloads", items: [view("a", { received: 50 }), view("c")] });
     expect(s.downloads.map((d) => d.id)).toEqual(["a", "b", "c"]);

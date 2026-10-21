@@ -30,6 +30,12 @@ describe("Open in TurboDL on Instagram", () => {
     }
   });
 
+  it("shows on the owner's saved pages too, which open Saved", () => {
+    expect(matches("https://www.instagram.com/sample.user/saved/")).toBe(true);
+    expect(matches("https://www.instagram.com/sample.user/saved/trips/17800000000000001/")).toBe(true);
+    expect(instagramTarget("https://www.instagram.com/sample.user/saved/")).toBe("https://www.instagram.com/sample.user/saved/");
+  });
+
   it("opens the post a right-clicked picture links to, otherwise the page itself", () => {
     const page = "https://www.instagram.com/p/C1abcDEF/";
     expect(instagramTarget(page, "https://www.instagram.com/p/C2other/")).toBe("https://www.instagram.com/p/C2other/");

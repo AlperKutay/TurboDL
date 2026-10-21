@@ -1,9 +1,15 @@
 import { existsSync } from "node:fs";
 import { BrowserWindow, clipboard, dialog, ipcMain, shell, type OpenDialogOptions } from "electron";
-import { RELEASES_URL, type DownloadDecision, type MediaChoice, type MediaDecision, type Settings } from "@turbodl/shared";
+import { RELEASES_URL, type DownloadDecision, type MediaChoice, type MediaDecision, type SavedSource, type Settings } from "@turbodl/shared";
 import type { AppController } from "./controller";
 
 export const EVENT_CHANNEL = "turbodl:event";
+
+/** A feed as the renderer names it; anything else is All. */
+function savedSource(v: unknown): SavedSource {
+  const o = v as { kind?: unknown; id?: unknown } | null;
+  return o?.kind === "collection" && typeof o.id === "string" ? { kind: "collection", id: o.id } : { kind: "all" };
+}
 
 export function registerIpc(c: AppController): void {
   const handle = (name: string, fn: (...args: any[]) => unknown) => {
@@ -49,6 +55,14 @@ export function registerIpc(c: AppController): void {
     c.confirmInstagram(String(id), Array.isArray(indices) ? indices.map(Number).filter(Number.isInteger) : [], mode === "later" ? "later" : "now"),
   );
   handle("instagramSignIn", (id: unknown) => c.instagramSignIn(typeof id === "string" ? id : undefined));
+  handle("instagramAccount", () => c.instagramAccount());
+  handle("instagramSignOut", () => c.instagramSignOut());
+  handle("savedCollections", (refresh: unknown) => c.savedCollections(refresh === true));
+  handle("savedPage", (source: unknown, cursor: unknown) => c.savedPage(savedSource(source), typeof cursor === "string" ? cursor : undefined));
+  handle("openSavedPicks", (ids: unknown) => c.openSavedPicks(Array.isArray(ids) ? ids.filter((id): id is string => typeof id === "string") : []));
+  handle("backupPlan", (id: unknown) => c.backupPlan(String(id)));
+  handle("startBackup", (id: unknown) => c.startBackup(String(id)));
+  handle("stopBackup", () => c.stopBackup());
   handle("cancelCountdown", () => c.cancelCountdown());
   handle("installExtension", async () => {
     const result = await c.installExtension();
