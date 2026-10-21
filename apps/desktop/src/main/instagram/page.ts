@@ -1,7 +1,7 @@
 import { BrowserWindow, session, type Session } from "electron";
 import type { BrowserCookie } from "@turbodl/shared";
 import { chromeAgent } from "./agent";
-import type { PageDriver } from "./finder";
+import { within, type PageDriver } from "./finder";
 import { INSTAGRAM_PARTITION, blockedFrame, electronCookie, isInstagramAddress } from "./partition";
 
 const MAX_DOCUMENT = 4 * 1024 * 1024;
@@ -128,6 +128,12 @@ export class ElectronInstagramPage implements PageDriver {
   finalUrl(): string {
     const contents = this.win?.webContents;
     return contents && !contents.isDestroyed() ? contents.getURL() : "about:blank";
+  }
+
+  async scrollToEnd(): Promise<void> {
+    const contents = this.win?.webContents;
+    if (!contents || contents.isDestroyed()) return;
+    await within(contents.executeJavaScript("window.scrollTo(0, document.body.scrollHeight); true").catch(() => undefined), Date.now() + 2000);
   }
 
   close(): void {

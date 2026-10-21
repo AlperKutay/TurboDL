@@ -27,6 +27,7 @@ class FakePage implements PageDriver {
   finalUrl() {
     return this.landsOn ?? this.loads[this.loads.length - 1] ?? "about:blank";
   }
+  async scrollToEnd() {}
   close() {
     this.closed = true;
   }

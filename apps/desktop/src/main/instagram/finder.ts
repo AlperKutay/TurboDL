@@ -6,6 +6,8 @@ export interface PageDriver {
   /** The JSON the page has received so far, and the JSON embedded in it. */
   documents(): Promise<string[]>;
   finalUrl(): string;
+  /** Scrolls the page to its end, for pages that load more as they scroll. */
+  scrollToEnd(): Promise<void>;
   close(): void;
 }
 
@@ -102,7 +104,7 @@ export class InstagramFinder {
 const LOOK = 3000;
 
 /** What `work` gives, or undefined when the deadline passes or `signal` aborts first. */
-function within<T>(work: Promise<T>, deadline: number, signal?: AbortSignal): Promise<T | undefined> {
+export function within<T>(work: Promise<T>, deadline: number, signal?: AbortSignal): Promise<T | undefined> {
   return new Promise((resolve) => {
     if (signal?.aborted) return resolve(undefined);
     const timer = Number.isFinite(deadline) ? setTimeout(() => finish(undefined), Math.max(0, deadline - Date.now())) : undefined;
