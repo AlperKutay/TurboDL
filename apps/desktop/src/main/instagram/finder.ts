@@ -19,19 +19,21 @@ export interface FinderOptions {
   timeout?: number;
   /** what the page held when nothing was found, for a debug dump */
   report?: (url: string, documents: string[]) => void;
+  /** where the pages are loaded from: Instagram, or a stand-in in end-to-end tests */
+  site?: string;
 }
 
 const SITE = "https://www.instagram.com";
 
 /** The page a link's items are read from; profiles and saved pages are read elsewhere. */
-export function pageFor(link: InstagramLink): string | null {
+export function pageFor(link: InstagramLink, site = SITE): string | null {
   switch (link.kind) {
     case "post":
-      return `${SITE}/p/${encodeURIComponent(link.code)}/`;
+      return `${site}/p/${encodeURIComponent(link.code)}/`;
     case "story":
-      return `${SITE}/stories/${encodeURIComponent(link.username)}/${encodeURIComponent(link.item)}/`;
+      return `${site}/stories/${encodeURIComponent(link.username)}/${encodeURIComponent(link.item)}/`;
     case "highlight":
-      return `${SITE}/stories/highlights/${encodeURIComponent(link.id)}/`;
+      return `${site}/stories/highlights/${encodeURIComponent(link.id)}/`;
     default:
       return null;
   }
@@ -55,7 +57,7 @@ export class InstagramFinder {
    * deadline; `signal` calls it off. Whatever happens, the page is closed afterwards.
    */
   async find(link: InstagramLink, signal?: AbortSignal): Promise<FindOutcome> {
-    const url = pageFor(link);
+    const url = pageFor(link, this.o.site);
     if (!url || signal?.aborted) return { type: "nothing" };
     const deadline = Date.now() + this.timeout;
     let page: PageDriver | null = null;

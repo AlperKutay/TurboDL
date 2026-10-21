@@ -10,6 +10,22 @@ const MAX_PAGE = 32 * 1024 * 1024;
 /** The hidden pages' contents; the sign-in window may show frames from elsewhere (Instagram's captcha). */
 const hiddenPages = new Set<number>();
 let configured: Session | null = null;
+/** End-to-end tests only: the origin of a stand-in for Instagram the hidden pages may load too. */
+let testSite: string | null = null;
+
+export function allowTestSite(address: string): void {
+  testSite = new URL(address).origin;
+}
+
+/** Instagram's addresses (and the test stand-in's). */
+function allowed(address: string): boolean {
+  if (isInstagramAddress(address)) return true;
+  try {
+    return testSite !== null && new URL(address).origin === testSite;
+  } catch {
+    return false;
+  }
+}
 
 /**
  * The session the hidden pages and the sign-in window share: nothing it asks for (camera, notifications…) is
@@ -22,7 +38,7 @@ export function instagramSession(): Session {
   s.setUserAgent(chromeAgent(s.getUserAgent()));
   s.webRequest.onBeforeRequest((details, callback) => {
     const frame = details.resourceType === "mainFrame" || hiddenPages.has(details.webContentsId ?? -1);
-    callback({ cancel: frame && blockedFrame(details.resourceType, details.url) });
+    callback({ cancel: frame && blockedFrame(details.resourceType, details.url) && !allowed(details.url) });
   });
   configured = s;
   return s;
@@ -71,18 +87,21 @@ export class ElectronInstagramPage implements PageDriver {
     contents.setAudioMuted(true);
     contents.setWindowOpenHandler(() => ({ action: "deny" }));
     contents.on("will-navigate", (event, address) => {
-      if (!isInstagramAddress(address)) event.preventDefault();
+      if (!allowed(address)) event.preventDefault();
     });
     const dbg = contents.debugger;
     dbg.attach("1.3");
     dbg.on("message", (_event, method: string, params: Record<string, any>) => {
       if (method === "Network.responseReceived") {
         const response = params.response as { url: string; mimeType?: string };
-        if (isInstagramAddress(response.url) && /json|javascript/i.test(response.mimeType ?? "")) this.waiting.add(params.requestId as string);
+        if (allowed(response.url) && /json|javascript/i.test(response.mimeType ?? "")) this.waiting.add(params.requestId as string);
       } else if (method === "Network.loadingFinished" && this.waiting.delete(params.requestId as string)) {
         void this.keep(params.requestId as string);
       }
     });
+    // A window that hasn't loaded anything has no page for the DevTools protocol yet, and Network.enable waits forever.
+    await win.loadURL("about:blank");
+    if (this.closed) return;
     await dbg.sendCommand("Network.enable");
     try {
       await win.loadURL(url);

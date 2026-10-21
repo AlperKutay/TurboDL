@@ -6,7 +6,7 @@ import { AppController } from "./controller";
 import { chromeAgent } from "./instagram/agent";
 import { DEMO_COOKIE, demoInstagram } from "./instagram/demo";
 import { InstagramFinder } from "./instagram/finder";
-import { ElectronInstagramPage } from "./instagram/page";
+import { ElectronInstagramPage, allowTestSite } from "./instagram/page";
 import { signInToInstagram } from "./instagram/signin";
 import { EVENT_CHANNEL, broadcast, registerIpc } from "./ipc";
 import { isBackgroundLaunch, registerNativeHost } from "./native-host";
@@ -18,6 +18,9 @@ import { WindowManager } from "./windows";
 if (process.env.TURBODL_USER_DATA) app.setPath("userData", process.env.TURBODL_USER_DATA);
 /** A made-up Instagram for the e2e tests; only with an isolated profile. */
 const instagramDemoBase = process.env.TURBODL_USER_DATA ? process.env.TURBODL_INSTAGRAM_DEMO_BASE : undefined;
+/** A local stand-in for Instagram's pages, read by the real hidden pages, for the e2e tests; only with an isolated profile. */
+const instagramTestSite = process.env.TURBODL_USER_DATA ? process.env.TURBODL_INSTAGRAM_SITE : undefined;
+if (instagramTestSite) allowTestSite(instagramTestSite);
 const identity = notificationIdentity({ isPackaged: app.isPackaged, isolated: Boolean(process.env.TURBODL_USER_DATA) });
 
 let controller: AppController | null = null;
@@ -85,7 +88,7 @@ async function start(): Promise<void> {
     instagram: instagramDemoBase
       ? demoInstagram(instagramDemoBase)
       : {
-          find: (link, cookies, signal) => new InstagramFinder(() => new ElectronInstagramPage(cookies), { report: instagramReport() }).find(link, signal),
+          find: (link, cookies, signal) => new InstagramFinder(() => new ElectronInstagramPage(cookies), { report: instagramReport(), site: instagramTestSite }).find(link, signal),
           signIn: (at) => signInToInstagram(at),
           crypt: {
             available: () => safeStorage.isEncryptionAvailable(),
