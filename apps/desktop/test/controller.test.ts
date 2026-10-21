@@ -556,4 +556,11 @@ describe("Instagram links", () => {
     await c.handleMediaRequest({ pageUrl: "https://www.instagram.com/reel/C2reel/", title: "x", items: [], cookieJar: sessionJar });
     expect(ui.opened[0]).toMatchObject({ type: "instagram", link: { kind: "post", code: "C2reel" } });
   });
+
+  it("keeps the Instagram session from yt-dlp on the media button's Instagram pages it doesn't read", async () => {
+    const ig = fakeInstagram(items);
+    const c = await start({}, null, ig.deps);
+    await c.handleMediaRequest({ pageUrl: "https://www.instagram.com/sample.user/", title: "x", items: [], cookieJar: sessionJar });
+    expect(ui.opened[0]).toMatchObject({ type: "media", cookieJar: [] });
+  });
 });

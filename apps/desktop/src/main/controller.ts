@@ -289,7 +289,7 @@ export class AppController {
       items: req.items,
       headers: buildHeaders(req.cookies, req.referrer ?? req.pageUrl, req.userAgent),
       defaultDir: this.categoryDir("video"),
-      cookieJar: req.cookieJar ?? [],
+      cookieJar: isInstagramPage(req.pageUrl) ? [] : (req.cookieJar ?? []),
       useLogin: false,
     });
   }
