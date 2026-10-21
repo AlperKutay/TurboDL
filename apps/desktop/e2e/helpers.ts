@@ -36,8 +36,8 @@ export interface LaunchedApp {
   port: number;
 }
 
-/** Starts the built app (out/) with an isolated profile and the given settings. */
-export async function launchApp(settings: Record<string, unknown> = {}): Promise<LaunchedApp> {
+/** Starts the built app (out/) with an isolated profile, the given settings and extra environment. */
+export async function launchApp(settings: Record<string, unknown> = {}, env: Record<string, string> = {}): Promise<LaunchedApp> {
   const userData = mkdtempSync(path.join(os.tmpdir(), "turbodl-e2e-"));
   const baseDir = path.join(userData, "downloads");
   mkdirSync(baseDir, { recursive: true });
@@ -45,7 +45,7 @@ export async function launchApp(settings: Record<string, unknown> = {}): Promise
   writeFileSync(path.join(userData, "settings.json"), JSON.stringify({ bridgePort: port, baseDir, ...settings }));
   const app = await electron.launch({
     args: [path.join(__dirname, "..")],
-    env: { ...process.env, TURBODL_USER_DATA: userData } as Record<string, string>,
+    env: { ...process.env, ...env, TURBODL_USER_DATA: userData } as Record<string, string>,
   });
   return { app, userData, baseDir, port };
 }

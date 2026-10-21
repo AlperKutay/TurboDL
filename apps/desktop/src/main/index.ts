@@ -4,6 +4,7 @@ import { Notification, app, clipboard, safeStorage, shell, type Tray } from "ele
 import { ClipboardWatcher } from "./clipboard-watcher";
 import { AppController } from "./controller";
 import { chromeAgent } from "./instagram/agent";
+import { DEMO_COOKIE, demoInstagram } from "./instagram/demo";
 import { InstagramFinder } from "./instagram/finder";
 import { ElectronInstagramPage } from "./instagram/page";
 import { signInToInstagram } from "./instagram/signin";
@@ -15,6 +16,8 @@ import { createTray } from "./tray";
 import { WindowManager } from "./windows";
 
 if (process.env.TURBODL_USER_DATA) app.setPath("userData", process.env.TURBODL_USER_DATA);
+/** A made-up Instagram for the e2e tests; only with an isolated profile. */
+const instagramDemoBase = process.env.TURBODL_USER_DATA ? process.env.TURBODL_INSTAGRAM_DEMO_BASE : undefined;
 const identity = notificationIdentity({ isPackaged: app.isPackaged, isolated: Boolean(process.env.TURBODL_USER_DATA) });
 
 let controller: AppController | null = null;
@@ -79,17 +82,20 @@ async function start(): Promise<void> {
       setLaunchAtLogin: (enabled) => app.setLoginItemSettings({ openAtLogin: enabled, args: ["--hidden"] }),
       quit: () => app.quit(),
     },
-    instagram: {
-      find: (link, cookies) => new InstagramFinder(() => new ElectronInstagramPage(cookies), { report: instagramReport() }).find(link),
-      signIn: () => signInToInstagram(),
-      crypt: {
-        available: () => safeStorage.isEncryptionAvailable(),
-        encrypt: (text) => safeStorage.encryptString(text),
-        decrypt: (data) => safeStorage.decryptString(data),
-      },
-      agent: chromeAgent(app.userAgentFallback),
-    },
+    instagram: instagramDemoBase
+      ? demoInstagram(instagramDemoBase)
+      : {
+          find: (link, cookies) => new InstagramFinder(() => new ElectronInstagramPage(cookies), { report: instagramReport() }).find(link),
+          signIn: () => signInToInstagram(),
+          crypt: {
+            available: () => safeStorage.isEncryptionAvailable(),
+            encrypt: (text) => safeStorage.encryptString(text),
+            decrypt: (data) => safeStorage.decryptString(data),
+          },
+          agent: chromeAgent(app.userAgentFallback),
+        },
   });
+  if (instagramDemoBase) c.instagramSession.take([DEMO_COOKIE]);
   controller = c;
   registerIpc(c);
   // let the extension start TurboDL; test runs (TURBODL_USER_DATA) must not touch the real browser registration
