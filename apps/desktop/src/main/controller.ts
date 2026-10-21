@@ -12,6 +12,7 @@ import {
   type AppSnapshot,
   type BackupPlan,
   type InstagramAccount,
+  type OpenRequest,
   type ProfileEntry,
   type ProfileResult,
   type SavedCollection,
@@ -203,6 +204,8 @@ export class AppController {
   private readonly pacer: InstagramPacer;
   private readonly backups: Backups;
   private readonly profiles: ProfileService;
+  /** the screen the last link asked for, until the main window takes it */
+  private openRequest: OpenRequest | null = null;
 
   constructor(private readonly o: ControllerOptions) {
     this.instagram = o.instagram ?? NO_INSTAGRAM;
@@ -458,8 +461,11 @@ export class AppController {
     const chosen = indices.length > 0 ? indices.map((i) => items[i]).filter((item): item is InstagramItem => item !== undefined) : items;
     if (chosen.length === 0) return { ok: false, error: "Nothing was picked." };
     const fallback = p.link.kind === "post" ? p.link.code : p.link.kind === "story" ? p.link.item : p.link.kind === "highlight" ? p.link.id : "instagram";
-    chosen.forEach((item, k) => {
-      const filename = sanitizeFilename(`${item.mediaId ?? `${fallback}-${k + 1}`}.${instagramExtension(item)}`);
+    const named = chosen.map((item, k) => ({ item, filename: sanitizeFilename(`${item.mediaId ?? `${fallback}-${k + 1}`}.${instagramExtension(item)}`) }));
+    // a profile's picks go where its backups go: what is there already isn't downloaded again
+    const fresh = p.link.kind === "profile" ? named.filter(({ filename }) => !existsSync(path.join(p.defaultDir, filename))) : named;
+    if (fresh.length === 0) return { ok: false, error: `These are already in Instagram › ${p.link.kind === "profile" ? p.link.username : "Instagram"}.` };
+    fresh.forEach(({ item, filename }) => {
       this.manager.add(
         {
           kind: "http",
@@ -578,13 +584,22 @@ export class AppController {
   /** A profile link: the browser's session is taken, and the main window shows the profile. */
   private openProfile(username: string, cookieJar?: BrowserCookie[]): void {
     if (cookieJar) this.instagramSession.take(cookieJar);
+    this.openRequest = { section: "profiles", username };
     this.o.ui.showMain();
     this.o.ui.broadcast({ type: "openProfile", username });
+  }
+
+  /** The screen the last link asked for, once (a window started by the link takes it when it is ready). */
+  async takeOpenRequest(): Promise<OpenRequest | null> {
+    const request = this.openRequest;
+    this.openRequest = null;
+    return request;
   }
 
   /** A saved link: the browser's session is taken, and the main window shows Saved. */
   private openSaved(cookieJar?: BrowserCookie[]): void {
     if (cookieJar) this.instagramSession.take(cookieJar);
+    this.openRequest = { section: "saved" };
     this.o.ui.showMain();
     this.o.ui.broadcast({ type: "openSaved" });
   }

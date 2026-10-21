@@ -17,11 +17,10 @@ export function ProfileView({ username, backup }: { username: string; backup: Ba
     setResult(await api.profileLoad(username));
   }, [username]);
 
+  // the profile's hidden page stays while it is the open profile (the app reads it once); "All profiles" lets it go
   useEffect(() => {
     void load();
-    // the profile's hidden page goes with its screen (a backup keeps it until it ends)
-    return () => void api.closeProfile(username);
-  }, [load, username]);
+  }, [load]);
 
   const signIn = async () => {
     setBusy(true);

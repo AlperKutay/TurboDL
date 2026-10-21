@@ -48,6 +48,7 @@ const api: TurboApi = {
   instagramProfiles: () => invoke("instagramProfiles"),
   removeInstagramProfile: (id) => invoke("removeInstagramProfile", id),
   closeProfile: (username) => invoke("closeProfile", username),
+  takeOpenRequest: () => invoke("takeOpenRequest"),
   cancelCountdown: () => invoke("cancelCountdown"),
   installExtension: () => invoke("installExtension"),
   copyText: (text) => invoke("copyText", text),

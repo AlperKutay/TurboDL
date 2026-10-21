@@ -984,6 +984,37 @@ describe("Instagram profiles", () => {
     expect(ig.closed).toEqual(["sample.user"]);
   });
 
+  it("keeps a link's request to open a screen until the main window takes it, once", async () => {
+    const ig = fakeProfiles({ "sample.user": SAMPLE });
+    const c = await start({}, null, ig.deps);
+    expect(await c.takeOpenRequest()).toBeNull();
+    await c.handleDownloadRequest({ url: "https://www.instagram.com/sample.user/", source: "context-menu", cookieJar: sessionJar });
+    expect(await c.takeOpenRequest()).toEqual({ section: "profiles", username: "sample.user" });
+    expect(await c.takeOpenRequest()).toBeNull();
+    await c.handleDownloadRequest({ url: "https://www.instagram.com/sample.user/saved/", source: "context-menu" });
+    expect(await c.takeOpenRequest()).toEqual({ section: "saved" });
+  });
+
+  it("doesn't download a picked post again that is already in the profile's folder", async () => {
+    const ig = fakeProfiles({ "sample.user": SAMPLE });
+    const c = await signedIn(ig.deps);
+    await c.profileLoad("sample.user");
+    await c.startProfileBackup("sample.user");
+    await backupEnds(c);
+    await c.profilePage("sample.user");
+    await c.openProfilePicks("sample.user", ["1", "2"]);
+    const all = ui.opened[0].pendingId;
+    await c.findInstagram(all);
+    expect(await c.confirmInstagram(all, [], "now")).toEqual({ ok: false, error: "These are already in Instagram › sample.user." });
+    expect(c.manager.list()).toHaveLength(0);
+    rmSync(path.join(root, "dl", "Instagram", "sample.user", "2.jpg"));
+    await c.openProfilePicks("sample.user", ["1", "2"]);
+    const some = ui.opened[1].pendingId;
+    await c.findInstagram(some);
+    expect(await c.confirmInstagram(some, [], "now")).toEqual({ ok: true });
+    expect(c.manager.list().map((d) => d.filename)).toEqual(["2.jpg"]);
+  });
+
   it("forgets a profile from the list along with its ledger", async () => {
     const ig = fakeProfiles({ "sample.user": SAMPLE });
     const c = await signedIn(ig.deps);

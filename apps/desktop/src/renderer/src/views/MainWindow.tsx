@@ -42,8 +42,8 @@ export function MainWindow() {
   const state = useAppState();
   const [filter, setFilter] = useState<Filter>({ kind: "all" });
   const [section, setSection] = useState<Section>("downloads");
-  /** the profile a link came in for */
-  const [profileRequest, setProfileRequest] = useState<{ username: string; at: number } | null>(null);
+  /** the profile shown in Profiles; it stays open (its hidden page too) across sections until "All profiles" */
+  const [openProfile, setOpenProfile] = useState<string | null>(null);
   const [selected, setSelected] = useState<string[]>([]);
   const [modal, setModal] = useState<ModalState>(null);
   const [menu, setMenu] = useState<MenuState | null>(null);
@@ -51,12 +51,16 @@ export function MainWindow() {
   useEffect(() => {
     document.title = "TurboDL";
     // a saved link from the browser or Add URL
+    // what a link asked for: kept by the app until taken, so one that started the app isn't lost
+    const take = () =>
+      void api.takeOpenRequest().then((request) => {
+        if (!request) return;
+        setSection(request.section);
+        if (request.section === "profiles") setOpenProfile(request.username);
+      });
+    take();
     return api.onEvent((e) => {
-      if (e.type === "openSaved") setSection("saved");
-      if (e.type === "openProfile") {
-        setSection("profiles");
-        setProfileRequest({ username: e.username, at: Date.now() });
-      }
+      if (e.type === "openSaved" || e.type === "openProfile") take();
     });
   }, []);
 
@@ -125,7 +129,17 @@ export function MainWindow() {
         />
         <main className="content">
           {section === "saved" && <SavedView backup={state.instagramBackup} />}
-          {section === "profiles" && <ProfilesView backup={state.instagramBackup} request={profileRequest} />}
+          {section === "profiles" && (
+            <ProfilesView
+              backup={state.instagramBackup}
+              open={openProfile}
+              onOpen={setOpenProfile}
+              onBack={() => {
+                if (openProfile) void api.closeProfile(openProfile);
+                setOpenProfile(null);
+              }}
+            />
+          )}
           {section === "downloads" && (
             <DownloadTable
               items={items}

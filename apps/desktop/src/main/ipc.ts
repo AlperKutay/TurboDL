@@ -74,6 +74,7 @@ export function registerIpc(c: AppController): void {
   handle("instagramProfiles", () => c.instagramProfiles());
   handle("removeInstagramProfile", (id: unknown) => c.removeInstagramProfile(name(id)));
   handle("closeProfile", (username: unknown) => c.closeProfile(name(username)));
+  handle("takeOpenRequest", () => c.takeOpenRequest());
   handle("cancelCountdown", () => c.cancelCountdown());
   handle("installExtension", async () => {
     const result = await c.installExtension();

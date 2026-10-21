@@ -4,19 +4,13 @@ import { api } from "../../api";
 import { profileName } from "../../saved-state";
 import { ProfileView } from "./ProfileView";
 
-/** Instagram → Profiles: open a profile by link or username, or one backed up before; or one a link came in for. */
-export function ProfilesView({ backup, request }: { backup: BackupView | null; request: { username: string; at: number } | null }) {
-  const [open, setOpen] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (request) setOpen(request.username);
-  }, [request]);
-
+/** Instagram → Profiles: the open profile (by link, username, or one backed up before), or the list. */
+export function ProfilesView({ backup, open, onOpen, onBack }: { backup: BackupView | null; open: string | null; onOpen(username: string): void; onBack(): void }) {
   if (open) {
     return (
       <div className="saved">
         <div className="saved-head">
-          <button type="button" className="link-button" onClick={() => setOpen(null)}>
+          <button type="button" className="link-button" onClick={onBack}>
             All profiles
           </button>
         </div>
@@ -24,7 +18,7 @@ export function ProfilesView({ backup, request }: { backup: BackupView | null; r
       </div>
     );
   }
-  return <ProfileList onOpen={setOpen} />;
+  return <ProfileList onOpen={onOpen} />;
 }
 
 /** The field to open a profile, and the profiles backed up so far (newest run first). */

@@ -85,3 +85,25 @@ test("profiles: a private profile says so", async () => {
     rmSync(userData, { recursive: true, force: true });
   }
 });
+
+test("profiles: an open profile stays open across sections; All profiles shows the list", async () => {
+  const { server, app, userData } = await demo();
+  try {
+    const main = await app.firstWindow();
+    await openProfile(main, "demo.person");
+    await expect(main.getByRole("button", { name: /^Post \d+$/ })).toHaveCount(6, { timeout: 15_000 });
+    await main.getByRole("button", { name: "Saved", exact: true }).click();
+    await main.getByRole("button", { name: "Profiles", exact: true }).click();
+    await expect(main.getByText("@demo.person")).toBeVisible();
+    await expect(main.getByRole("button", { name: /^Post \d+$/ })).toHaveCount(6);
+    await main.getByRole("button", { name: "All profiles" }).click();
+    await expect(main.getByPlaceholder("Profile link or @username")).toBeVisible();
+    await main.getByRole("button", { name: "Saved", exact: true }).click();
+    await main.getByRole("button", { name: "Profiles", exact: true }).click();
+    await expect(main.getByPlaceholder("Profile link or @username")).toBeVisible();
+  } finally {
+    await app.close();
+    await server.close();
+    rmSync(userData, { recursive: true, force: true });
+  }
+});

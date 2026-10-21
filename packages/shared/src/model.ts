@@ -170,6 +170,9 @@ export type ProfileResult =
   | { type: "rateLimited" }
   | { type: "failed"; message: string };
 
+/** A screen a link asked the main window to show; kept until the window takes it (it may not be open yet). */
+export type OpenRequest = { section: "saved" } | { section: "profiles"; username: string };
+
 /** A backed-up profile in the Profiles list. */
 export interface ProfileEntry {
   /** the account's number */
@@ -321,6 +324,8 @@ export interface TurboApi {
   removeInstagramProfile(id: string): Promise<void>;
   /** the profile screen closed: its page can go (unless a backup still uses it) */
   closeProfile(username: string): Promise<void>;
+  /** the screen the last link asked for, once; null when there is none */
+  takeOpenRequest(): Promise<OpenRequest | null>;
   cancelCountdown(): Promise<void>;
   installExtension(): Promise<InstallResult>;
   copyText(text: string): Promise<void>;
