@@ -1,4 +1,5 @@
 import { sendDownload } from "./bridge";
+import { INSTAGRAM_PAGES, instagramTarget } from "./instagram";
 import { ensureApp } from "./launcher";
 import { sendMediaForTab } from "./media-request";
 import { cookieHeader, cookieJar, flashBadge } from "./util";
@@ -8,12 +9,7 @@ export function createMenus(): void {
     chrome.contextMenus.create({ id: "turbodl-link", title: "Download with TurboDL", contexts: ["link"] });
     chrome.contextMenus.create({ id: "turbodl-media", title: "Download with TurboDL", contexts: ["video", "audio"] });
     // the page's own post, story or highlight, read by TurboDL with the browser's Instagram session
-    chrome.contextMenus.create({
-      id: "turbodl-instagram",
-      title: "Open in TurboDL",
-      contexts: ["page", "image"],
-      documentUrlPatterns: ["https://www.instagram.com/*", "https://instagram.com/*"],
-    });
+    chrome.contextMenus.create({ id: "turbodl-instagram", title: "Open in TurboDL", contexts: ["page", "image"], documentUrlPatterns: INSTAGRAM_PAGES });
   });
 }
 
@@ -35,11 +31,12 @@ export function registerMenuHandlers(): void {
         return;
       }
       if (info.menuItemId === "turbodl-instagram" && info.pageUrl) {
+        const target = instagramTarget(info.pageUrl, info.linkUrl);
         const result = (await ensureApp())
           ? await sendDownload({
-              url: info.pageUrl,
+              url: target,
               referrer: info.pageUrl,
-              cookieJar: await cookieJar(info.pageUrl),
+              cookieJar: await cookieJar(target),
               userAgent: navigator.userAgent,
               source: "context-menu",
             })
