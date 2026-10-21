@@ -11,6 +11,8 @@ export interface SavedPost {
   cover?: string;
   /** every item has a `mediaId`: a carousel child's `pk`, or the post's own */
   items: InstagramItem[];
+  /** pinned to the top of its profile */
+  pinned?: boolean;
 }
 
 /** One page of a saved feed; `next` is the following page's cursor, absent on the last one. */
