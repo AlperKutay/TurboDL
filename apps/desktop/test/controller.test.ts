@@ -4,7 +4,7 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { SavedError, type AppEvent, type BrowserCookie, type InstagramProfile, type PendingItem, type SavedPost } from "@turbodl/shared";
+import { SavedError, type AppEvent, type BrowserCookie, type InstagramItem, type InstagramProfile, type PendingItem, type SavedPost } from "@turbodl/shared";
 import { AppController, type ControllerUi, type InstagramDeps } from "../src/main/controller";
 import type { FindOutcome } from "../src/main/instagram/finder";
 import { FFMPEG, makeClips, serveFolder, type Clips } from "./fixtures/media";
@@ -1037,5 +1037,150 @@ describe("Instagram profiles", () => {
     await c.removeInstagramProfile("5100000000000000001");
     expect(await c.instagramProfiles()).toEqual([]);
     expect(existsSync(path.join(root, "user", "instagram-backups", "profile-5100000000000000001.json"))).toBe(false);
+  });
+});
+
+describe("Instagram highlights", () => {
+  const sessionJar: BrowserCookie[] = [
+    { domain: ".instagram.com", hostOnly: false, path: "/", secure: true, expires: 0, name: "sessionid", value: "s" },
+    { domain: ".instagram.com", hostOnly: false, path: "/", secure: true, expires: 0, name: "csrftoken", value: "c" },
+  ];
+  const PROFILE: InstagramProfile = { id: "5100000000000000001", username: "sample.user", fullName: "Sample User", isPrivate: false, following: true, postCount: 3 };
+  const TRAY = [
+    { id: "17900000000000002", title: "Summer", cover: "https://cdn.example/h2.jpg" },
+    { id: "17900000000000003", title: "Winter", cover: "https://cdn.example/h3.jpg" },
+  ];
+  const story = (id: string): InstagramItem => ({ kind: "image", url: server.url(`/ig/${id}.jpg`), mediaId: id });
+
+  /** A profile with two highlights; `stories` is what each highlight's page shows (changeable between runs). */
+  function fakeHighlights(stories: Record<string, InstagramItem[] | null | "signedOut">) {
+    let now = 0;
+    const read: { id: string; at: number }[] = [];
+    const fetched: string[] = [];
+    const deps: InstagramDeps = {
+      find: async (link) => {
+        if (link.kind !== "highlight") return { type: "nothing" };
+        read.push({ id: link.id, at: now });
+        const shown = stories[link.id];
+        if (shown === "signedOut") return { type: "signedOut" };
+        return shown && shown.length > 0 ? { type: "items", items: shown } : { type: "nothing" };
+      },
+      signIn: async () => null,
+      crypt: { available: () => false, encrypt: (t: string) => Buffer.from(t), decrypt: (b: Buffer) => b.toString() },
+      agent: "TestAgent/1",
+      wait: async (ms) => {
+        now += ms;
+      },
+      now: () => now,
+      fetch: async (url, file) => {
+        fetched.push(url);
+        writeFileSync(file, "x");
+      },
+      openProfile: () => ({
+        profile: async () => PROFILE,
+        highlights: TRAY,
+        page: async () => ({ posts: [] }),
+        close: () => undefined,
+      }),
+    };
+    return { deps, read, fetched };
+  }
+
+  beforeEach(() => {
+    for (const id of ["s1", "s2", "s3", "s4"]) server.setFile(`/ig/${id}.jpg`, { data: Buffer.alloc(600, 2), contentType: "image/jpeg" });
+  });
+
+  async function opened(deps: InstagramDeps) {
+    const c = await start({}, null, deps);
+    c.instagramSession.take(sessionJar);
+    await c.profileLoad("sample.user");
+    return c;
+  }
+
+  async function backupEnds(c: AppController) {
+    for (let i = 0; i < 200 && c.snapshot().instagramBackup?.state === "running"; i++) await new Promise((r) => setTimeout(r, 25));
+    return c.snapshot().instagramBackup;
+  }
+
+  const FOLDER = () => path.join(root, "dl", "Instagram", "sample.user · Highlights");
+
+  it("opens the picked highlights' stories in the picker, in pick order, into the highlights folder", async () => {
+    const hl = fakeHighlights({ "17900000000000002": [story("s1"), story("s2")], "17900000000000003": [story("s3")] });
+    const c = await opened(hl.deps);
+    expect(await c.loadHighlight("sample.user", "17900000000000003")).toEqual({ type: "stories", count: 1 });
+    expect(await c.loadHighlight("sample.user", "17900000000000002")).toEqual({ type: "stories", count: 2 });
+    expect(await c.openHighlightPicks("sample.user", ["17900000000000003", "17900000000000002"])).toEqual({ ok: true });
+    const pending = ui.opened[0];
+    expect(pending).toMatchObject({ type: "instagram", defaultDir: FOLDER() });
+    const found = await c.findInstagram(pending.pendingId);
+    expect(found.type === "items" && found.items.map((i) => i.mediaId)).toEqual(["s3", "s1", "s2"]);
+  });
+
+  it("skips a highlight that shows nothing, and says so when none could be read", async () => {
+    const hl = fakeHighlights({ "17900000000000002": [story("s1")], "17900000000000003": null });
+    const c = await opened(hl.deps);
+    expect(await c.loadHighlight("sample.user", "17900000000000003")).toEqual({ type: "nothing" });
+    await c.loadHighlight("sample.user", "17900000000000002");
+    await c.openHighlightPicks("sample.user", ["17900000000000003", "17900000000000002"]);
+    const found = await c.findInstagram(ui.opened[0].pendingId);
+    expect(found.type === "items" && found.items.map((i) => i.mediaId)).toEqual(["s1"]);
+    expect(await c.openHighlightPicks("sample.user", ["17900000000000003"])).toEqual({ ok: false, error: "Couldn't read these highlights." });
+  });
+
+  it("answers signed out when a highlight's page is Instagram's sign-in page", async () => {
+    const hl = fakeHighlights({ "17900000000000002": "signedOut" });
+    const c = await opened(hl.deps);
+    expect(await c.loadHighlight("sample.user", "17900000000000002")).toEqual({ type: "signedOut" });
+  });
+
+  it("reads highlights one at a time, in the account's pace", async () => {
+    const hl = fakeHighlights({ "17900000000000002": [story("s1")], "17900000000000003": [story("s3")] });
+    const c = await opened(hl.deps);
+    await c.loadHighlight("sample.user", "17900000000000002");
+    await c.loadHighlight("sample.user", "17900000000000003");
+    expect(hl.read[1].at - hl.read[0].at).toBeGreaterThanOrEqual(1500);
+  });
+
+  it("backs every highlight up into its folder, by story, counting highlights", async () => {
+    const hl = fakeHighlights({ "17900000000000002": [story("s1"), story("s2")], "17900000000000003": [story("s3")] });
+    const c = await opened(hl.deps);
+    expect(await c.startHighlightsBackup("sample.user")).toEqual({ ok: true });
+    expect(await backupEnds(c)).toMatchObject({ state: "finished", kind: "highlights", name: "sample.user · Highlights", done: 2, left: 0, saved: 3 });
+    expect(readdirSync(FOLDER()).sort()).toEqual(["s1.jpg", "s2.jpg", "s3.jpg"]);
+    expect(existsSync(path.join(root, "user", "instagram-backups", "highlights-5100000000000000001.json"))).toBe(true);
+    expect(await c.instagramProfiles()).toMatchObject([{ username: "sample.user", saved: 3 }]);
+  });
+
+  it("goes through every highlight on a later run and saves only a new story", async () => {
+    const stories: Record<string, InstagramItem[] | null> = { "17900000000000002": [story("s1")], "17900000000000003": [story("s3")] };
+    const hl = fakeHighlights(stories);
+    const c = await opened(hl.deps);
+    await c.startHighlightsBackup("sample.user");
+    await backupEnds(c);
+    stories["17900000000000002"] = [story("s1"), story("s4")];
+    const before = hl.fetched.length;
+    const readBefore = hl.read.length;
+    await c.startHighlightsBackup("sample.user");
+    expect(await backupEnds(c)).toMatchObject({ state: "finished", saved: 1 });
+    expect(hl.fetched.slice(before)).toEqual([server.url("/ig/s4.jpg")]);
+    expect(hl.read.slice(readBefore).map((r) => r.id)).toEqual(["17900000000000002", "17900000000000003"]);
+  });
+
+  it("counts a highlight that shows nothing as failed and tries it again next run", async () => {
+    const stories: Record<string, InstagramItem[] | null> = { "17900000000000002": [story("s1")], "17900000000000003": null };
+    const hl = fakeHighlights(stories);
+    const c = await opened(hl.deps);
+    await c.startHighlightsBackup("sample.user");
+    expect(await backupEnds(c)).toMatchObject({ state: "finished", done: 1, failed: 1 });
+    stories["17900000000000003"] = [story("s3")];
+    await c.startHighlightsBackup("sample.user");
+    expect(await backupEnds(c)).toMatchObject({ state: "finished", done: 2, failed: 0, saved: 1 });
+  });
+
+  it("stops the backup as signed out when a highlight's page asks to sign in", async () => {
+    const hl = fakeHighlights({ "17900000000000002": [story("s1")], "17900000000000003": "signedOut" });
+    const c = await opened(hl.deps);
+    await c.startHighlightsBackup("sample.user");
+    expect(await backupEnds(c)).toMatchObject({ state: "signedOut", saved: 1 });
   });
 });

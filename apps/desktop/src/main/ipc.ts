@@ -76,6 +76,11 @@ export function registerIpc(c: AppController): void {
   handle("removeInstagramProfile", (id: unknown) => c.removeInstagramProfile(name(id)));
   handle("closeProfile", (username: unknown) => c.closeProfile(name(username)));
   handle("takeOpenRequest", () => c.takeOpenRequest());
+  const ids = (v: unknown) => (Array.isArray(v) ? v.filter((id): id is string => typeof id === "string") : []);
+  handle("loadHighlight", (username: unknown, id: unknown) => c.loadHighlight(name(username), name(id)));
+  handle("openHighlightPicks", (username: unknown, picked: unknown) => c.openHighlightPicks(name(username), ids(picked)));
+  handle("highlightsBackupPlan", (username: unknown) => c.highlightsBackupPlan(name(username)));
+  handle("startHighlightsBackup", (username: unknown) => c.startHighlightsBackup(name(username)));
   handle("cancelCountdown", () => c.cancelCountdown());
   handle("installExtension", async () => {
     const result = await c.installExtension();

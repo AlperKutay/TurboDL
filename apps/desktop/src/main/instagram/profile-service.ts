@@ -6,6 +6,7 @@ import {
   type BackupPlan,
   type BrowserCookie,
   type Highlight,
+  type HighlightResult,
   type InstagramItem,
   type InstagramProfile,
   type ProfileEntry,
@@ -33,6 +34,8 @@ export interface ProfileSource {
 export interface ProfileServiceDeps {
   session: InstagramSession;
   open(username: string, cookies: BrowserCookie[]): ProfileSource;
+  /** one highlight's stories from its own page; null when it showed none; throws SavedError("signedOut") */
+  findHighlight(id: string, signal?: AbortSignal): Promise<InstagramItem[] | null>;
   pacer: InstagramPacer;
   backups: Backups;
   index: ProfileIndex;
@@ -53,6 +56,10 @@ export class ProfileService {
   private backupSource: ProfileSource | null = null;
   private backupKey = "";
   private readonly profiles = new Map<string, InstagramProfile>();
+  /** each profile's highlights tray, as its page listed it */
+  private readonly trays = new Map<string, Highlight[]>();
+  /** each highlight's stories as last read (null: its page showed none) */
+  private readonly stories = new Map<string, InstagramItem[] | null>();
   private readonly posts = new Map<string, SavedPost>();
   private readonly samples = new Map<string, SavedPost[]>();
 
@@ -65,6 +72,7 @@ export class ProfileService {
     try {
       const profile = await source.profile();
       this.profiles.set(key, profile);
+      this.trays.set(key, source.highlights);
       return { type: "profile", profile, highlights: source.highlights };
     } catch (err) {
       // a page that failed is not tried again: the next load opens a fresh one
@@ -148,6 +156,83 @@ export class ProfileService {
     return result;
   }
 
+  /** One highlight's stories, from its own page, in the account's pace; remembered for picks. */
+  async loadHighlight(id: string): Promise<HighlightResult> {
+    if (!this.deps.session.signedIn()) return { type: "signedOut" };
+    const { pacer } = this.deps;
+    if (pacer.held()) return { type: "rateLimited" };
+    await pacer.pace();
+    if (pacer.held()) return { type: "rateLimited" };
+    try {
+      const found = await pacer.ask(() => this.deps.findHighlight(id));
+      this.stories.set(id, found);
+      return found && found.length > 0 ? { type: "stories", count: found.length } : { type: "nothing" };
+    } catch (err) {
+      return failedPage(err);
+    }
+  }
+
+  /** The read stories of the picked highlights, in pick order; highlights that showed nothing left out. */
+  pickedStories(ids: string[]): InstagramItem[] {
+    return ids.flatMap((id) => this.stories.get(id) ?? []);
+  }
+
+  /** `<baseDir>/Instagram/<username> · Highlights`: a profile's highlight picks and backups. */
+  highlightsFolder(username: string): string {
+    return path.join(this.deps.baseDir(), "Instagram", sanitizeFilename(`${username} · Highlights`));
+  }
+
+  highlightsPlan(username: string): Promise<BackupPlan> {
+    const key = username.toLowerCase();
+    const profile = this.profiles.get(key);
+    const count = this.trays.get(key)?.length;
+    return this.deps.backups.plan(profile ? `highlights-${profile.id}` : "", count, [], this.highlightsFolder(profile?.username ?? username));
+  }
+
+  /**
+   * Backs up every story of every highlight, one highlight per page (its own page load, 3–6 s apart), into its own
+   * folder. New stories land in old highlights, so every run goes through all of them: no early stop.
+   */
+  async startHighlightsBackup(username: string): Promise<Result> {
+    if (this.deps.backups.isRunning()) return { ok: false, error: "A backup is already running." };
+    const key = username.toLowerCase();
+    const opened = await this.pageFor(key);
+    if ("error" in opened) return { ok: false, error: opened.error };
+    const { profile, source } = opened;
+    // the tray came with the page; a page opened only for this is no longer needed
+    if (this.current?.source !== source && this.backupSource !== source) source.close();
+    if (isLocked(profile)) return { ok: false, error: "This account is private." };
+    const tray = this.trays.get(key) ?? [];
+    if (tray.length === 0) return { ok: false, error: "This profile has no highlights." };
+    const { pacer } = this.deps;
+    const result = await this.deps.backups.start(
+      {
+        id: `highlights-${profile.id}`,
+        kind: "highlights",
+        name: `${profile.username} · Highlights`,
+        count: tray.length,
+        dir: this.highlightsFolder(profile.username),
+        allowsEarlyStop: false,
+        pageGap: [3000, 6000],
+      },
+      async (cursor, signal) => {
+        const index = cursor ? Number(cursor) : 0;
+        const highlight = tray[index];
+        if (!highlight) return { posts: [] };
+        if (pacer.held()) throw new SavedError("rateLimited");
+        await pacer.pace(signal);
+        if (pacer.held()) throw new SavedError("rateLimited");
+        const found = (await pacer.ask(() => this.deps.findHighlight(highlight.id, signal))) ?? [];
+        // a story is remembered by its pk, or its file name when the page gives none (as the iPhone does)
+        const items = found.map((item) => ({ ...item, mediaId: item.mediaId ?? lastSegment(item.url) }));
+        return { posts: [{ id: highlight.id, ...(highlight.cover ? { cover: highlight.cover } : {}), items }], ...(index + 1 < tray.length ? { next: String(index + 1) } : {}) };
+      },
+      () => this.startHighlightsBackup(key),
+    );
+    if (result.ok) this.deps.index.record(profile, this.deps.now());
+    return result;
+  }
+
   profilesList(): ProfileEntry[] {
     return this.deps.index.list();
   }
@@ -177,6 +262,7 @@ export class ProfileService {
     try {
       const profile = await source.profile();
       this.profiles.set(key, profile);
+      this.trays.set(key, source.highlights);
       return { profile, source };
     } catch (err) {
       source.close();
@@ -213,5 +299,14 @@ export class ProfileService {
     await pacer.pace(signal);
     if (pacer.held()) throw new SavedError("rateLimited");
     return pacer.ask(() => source.page(cursor, signal));
+  }
+}
+
+/** The last part of an address's path (a file name), without its query. */
+function lastSegment(address: string): string {
+  try {
+    return new URL(address).pathname.split("/").filter(Boolean).pop() ?? address;
+  } catch {
+    return address;
   }
 }

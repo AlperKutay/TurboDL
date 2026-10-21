@@ -11,6 +11,7 @@ import {
   type AppEvent,
   type AppSnapshot,
   type BackupPlan,
+  type HighlightResult,
   type InstagramAccount,
   type OpenRequest,
   type ProfileEntry,
@@ -237,6 +238,11 @@ export class AppController {
     this.profiles = new ProfileService({
       session: this.instagramSession,
       open: (username, cookies) => (ig.openProfile ? ig.openProfile(username, cookies) : NO_PROFILE),
+      findHighlight: async (id, signal) => {
+        const outcome = await ig.find({ kind: "highlight", id }, this.instagramSession.cookies(), signal);
+        if (outcome.type === "signedOut") throw new SavedError("signedOut");
+        return outcome.type === "items" ? outcome.items : null;
+      },
       pacer: this.pacer,
       backups: this.backups,
       index: new ProfileIndex(path.join(o.userDataDir, "instagram-profiles.json"), ledgers),
@@ -430,11 +436,10 @@ export class AppController {
   async findInstagram(pendingId: string): Promise<InstagramFindResult> {
     const p = this.pending.get(pendingId);
     if (!p || p.type !== "instagram") return { type: "gone" };
-    // picked in Saved or on a profile: the items came with the pick
-    if (p.link.kind === "saved" || p.link.kind === "profile") {
-      const known = this.instagramItems.get(pendingId);
-      return known ? { type: "items", items: known } : { type: "gone" };
-    }
+    // picked in Saved, on a profile or among highlights: the items came with the pick
+    const known = this.instagramItems.get(pendingId);
+    if (known) return { type: "items", items: known };
+    if (p.link.kind === "saved" || p.link.kind === "profile") return { type: "gone" };
     this.instagramSearches.get(pendingId)?.abort();
     const search = new AbortController();
     this.instagramSearches.set(pendingId, search);
@@ -462,9 +467,9 @@ export class AppController {
     if (chosen.length === 0) return { ok: false, error: "Nothing was picked." };
     const fallback = p.link.kind === "post" ? p.link.code : p.link.kind === "story" ? p.link.item : p.link.kind === "highlight" ? p.link.id : "instagram";
     const named = chosen.map((item, k) => ({ item, filename: sanitizeFilename(`${item.mediaId ?? `${fallback}-${k + 1}`}.${instagramExtension(item)}`) }));
-    // a profile's picks go where its backups go: what is there already isn't downloaded again
-    const fresh = p.link.kind === "profile" ? named.filter(({ filename }) => !existsSync(path.join(p.defaultDir, filename))) : named;
-    if (fresh.length === 0) return { ok: false, error: `These are already in Instagram › ${p.link.kind === "profile" ? p.link.username : "Instagram"}.` };
+    // a profile's or its highlights' picks go where their backups go: what is there already isn't downloaded again
+    const fresh = p.keepsFolder ? named.filter(({ filename }) => !existsSync(path.join(p.defaultDir, filename))) : named;
+    if (fresh.length === 0) return { ok: false, error: `These are already in ${p.keepsFolder}.` };
     fresh.forEach(({ item, filename }) => {
       this.manager.add(
         {
@@ -561,9 +566,39 @@ export class AppController {
       pendingId,
       pageUrl: `https://www.instagram.com/${encodeURIComponent(username)}/`,
       link: { kind: "profile", username },
+      keepsFolder: `Instagram › ${username}`,
       defaultDir: this.profiles.folder(username),
     });
     return { ok: true };
+  }
+
+  loadHighlight(_username: string, id: string): Promise<HighlightResult> {
+    return this.profiles.loadHighlight(id);
+  }
+
+  /** The picker over the read highlights' stories, in pick order, into the highlights folder. */
+  async openHighlightPicks(username: string, ids: string[]): Promise<Result> {
+    const items = this.profiles.pickedStories(ids);
+    if (items.length === 0) return { ok: false, error: "Couldn't read these highlights." };
+    const pendingId = newId();
+    this.instagramItems.set(pendingId, items);
+    this.openPending({
+      type: "instagram",
+      pendingId,
+      pageUrl: `https://www.instagram.com/stories/highlights/${encodeURIComponent(ids[0])}/`,
+      link: { kind: "highlight", id: ids[0] },
+      keepsFolder: `Instagram › ${username} · Highlights`,
+      defaultDir: this.profiles.highlightsFolder(username),
+    });
+    return { ok: true };
+  }
+
+  highlightsBackupPlan(username: string): Promise<BackupPlan> {
+    return this.profiles.highlightsPlan(username);
+  }
+
+  startHighlightsBackup(username: string): Promise<Result> {
+    return this.profiles.startHighlightsBackup(username);
   }
 
   profileBackupPlan(username: string): Promise<BackupPlan> {

@@ -147,6 +147,8 @@ export interface PendingInstagram {
   pendingId: string;
   pageUrl: string;
   link: InstagramLink;
+  /** a folder a backup also fills (a profile's, its highlights'): what is there already isn't downloaded again; its name as shown */
+  keepsFolder?: string;
   /** <baseDir>/Instagram */
   defaultDir: string;
 }
@@ -172,6 +174,14 @@ export type ProfileResult =
 
 /** A screen a link asked the main window to show; kept until the window takes it (it may not be open yet). */
 export type OpenRequest = { section: "saved" } | { section: "profiles"; username: string };
+
+/** One highlight's stories as read from its page, or why there are none. */
+export type HighlightResult =
+  | { type: "stories"; count: number }
+  | { type: "nothing" }
+  | { type: "signedOut" }
+  | { type: "rateLimited" }
+  | { type: "failed"; message: string };
 
 /** A backed-up profile in the Profiles list. */
 export interface ProfileEntry {
@@ -328,6 +338,12 @@ export interface TurboApi {
   closeProfile(username: string): Promise<void>;
   /** the screen the last link asked for, once; null when there is none */
   takeOpenRequest(): Promise<OpenRequest | null>;
+  /** reads one of the open profile's highlights (its own page, in the account's pace) */
+  loadHighlight(username: string, id: string): Promise<HighlightResult>;
+  /** the picker over the read highlights' stories, in pick order */
+  openHighlightPicks(username: string, ids: string[]): Promise<Result>;
+  highlightsBackupPlan(username: string): Promise<BackupPlan>;
+  startHighlightsBackup(username: string): Promise<Result>;
   cancelCountdown(): Promise<void>;
   installExtension(): Promise<InstallResult>;
   copyText(text: string): Promise<void>;
