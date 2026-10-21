@@ -7,6 +7,13 @@ export function createMenus(): void {
   chrome.contextMenus.removeAll(() => {
     chrome.contextMenus.create({ id: "turbodl-link", title: "Download with TurboDL", contexts: ["link"] });
     chrome.contextMenus.create({ id: "turbodl-media", title: "Download with TurboDL", contexts: ["video", "audio"] });
+    // the page's own post, story or highlight, read by TurboDL with the browser's Instagram session
+    chrome.contextMenus.create({
+      id: "turbodl-instagram",
+      title: "Open in TurboDL",
+      contexts: ["page", "image"],
+      documentUrlPatterns: ["https://www.instagram.com/*", "https://instagram.com/*"],
+    });
   });
 }
 
@@ -20,6 +27,19 @@ export function registerMenuHandlers(): void {
               referrer: info.pageUrl,
               cookies: await cookieHeader(info.linkUrl),
               cookieJar: await cookieJar(info.linkUrl),
+              userAgent: navigator.userAgent,
+              source: "context-menu",
+            })
+          : { ok: false };
+        if (!result.ok) flashBadge();
+        return;
+      }
+      if (info.menuItemId === "turbodl-instagram" && info.pageUrl) {
+        const result = (await ensureApp())
+          ? await sendDownload({
+              url: info.pageUrl,
+              referrer: info.pageUrl,
+              cookieJar: await cookieJar(info.pageUrl),
               userAgent: navigator.userAgent,
               source: "context-menu",
             })
