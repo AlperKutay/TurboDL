@@ -51,6 +51,8 @@ test("picks two photos of an Instagram post and downloads them into the Instagra
   const server = await startTestServer();
   const photos = [0, 1, 2].map(() => randomBytes(4096));
   photos.forEach((data, n) => server.setFile(`/ig/${n}.png`, { data, contentType: "image/png" }));
+  // the second one a picture far taller than the window, as Instagram's are
+  server.setFile("/ig/1.png", { data: Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="1500" height="2600"><rect width="1500" height="2600" fill="#c66"/></svg>'), contentType: "image/svg+xml" });
   // A made-up Instagram: three photos from the test server, already signed in (TURBODL_INSTAGRAM_DEMO_BASE).
   const { app, userData, baseDir } = await launchApp({}, { TURBODL_INSTAGRAM_DEMO_BASE: server.url("").replace(/\/$/, "") });
   try {
@@ -70,6 +72,11 @@ test("picks two photos of an Instagram post and downloads them into the Instagra
     await expect(dialog.locator(".ig-large")).toHaveCount(0);
     await dialog.mouse.down();
     await expect(dialog.locator(".ig-large")).toBeVisible();
+    // shown large, but whole: it fits in the window
+    const box = await dialog.locator(".ig-large img").boundingBox();
+    const [width, height] = await dialog.evaluate(() => [window.innerWidth, window.innerHeight]);
+    expect(box && box.height).toBeGreaterThan(200);
+    expect(box && box.y >= 0 && box.y + box.height <= height && box.x >= 0 && box.x + box.width <= width).toBe(true);
     await dialog.mouse.up();
     await expect(dialog.locator(".ig-large")).toHaveCount(0);
     await expect(second).toHaveAttribute("aria-pressed", "false");

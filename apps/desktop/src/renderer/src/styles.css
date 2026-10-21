@@ -810,15 +810,18 @@ td.col-name {
 .ig-large {
   position: fixed;
   inset: 40px;
-  display: grid;
-  place-items: center;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   pointer-events: none;
   animation: ig-grow 0.15s ease-out;
 }
 
+/* whole, never past the window: Instagram's pictures are far larger than it */
 .ig-large img {
-  max-width: 100%;
-  max-height: 100%;
+  max-width: calc(100vw - 80px);
+  max-height: calc(100vh - 80px);
+  object-fit: contain;
   border-radius: 10px;
   box-shadow: var(--shadow);
 }
