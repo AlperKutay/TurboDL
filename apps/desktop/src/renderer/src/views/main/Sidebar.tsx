@@ -9,8 +9,8 @@ const STATUS_FILTERS: { filter: Filter; label: string; icon: IconName }[] = [
   { filter: { kind: "status", status: "queue" }, label: "Queue", icon: "queue" },
 ];
 
-/** What the main window shows: the downloads (filtered) or Instagram's Saved section. */
-export type Section = "downloads" | "saved";
+/** What the main window shows: the downloads (filtered), or Instagram's Saved or Profiles. */
+export type Section = "downloads" | "saved" | "profiles";
 
 export function Sidebar({
   downloads,
@@ -43,6 +43,10 @@ export function Sidebar({
       <button type="button" className={`side-item${section === "saved" ? " active" : ""}`} onClick={() => onSection("saved")}>
         <Icon name="bookmark" />
         <span className="side-label">Saved</span>
+      </button>
+      <button type="button" className={`side-item${section === "profiles" ? " active" : ""}`} onClick={() => onSection("profiles")}>
+        <Icon name="user" />
+        <span className="side-label">Profiles</span>
       </button>
     </nav>
   );

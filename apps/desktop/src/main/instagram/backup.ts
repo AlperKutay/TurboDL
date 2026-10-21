@@ -9,6 +9,7 @@ import { allowsEarlyStop, type LedgerStore } from "./ledger";
 export interface BackupTarget {
   /** the ledger's name; it stays when the collection or the account is renamed */
   id: string;
+  kind: BackupView["kind"];
   name: string;
   /** how many posts it holds, when Instagram says */
   count?: number;
@@ -63,6 +64,7 @@ export class BackupRun {
     const { count } = this.target;
     return {
       targetId: this.target.id,
+      kind: this.target.kind,
       name: this.target.name,
       state: this.state,
       ...(this.error ? { error: this.error } : {}),

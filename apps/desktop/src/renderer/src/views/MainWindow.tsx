@@ -12,6 +12,7 @@ import { DownloadTable } from "./main/DownloadTable";
 import { RefreshUrlModal } from "./main/RefreshUrlModal";
 import { SchedulerModal } from "./main/SchedulerModal";
 import { SettingsModal } from "./main/SettingsModal";
+import { ProfilesView } from "./main/ProfilesView";
 import { SavedView } from "./main/SavedView";
 import { Sidebar, type Section } from "./main/Sidebar";
 import { StatusBar } from "./main/StatusBar";
@@ -41,6 +42,8 @@ export function MainWindow() {
   const state = useAppState();
   const [filter, setFilter] = useState<Filter>({ kind: "all" });
   const [section, setSection] = useState<Section>("downloads");
+  /** the profile a link came in for */
+  const [profileRequest, setProfileRequest] = useState<{ username: string; at: number } | null>(null);
   const [selected, setSelected] = useState<string[]>([]);
   const [modal, setModal] = useState<ModalState>(null);
   const [menu, setMenu] = useState<MenuState | null>(null);
@@ -50,6 +53,10 @@ export function MainWindow() {
     // a saved link from the browser or Add URL
     return api.onEvent((e) => {
       if (e.type === "openSaved") setSection("saved");
+      if (e.type === "openProfile") {
+        setSection("profiles");
+        setProfileRequest({ username: e.username, at: Date.now() });
+      }
     });
   }, []);
 
@@ -118,6 +125,7 @@ export function MainWindow() {
         />
         <main className="content">
           {section === "saved" && <SavedView backup={state.instagramBackup} />}
+          {section === "profiles" && <ProfilesView backup={state.instagramBackup} request={profileRequest} />}
           {section === "downloads" && (
             <DownloadTable
               items={items}

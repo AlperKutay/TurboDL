@@ -156,6 +156,7 @@ export class SavedService {
     return this.deps.backups.start(
       {
         id: collection.id,
+        kind: "collection",
         name: collection.name,
         ...(collection.count !== undefined ? { count: collection.count } : {}),
         dir: this.folder(collection),

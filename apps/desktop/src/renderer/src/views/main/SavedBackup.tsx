@@ -1,15 +1,15 @@
 import { useState } from "react";
-import { formatBytes, type BackupPlan, type BackupView, type SavedCollection } from "@turbodl/shared";
+import { formatBytes, type BackupPlan, type BackupView } from "@turbodl/shared";
 import { api } from "../../api";
 import { Modal } from "../../components/Modal";
 import { backupAction } from "../../saved-state";
 
-/** What starting a backup means: how many posts, roughly how large, and the warnings that go with it. */
-export function BackupConfirm({ collection, plan, onStart, onClose }: { collection: SavedCollection; plan: BackupPlan; onStart(): void; onClose(): void }) {
+/** What starting a backup means: how many posts, roughly how large, where they go, and the warnings that go with it. */
+export function BackupConfirm({ title, folder, plan, onStart, onClose }: { title: string; folder: string; plan: BackupPlan; onStart(): void; onClose(): void }) {
   const tooBig = plan.bytes !== undefined && plan.freeBytes !== undefined && plan.bytes > plan.freeBytes;
   return (
     <Modal
-      title={`Back up ${collection.name}`}
+      title={title}
       onClose={onClose}
       footer={
         <>
@@ -26,9 +26,9 @@ export function BackupConfirm({ collection, plan, onStart, onClose }: { collecti
         {plan.count !== undefined ? `${plan.count.toLocaleString()} posts` : "Instagram doesn't say how many posts it holds."}{" "}
         {plan.bytes !== undefined ? `About ${formatBytes(plan.bytes)} (an estimate from the posts loaded so far).` : "No size estimate yet."}
       </p>
-      <p className="muted">Every photo and video goes into Instagram › Saved › {collection.name}. A later backup saves only what is new.</p>
+      <p className="muted">Every photo and video goes into {folder}. A later backup saves only what is new.</p>
       {plan.resumes && <p>An earlier backup stopped before the end; this one goes on from there.</p>}
-      {plan.large && <p className="error-text">This collection holds more than 1,000 posts. Backing it up may take many hours, and Instagram may ask TurboDL to slow down.</p>}
+      {plan.large && <p className="error-text">This holds more than 1,000 posts. Backing it up may take many hours, and Instagram may ask TurboDL to slow down.</p>}
       {tooBig && <p className="error-text">That is more than the free space on this drive ({formatBytes(plan.freeBytes ?? 0)} free).</p>}
     </Modal>
   );
@@ -51,7 +51,7 @@ export function BackupPanel({ backup, onSignedIn }: { backup: BackupView; onSign
   const [busy, setBusy] = useState(false);
   const resume = async () => {
     setError(null);
-    const res = await api.startBackup(backup.targetId);
+    const res = backup.kind === "collection" ? await api.startBackup(backup.targetId) : await api.startProfileBackup(backup.name);
     if (!res.ok) setError(res.error);
   };
   // signed out midway: sign in again, then go on where it stopped

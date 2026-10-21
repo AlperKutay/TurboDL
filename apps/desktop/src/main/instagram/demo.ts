@@ -1,4 +1,4 @@
-import type { BrowserCookie, SavedCollection } from "@turbodl/shared";
+import { SavedError, type BrowserCookie, type InstagramProfile, type SavedCollection, type SavedPost } from "@turbodl/shared";
 import type { InstagramDeps } from "../controller";
 
 export const DEMO_COOKIE: BrowserCookie = { domain: ".instagram.com", hostOnly: false, path: "/", secure: true, expires: 0, name: "sessionid", value: "demo" };
@@ -37,6 +37,32 @@ export function demoInstagram(base: string): InstagramDeps {
       return { status: 200, body: u.searchParams.get("max_id") === "page2" ? feed(all[1]) : feed(all[0], "page2") };
     },
     collections: async () => COLLECTIONS,
+    openProfile: (username) => {
+      const post = (k: number): SavedPost => ({ id: `p${k}`, cover: `${base}/ig/${k % 3}.png`, items: [{ kind: "image", url: `${base}/ig/${k % 3}.png`, mediaId: `p${k}` }], ...(k === 1 ? { pinned: true } : {}) });
+      const profiles: Record<string, { profile: InstagramProfile; pages: SavedPost[][] }> = {
+        "demo.person": {
+          profile: { id: "5100000000000000007", username: "demo.person", fullName: "Demo Person", isPrivate: false, following: true, postCount: 6 },
+          pages: [[post(1), post(2), post(3)], [post(4), post(5), post(6)]],
+        },
+        "demo.locked": {
+          profile: { id: "5100000000000000008", username: "demo.locked", fullName: "Demo Locked", isPrivate: true, following: false, postCount: 4 },
+          pages: [[]],
+        },
+      };
+      const found = profiles[username];
+      return {
+        profile: async () => {
+          if (!found) throw new SavedError("badAnswer");
+          return found.profile;
+        },
+        highlights: [],
+        page: async (cursor) => {
+          const k = cursor ? Number(cursor) : 0;
+          return { posts: found?.pages[k] ?? [], ...(found && k + 1 < found.pages.length ? { next: String(k + 1) } : {}) };
+        },
+        close: () => undefined,
+      };
+    },
     wait: (ms) => new Promise((r) => setTimeout(r, Math.min(ms, 20))),
     signOut: async () => undefined,
   };

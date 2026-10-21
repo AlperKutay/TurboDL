@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { SavedPage, SavedPost } from "@turbodl/shared";
-import { backupAction, canLoadMore, initialSaved, pageArrived, pageFailed, select, toggle } from "./saved-state";
+import { backupAction, canLoadMore, initialSaved, pageArrived, pageFailed, profileName, sameFeed, select, toggle } from "./saved-state";
 
 const post = (id: string): SavedPost => ({ id, items: [{ kind: "image", url: `https://cdn.example/${id}.jpg`, mediaId: id }] });
 const page = (ids: string[], next?: string): SavedPage => ({ posts: ids.map(post), ...(next ? { next } : {}) });
@@ -39,7 +39,23 @@ describe("saved-state", () => {
     expect(trips.source).toEqual({ kind: "collection", id: "102" });
   });
 
-  it("offers what a backup's state calls for: sign-in when Instagram signed TurboDL out", () => {
+  it("takes a profile link or a username typed in, and nothing else", () => {
+    expect(profileName("https://www.instagram.com/Sample.User/?igsh=x")).toBe("sample.user");
+    expect(profileName(" @sample_user.2 ")).toBe("sample_user.2");
+    expect(profileName("sample.user")).toBe("sample.user");
+    for (const text of ["https://www.instagram.com/p/C1abcDEF/", "https://example.com/sample.user", "not a name!", "", "@"]) expect(profileName(text), text).toBeNull();
+  });
+
+    it("keeps a profile's feed apart from Saved's", () => {
+    const all = pageArrived(select(initialSaved(), { kind: "all" }), 1, page(["1"]));
+    const profile = select(all, { kind: "profile", username: "sample.user" });
+    expect([profile.posts, profile.source]).toEqual([[], { kind: "profile", username: "sample.user" }]);
+    expect(sameFeed(profile.source, { kind: "profile", username: "sample.user" })).toBe(true);
+    expect(sameFeed(profile.source, { kind: "profile", username: "other.user" })).toBe(false);
+    expect(sameFeed({ kind: "all" }, { kind: "collection", id: "102" })).toBe(false);
+  });
+
+    it("offers what a backup's state calls for: sign-in when Instagram signed TurboDL out", () => {
     expect(backupAction("running")).toBe("stop");
     expect(backupAction("signedOut")).toBe("signIn");
     for (const state of ["stopped", "rateLimited", "failed"] as const) expect(backupAction(state)).toBe("continue");

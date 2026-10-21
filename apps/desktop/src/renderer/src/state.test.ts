@@ -36,7 +36,7 @@ const snapshot = (downloads: DownloadView[]): AppSnapshot => ({
 
 describe("applyEvent", () => {
   it("keeps the Instagram backup's latest progress", () => {
-    const backup = { targetId: "102", name: "Trips", state: "running" as const, done: 1, failed: 0, saved: 2, progress: 0.5 };
+    const backup = { targetId: "102", kind: "collection" as const, name: "Trips", state: "running" as const, done: 1, failed: 0, saved: 2, progress: 0.5 };
     expect(applyEvent(snapshot([]), { type: "instagramBackup", backup }).instagramBackup).toEqual(backup);
   });
 

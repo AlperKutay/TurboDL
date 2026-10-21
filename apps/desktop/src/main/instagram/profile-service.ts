@@ -120,6 +120,7 @@ export class ProfileService {
     const result = await this.deps.backups.start(
       {
         id: `profile-${profile.id}`,
+        kind: "profile",
         name: profile.username,
         ...(profile.postCount !== undefined ? { count: profile.postCount } : {}),
         dir: this.folder(profile.username),

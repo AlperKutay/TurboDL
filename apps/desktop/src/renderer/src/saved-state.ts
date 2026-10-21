@@ -1,8 +1,18 @@
-import type { BackupView, SavedPage, SavedPageResult, SavedPost, SavedSource } from "@turbodl/shared";
+import { parseInstagramLink, type BackupView, type SavedPage, type SavedPageResult, type SavedPost, type SavedSource } from "@turbodl/shared";
 
-/** The Saved grid: one feed, loaded page by page, and the posts picked in it. */
+/** What a grid shows: All, one of the account's collections, or someone's profile. */
+export type FeedSource = SavedSource | { kind: "profile"; username: string };
+
+/** Whether two grids show the same feed. */
+export function sameFeed(a: FeedSource, b: FeedSource): boolean {
+  if (a.kind === "all" || b.kind === "all") return a.kind === b.kind;
+  if (a.kind === "collection") return b.kind === "collection" && a.id === b.id;
+  return b.kind === "profile" && a.username.toLowerCase() === b.username.toLowerCase();
+}
+
+/** A grid (Saved's or a profile's): one feed, loaded page by page, and the posts picked in it. */
 export interface SavedState {
-  source: SavedSource;
+  source: FeedSource;
   posts: SavedPost[];
   /** the next page's cursor; none before the first page and after the last */
   next?: string;
@@ -18,7 +28,7 @@ export function initialSaved(): SavedState {
   return { source: { kind: "all" }, posts: [], status: "idle", picked: [], generation: 0 };
 }
 
-export function select(state: SavedState, source: SavedSource): SavedState {
+export function select(state: SavedState, source: FeedSource): SavedState {
   return { source, posts: [], status: "idle", picked: [], generation: state.generation + 1 };
 }
 
@@ -59,4 +69,15 @@ export function backupAction(state: BackupView["state"]): "stop" | "continue" | 
 export function toggle(state: SavedState, postId: string): SavedState {
   const picked = state.picked.includes(postId) ? state.picked.filter((id) => id !== postId) : [...state.picked, postId];
   return { ...state, picked };
+}
+
+/** The username in a profile link or in what was typed (`@` or not), lowercased; null for anything else. */
+export function profileName(text: string): string | null {
+  const typed = text.trim();
+  if (/^https?:\/\//i.test(typed)) {
+    const link = parseInstagramLink(typed);
+    return link?.kind === "profile" ? link.username : null;
+  }
+  const name = typed.replace(/^@/, "");
+  return /^[a-z0-9._]{1,30}$/i.test(name) ? name.toLowerCase() : null;
 }
