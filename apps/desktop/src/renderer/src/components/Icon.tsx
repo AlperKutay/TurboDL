@@ -21,6 +21,7 @@ const PATHS = {
   check: "M5 12l5 5L20 7",
   queue: "M4 6h16M4 12h10M4 18h7",
   close: "M6 6l12 12M18 6L6 18",
+  bookmark: "M6 3h12v18l-6-4-6 4z",
 } as const;
 
 export type IconName = keyof typeof PATHS;
