@@ -158,6 +158,17 @@ describe("bridge server", () => {
     const jar = Array.from({ length: 400 }, (_, i) => ({ domain: "x.com", hostOnly: true, path: "/", secure: false, expires: 0, name: `c${i}`, value: "1" }));
     await call("/v1/downloads", { method: "POST", body: JSON.stringify({ url: "https://x.com/watch", source: "context-menu", cookieJar: jar }) });
     expect(downloads[0].cookieJar).toHaveLength(300);
+  });
+
+  it("keeps a cookie's HttpOnly and SameSite, and drops unknown SameSite values", async () => {
+    const cookie = { domain: ".instagram.com", hostOnly: false, path: "/", secure: true, expires: 0, name: "sessionid", value: "s" };
+    await call("/v1/downloads", {
+      method: "POST",
+      body: JSON.stringify({ url: "https://www.instagram.com/p/C1/", source: "context-menu", cookieJar: [{ ...cookie, httpOnly: true, sameSite: "lax" }, { ...cookie, name: "b", sameSite: "weird" }] }),
+    });
+    const jar = downloads[downloads.length - 1].cookieJar ?? [];
+    expect(jar[0]).toMatchObject({ httpOnly: true, sameSite: "lax" });
+    expect(jar[1]).not.toHaveProperty("sameSite");
     expect(downloads[0].source).toBe("context-menu");
   });
 

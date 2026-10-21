@@ -76,7 +76,7 @@ export function InstagramWindow({ pendingId }: { pendingId: string }) {
   const toggle = (index: number) => setPicked((list) => (list.includes(index) ? list.filter((i) => i !== index) : [...list, index]));
   const signIn = async () => {
     setBusy(true);
-    const ok = await api.instagramSignIn();
+    const ok = await api.instagramSignIn(pendingId);
     setBusy(false);
     if (ok) await find();
     else setError("Not signed in to Instagram.");
@@ -109,9 +109,13 @@ export function InstagramWindow({ pendingId }: { pendingId: string }) {
       {result === "loading" && <p className="muted spinner">Reading Instagram…</p>}
       {result !== "loading" && result.type === "signedOut" && (
         <section>
-          <p>Sign in to Instagram to read this page. If you are signed in in your browser, use “Open in TurboDL” there instead.</p>
+          <p>
+            {result.at
+              ? "Instagram wants to check it's you before it shows this page."
+              : "Sign in to Instagram to read this page. If you are signed in in your browser, use “Open in TurboDL” there instead."}
+          </p>
           <button type="button" className="btn btn-primary" disabled={busy} onClick={() => void signIn()}>
-            Sign in to Instagram
+            {result.at ? "Continue on Instagram" : "Sign in to Instagram"}
           </button>
         </section>
       )}
@@ -120,6 +124,10 @@ export function InstagramWindow({ pendingId }: { pendingId: string }) {
           Nothing to download on this page.{" "}
           <button type="button" className="link-button" onClick={() => void find()}>
             Try again
+          </button>
+          {" · "}
+          <button type="button" className="link-button" disabled={busy} onClick={() => void signIn()}>
+            Sign in again
           </button>
         </p>
       )}

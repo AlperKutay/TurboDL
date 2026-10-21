@@ -394,22 +394,24 @@ describe("Instagram links", () => {
   const memoryCrypt = { available: () => false, encrypt: (t: string) => Buffer.from(t), decrypt: (b: Buffer) => b.toString() };
 
   /** Instagram stood in for: what a page shows and what a sign-in gives. */
-  function fakeInstagram(outcome: () => FindOutcome, signIn: BrowserCookie[] | null = null) {
+  function fakeInstagram(outcome: (signal?: AbortSignal) => FindOutcome | Promise<FindOutcome>, signIn: BrowserCookie[] | null = null) {
     const finds: { code: string; cookies: string[] }[] = [];
+    const signInPages: (string | undefined)[] = [];
     let signIns = 0;
     const deps: InstagramDeps = {
-      find: async (link, cookies) => {
+      find: async (link, cookies, signal) => {
         finds.push({ code: link.kind === "post" ? link.code : link.kind, cookies: cookies.map((c) => c.name) });
-        return outcome();
+        return outcome(signal);
       },
-      signIn: async () => {
+      signIn: async (at) => {
         signIns++;
+        signInPages.push(at);
         return signIn;
       },
       crypt: memoryCrypt,
       agent: "TestAgent/1",
     };
-    return { deps, finds, signIns: () => signIns };
+    return { deps, finds, signIns: () => signIns, signInPages };
   }
 
   const items = () => ({
@@ -494,6 +496,58 @@ describe("Instagram links", () => {
     expect(await c.instagramSignIn()).toBe(true);
     expect((await c.findInstagram(id)).type).toBe("items");
     expect(ig.signIns()).toBe(1);
+  });
+
+  it("calls the page off when its picker is closed", async () => {
+    let aborted = false;
+    const ig = fakeInstagram(
+      (signal) =>
+        new Promise<FindOutcome>((resolve) => {
+          signal?.addEventListener("abort", () => {
+            aborted = true;
+            resolve({ type: "nothing" });
+          });
+        }),
+    );
+    const c = await start({}, null, ig.deps);
+    await c.handleDownloadRequest({ url: "https://www.instagram.com/p/C1abcDEF/", source: "context-menu", cookieJar: sessionJar });
+    const id = ui.opened[0].pendingId;
+    const search = c.findInstagram(id);
+    await new Promise((r) => setTimeout(r, 20));
+    c.cancelPending(id);
+    expect(await search).toEqual({ type: "gone" });
+    expect(aborted).toBe(true);
+  });
+
+  it("answers nothing, not a stuck picker, when reading the page fails", async () => {
+    const ig = fakeInstagram(() => {
+      throw new Error("no window");
+    });
+    const c = await start({}, null, ig.deps);
+    await c.handleDownloadRequest({ url: "https://www.instagram.com/p/C1abcDEF/", source: "context-menu", cookieJar: sessionJar });
+    expect(await c.findInstagram(ui.opened[0].pendingId)).toEqual({ type: "nothing" });
+  });
+
+  it("opens the sign-in window on Instagram's check page when that is where the page landed", async () => {
+    const at = "https://www.instagram.com/challenge/xyz/";
+    const ig = fakeInstagram(() => ({ type: "signedOut", at }), sessionJar);
+    const c = await start({}, null, ig.deps);
+    await c.handleDownloadRequest({ url: "https://www.instagram.com/p/C1abcDEF/", source: "context-menu", cookieJar: sessionJar });
+    const id = ui.opened[0].pendingId;
+    expect(await c.findInstagram(id)).toEqual({ type: "signedOut", at });
+    await c.instagramSignIn(id);
+    expect(ig.signInPages).toEqual([at]);
+  });
+
+  it("declines Instagram pages it doesn't read yet instead of handing them to yt-dlp", async () => {
+    const ig = fakeInstagram(items);
+    const c = await start({}, null, ig.deps);
+    for (const url of ["https://www.instagram.com/sample.user/", "https://www.instagram.com/explore/", "https://www.instagram.com/"]) {
+      const res = await c.handleDownloadRequest({ url, source: "context-menu", cookieJar: sessionJar });
+      expect(res.accepted, url).toBe(false);
+    }
+    expect(ui.opened).toHaveLength(0);
+    expect(server.requests).toHaveLength(0);
   });
 
   it("sends an Instagram page from the media button to the picker too", async () => {

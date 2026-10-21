@@ -82,9 +82,10 @@ export interface ControllerOptions {
 }
 
 export interface InstagramDeps {
-  find(link: InstagramLink, cookies: BrowserCookie[]): Promise<FindOutcome>;
-  /** Instagram's sign-in in TurboDL; the cookies once signed in, null when closed first */
-  signIn(): Promise<BrowserCookie[] | null>;
+  /** reading stops when `signal` aborts (the picker was closed) */
+  find(link: InstagramLink, cookies: BrowserCookie[], signal?: AbortSignal): Promise<FindOutcome>;
+  /** Instagram's sign-in in TurboDL, at `at` (a check page) or the sign-in page; the cookies once signed in, null when closed first */
+  signIn(at?: string): Promise<BrowserCookie[] | null>;
   crypt: Crypt;
   /** the user agent media downloads present to Instagram's CDN */
   agent: string;
@@ -101,6 +102,16 @@ const NO_INSTAGRAM: InstagramDeps = {
 function instagramItemsLink(url: string): InstagramLink | null {
   const link = parseInstagramLink(url);
   return link && (link.kind === "post" || link.kind === "story" || link.kind === "highlight") ? link : null;
+}
+
+/** Instagram's own pages (not its CDN): yt-dlp can't read the ones TurboDL doesn't, and would get the session cookies. */
+function isInstagramPage(url: string): boolean {
+  try {
+    const host = new URL(url).hostname.toLowerCase();
+    return host === "instagram.com" || host === "www.instagram.com" || host === "m.instagram.com";
+  } catch {
+    return false;
+  }
 }
 
 export function buildHeaders(cookies?: string, referrer?: string, userAgent?: string): Record<string, string> {
@@ -144,6 +155,10 @@ export class AppController {
   readonly instagramSession: InstagramSession;
   /** what each open Instagram picker was shown */
   private readonly instagramItems = new Map<string, InstagramItem[]>();
+  /** each open picker's page reading, called off when the picker closes */
+  private readonly instagramSearches = new Map<string, AbortController>();
+  /** the check page each picker's page landed on */
+  private readonly instagramChecks = new Map<string, string>();
 
   constructor(private readonly o: ControllerOptions) {
     this.instagram = o.instagram ?? NO_INSTAGRAM;
@@ -218,6 +233,7 @@ export class AppController {
       this.openInstagram(req.url, instagram, req.cookieJar);
       return { accepted: true };
     }
+    if (isInstagramPage(req.url)) return { accepted: false, reason: "TurboDL opens Instagram posts, reels, stories and highlights." };
     const headers = buildHeaders(req.cookies, req.referrer, req.userAgent);
     let info;
     try {
@@ -306,17 +322,29 @@ export class AppController {
 
   cancelPending(pendingId: string): void {
     this.pending.delete(pendingId);
-    this.instagramItems.delete(pendingId);
+    this.forgetInstagram(pendingId);
   }
 
-  /** Reads the link's items from its signed-in page. */
+  /** Reads the link's items from its signed-in page; a new read calls off the picker's previous one. */
   async findInstagram(pendingId: string): Promise<InstagramFindResult> {
     const p = this.pending.get(pendingId);
     if (!p || p.type !== "instagram") return { type: "gone" };
     if (!this.instagramSession.signedIn()) return { type: "signedOut" };
-    const outcome = await this.instagram.find(p.link, this.instagramSession.cookies());
-    if (!this.pending.has(pendingId)) return { type: "gone" };
+    this.instagramSearches.get(pendingId)?.abort();
+    const search = new AbortController();
+    this.instagramSearches.set(pendingId, search);
+    let outcome: FindOutcome;
+    try {
+      outcome = await this.instagram.find(p.link, this.instagramSession.cookies(), search.signal);
+    } catch {
+      outcome = { type: "nothing" };
+    } finally {
+      if (this.instagramSearches.get(pendingId) === search) this.instagramSearches.delete(pendingId);
+    }
+    if (!this.pending.has(pendingId) || search.signal.aborted) return { type: "gone" };
     if (outcome.type === "items") this.instagramItems.set(pendingId, outcome.items);
+    if (outcome.type === "signedOut" && outcome.at) this.instagramChecks.set(pendingId, outcome.at);
+    else this.instagramChecks.delete(pendingId);
     return outcome;
   }
 
@@ -345,15 +373,22 @@ export class AppController {
         mode,
       );
     });
-    this.instagramItems.delete(pendingId);
+    this.forgetInstagram(pendingId);
     this.finishPending(pendingId);
     return { ok: true };
   }
 
-  /** Instagram's own sign-in in TurboDL; its cookies become the session. */
-  async instagramSignIn(): Promise<boolean> {
-    const cookies = await this.instagram.signIn();
+  /** Instagram's own sign-in in TurboDL, on the check page the picker's page landed on if any; its cookies become the session. */
+  async instagramSignIn(pendingId?: string): Promise<boolean> {
+    const cookies = await this.instagram.signIn(pendingId ? this.instagramChecks.get(pendingId) : undefined);
     return cookies !== null && this.instagramSession.take(cookies);
+  }
+
+  private forgetInstagram(pendingId: string): void {
+    this.instagramItems.delete(pendingId);
+    this.instagramChecks.delete(pendingId);
+    this.instagramSearches.get(pendingId)?.abort();
+    this.instagramSearches.delete(pendingId);
   }
 
   confirmDownload(pendingId: string, decision: DownloadDecision): Result {

@@ -48,7 +48,7 @@ export function registerIpc(c: AppController): void {
   handle("confirmInstagram", (id: string, indices: unknown, mode: unknown) =>
     c.confirmInstagram(String(id), Array.isArray(indices) ? indices.map(Number).filter(Number.isInteger) : [], mode === "later" ? "later" : "now"),
   );
-  handle("instagramSignIn", () => c.instagramSignIn());
+  handle("instagramSignIn", (id: unknown) => c.instagramSignIn(typeof id === "string" ? id : undefined));
   handle("cancelCountdown", () => c.cancelCountdown());
   handle("installExtension", async () => {
     const result = await c.installExtension();

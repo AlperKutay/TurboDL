@@ -85,8 +85,8 @@ async function start(): Promise<void> {
     instagram: instagramDemoBase
       ? demoInstagram(instagramDemoBase)
       : {
-          find: (link, cookies) => new InstagramFinder(() => new ElectronInstagramPage(cookies), { report: instagramReport() }).find(link),
-          signIn: () => signInToInstagram(),
+          find: (link, cookies, signal) => new InstagramFinder(() => new ElectronInstagramPage(cookies), { report: instagramReport() }).find(link, signal),
+          signIn: (at) => signInToInstagram(at),
           crypt: {
             available: () => safeStorage.isEncryptionAvailable(),
             encrypt: (text) => safeStorage.encryptString(text),

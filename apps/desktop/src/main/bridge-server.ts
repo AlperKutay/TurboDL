@@ -68,8 +68,20 @@ export function parseCookie(v: unknown): BrowserCookie | null {
   if (!domain || !DOMAIN.test(domain) || !cookiePath?.startsWith("/") || !name || value === null) return null;
   if (typeof v.hostOnly !== "boolean" || typeof v.secure !== "boolean") return null;
   if (typeof v.expires !== "number" || !Number.isFinite(v.expires) || v.expires < 0) return null;
-  return { domain, hostOnly: v.hostOnly, path: cookiePath, secure: v.secure, expires: v.expires, name, value };
+  return {
+    domain,
+    hostOnly: v.hostOnly,
+    path: cookiePath,
+    secure: v.secure,
+    expires: v.expires,
+    name,
+    value,
+    ...(typeof v.httpOnly === "boolean" ? { httpOnly: v.httpOnly } : {}),
+    ...(SAME_SITE.includes(v.sameSite as never) ? { sameSite: v.sameSite as NonNullable<BrowserCookie["sameSite"]> } : {}),
+  };
 }
+
+const SAME_SITE: BrowserCookie["sameSite"][] = ["no_restriction", "lax", "strict", "unspecified"];
 
 function parseCookieJar(v: unknown): BrowserCookie[] | undefined {
   if (!Array.isArray(v)) return undefined;

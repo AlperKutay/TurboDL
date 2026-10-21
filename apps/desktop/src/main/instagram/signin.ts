@@ -1,26 +1,22 @@
 import { BrowserWindow, type Cookie } from "electron";
 import type { BrowserCookie } from "@turbodl/shared";
-import { instagramSession, isInstagramAddress } from "./page";
+import { instagramSession } from "./page";
+import { fromElectronCookie, isInstagramAddress, signedInNow } from "./partition";
 
-function toBrowserCookie(c: Cookie): BrowserCookie {
-  return {
-    domain: c.domain ?? "",
-    hostOnly: c.hostOnly ?? false,
-    path: c.path ?? "/",
-    secure: c.secure ?? true,
-    expires: c.expirationDate ?? 0,
-    name: c.name,
-    value: c.value,
-  };
-}
+const SIGN_IN = "https://www.instagram.com/accounts/login/";
+
+const instagramCookies = (cookies: Cookie[]) => cookies.filter((c) => (c.domain ?? "").replace(/^\.+/, "").endsWith("instagram.com"));
+const sessionValue = (cookies: Cookie[]) => cookies.find((c) => c.name === "sessionid" && c.value)?.value;
 
 /**
- * Instagram's own sign-in page in a TurboDL window, on the session the hidden pages use. Resolves with Instagram's
- * cookies once `sessionid` is there (also when it already was), or null when the window is closed first.
+ * Instagram's own sign-in page in a TurboDL window, on the session the hidden pages use, or the check page `at` a
+ * hidden page landed on. Resolves with Instagram's cookies once signed in (see `signedInNow`), or null when the window
+ * is closed first.
  */
-export function signInToInstagram(): Promise<BrowserCookie[] | null> {
+export async function signInToInstagram(at?: string): Promise<BrowserCookie[] | null> {
+  const s = instagramSession();
+  const initial = sessionValue(instagramCookies(await s.cookies.get({})));
   return new Promise((resolve) => {
-    const s = instagramSession();
     const win = new BrowserWindow({
       width: 480,
       height: 760,
@@ -30,12 +26,12 @@ export function signInToInstagram(): Promise<BrowserCookie[] | null> {
     });
     let done = false;
     const check = async () => {
-      if (done) return;
-      const cookies = (await s.cookies.get({})).filter((c) => (c.domain ?? "").replace(/^\.+/, "").endsWith("instagram.com"));
-      if (!cookies.some((c) => c.name === "sessionid" && c.value)) return;
+      if (done || win.isDestroyed()) return;
+      const cookies = instagramCookies(await s.cookies.get({}));
+      if (done || win.isDestroyed() || !signedInNow(initial, sessionValue(cookies), win.webContents.getURL())) return;
       done = true;
-      resolve(cookies.map(toBrowserCookie));
-      if (!win.isDestroyed()) win.destroy();
+      resolve(cookies.map(fromElectronCookie));
+      win.destroy();
     };
     const onChanged = (_event: unknown, cookie: Cookie, _cause: string, removed: boolean) => {
       if (!removed && cookie.name === "sessionid") void check();
@@ -50,6 +46,7 @@ export function signInToInstagram(): Promise<BrowserCookie[] | null> {
       if (!isInstagramAddress(address)) event.preventDefault();
     });
     win.webContents.on("did-finish-load", () => void check());
-    void win.loadURL("https://www.instagram.com/accounts/login/").catch(() => undefined);
+    win.webContents.on("did-navigate-in-page", () => void check());
+    void win.loadURL(at && isInstagramAddress(at) ? at : SIGN_IN).catch(() => undefined);
   });
 }

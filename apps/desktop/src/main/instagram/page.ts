@@ -2,45 +2,37 @@ import { BrowserWindow, session, type Session } from "electron";
 import type { BrowserCookie } from "@turbodl/shared";
 import { chromeAgent } from "./agent";
 import type { PageDriver } from "./finder";
-
-export const INSTAGRAM_PARTITION = "persist:instagram";
+import { INSTAGRAM_PARTITION, blockedFrame, electronCookie, isInstagramAddress } from "./partition";
 
 const MAX_DOCUMENT = 4 * 1024 * 1024;
 const MAX_PAGE = 32 * 1024 * 1024;
 
-/** Pages and requests the hidden windows may load: Instagram itself. */
-export function isInstagramAddress(address: string): boolean {
-  try {
-    const u = new URL(address);
-    const host = u.hostname.toLowerCase();
-    return u.protocol === "https:" && (host === "instagram.com" || host.endsWith(".instagram.com"));
-  } catch {
-    return false;
-  }
-}
+/** The hidden pages' contents; the sign-in window may show frames from elsewhere (Instagram's captcha). */
+const hiddenPages = new Set<number>();
+let configured: Session | null = null;
 
-/** The session the hidden pages and the sign-in window share; nothing it asks for (camera, notifications…) is granted. */
+/**
+ * The session the hidden pages and the sign-in window share: nothing it asks for (camera, notifications…) is
+ * granted, and no page leaves Instagram, not even through a redirect.
+ */
 export function instagramSession(): Session {
+  if (configured) return configured;
   const s = session.fromPartition(INSTAGRAM_PARTITION);
   s.setPermissionRequestHandler((_wc, _permission, callback) => callback(false));
   s.setUserAgent(chromeAgent(s.getUserAgent()));
+  s.webRequest.onBeforeRequest((details, callback) => {
+    const frame = details.resourceType === "mainFrame" || hiddenPages.has(details.webContentsId ?? -1);
+    callback({ cancel: frame && blockedFrame(details.resourceType, details.url) });
+  });
+  configured = s;
   return s;
 }
 
 /** Puts kept cookies into the session before a page loads. */
 export async function applyCookies(s: Session, cookies: BrowserCookie[]): Promise<void> {
   for (const c of cookies) {
-    const host = c.domain.replace(/^\.+/, "");
     try {
-      await s.cookies.set({
-        url: `https://${host}${c.path || "/"}`,
-        name: c.name,
-        value: c.value,
-        ...(c.hostOnly ? {} : { domain: c.domain }),
-        path: c.path || "/",
-        secure: c.secure,
-        ...(c.expires > 0 ? { expirationDate: c.expires } : {}),
-      });
+      await s.cookies.set(electronCookie(c));
     } catch {
       // one bad cookie doesn't keep the others out
     }
@@ -56,12 +48,15 @@ export class ElectronInstagramPage implements PageDriver {
   private readonly answers: string[] = [];
   private readonly waiting = new Set<string>();
   private bytes = 0;
+  private closed = false;
 
   constructor(private readonly cookies: BrowserCookie[]) {}
 
   async load(url: string): Promise<void> {
     const s = instagramSession();
     await applyCookies(s, this.cookies);
+    // closed while the cookies went in: no window is made at all
+    if (this.closed) return;
     const win = new BrowserWindow({
       show: false,
       width: 1280,
@@ -70,6 +65,9 @@ export class ElectronInstagramPage implements PageDriver {
     });
     this.win = win;
     const contents = win.webContents;
+    const id = contents.id;
+    hiddenPages.add(id);
+    win.on("closed", () => hiddenPages.delete(id));
     contents.setAudioMuted(true);
     contents.setWindowOpenHandler(() => ({ action: "deny" }));
     contents.on("will-navigate", (event, address) => {
@@ -114,6 +112,7 @@ export class ElectronInstagramPage implements PageDriver {
   }
 
   close(): void {
+    this.closed = true;
     const win = this.win;
     this.win = null;
     if (!win || win.isDestroyed()) return;

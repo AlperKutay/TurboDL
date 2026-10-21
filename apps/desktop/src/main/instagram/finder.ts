@@ -1,4 +1,4 @@
-import { isSignInPath, postItems, storyItems, type InstagramItem, type InstagramLink } from "@turbodl/shared";
+import { isSignInPath, loggedOutView, postItems, postNeedsSignIn, storyItems, type InstagramItem, type InstagramLink } from "@turbodl/shared";
 
 /** An Instagram page in a hidden window, as the finder needs it (`ElectronInstagramPage`, or a stand-in in tests). */
 export interface PageDriver {
@@ -9,7 +9,8 @@ export interface PageDriver {
   close(): void;
 }
 
-export type FindOutcome = { type: "items"; items: InstagramItem[] } | { type: "signedOut" } | { type: "nothing" };
+/** `signedOut.at`: the check page (not the sign-in page) Instagram sent the page to, for the sign-in window to open. */
+export type FindOutcome = { type: "items"; items: InstagramItem[] } | { type: "signedOut"; at?: string } | { type: "nothing" };
 
 export interface FinderOptions {
   /** ms between looks at the page */
@@ -49,34 +50,79 @@ export class InstagramFinder {
     this.timeout = o.timeout ?? 12_000;
   }
 
-  async find(link: InstagramLink): Promise<FindOutcome> {
+  /**
+   * Looks while the page loads (its JSON comes long before its last picture, and a load may never end), until the
+   * deadline; `signal` calls it off. Whatever happens, the page is closed afterwards.
+   */
+  async find(link: InstagramLink, signal?: AbortSignal): Promise<FindOutcome> {
     const url = pageFor(link);
-    if (!url) return { type: "nothing" };
-    const page = this.page();
+    if (!url || signal?.aborted) return { type: "nothing" };
+    const deadline = Date.now() + this.timeout;
+    let page: PageDriver | null = null;
     try {
-      await page.load(url);
-      const deadline = Date.now() + this.timeout;
+      page = this.page();
+      let failed = false;
+      page.load(url).catch(() => {
+        failed = true;
+      });
       let documents: string[] = [];
       for (;;) {
-        if (signInPage(page.finalUrl())) return { type: "signedOut" };
-        documents = await page.documents();
-        const items = link.kind === "post" ? postItems(documents, link.code) : link.kind === "story" || link.kind === "highlight" ? storyItems(documents, link) : [];
-        if (items.length > 0) return { type: "items", items };
+        if (failed) return { type: "nothing" };
+        const landing = signInLanding(page.finalUrl());
+        if (landing) return landing;
+        // a look at a page between loads may never answer
+        const seen = await within(page.documents(), Math.min(deadline, Date.now() + LOOK), signal);
+        if (signal?.aborted) return { type: "nothing" };
+        if (seen) {
+          documents = seen;
+          const items = link.kind === "post" ? postItems(documents, link.code) : link.kind === "story" || link.kind === "highlight" ? storyItems(documents, link) : [];
+          if (items.length > 0) return { type: "items", items };
+          // the signed-out page keeps a post it won't show as an empty field: no need to wait for it
+          if (link.kind === "post" && postNeedsSignIn(documents, link.code)) return { type: "signedOut" };
+        }
         if (Date.now() >= deadline) break;
-        await new Promise((r) => setTimeout(r, this.poll));
+        await within(new Promise((r) => setTimeout(r, this.poll)), Infinity, signal);
+        if (signal?.aborted) return { type: "nothing" };
       }
+      // the session TurboDL keeps no longer works: Instagram served the page as to a signed-out visitor
+      if (loggedOutView(documents)) return { type: "signedOut" };
       this.o.report?.(url, documents);
       return { type: "nothing" };
+    } catch {
+      return { type: "nothing" };
     } finally {
-      page.close();
+      page?.close();
     }
   }
 }
 
-function signInPage(address: string): boolean {
+/** ms one look at the page may take */
+const LOOK = 3000;
+
+/** What `work` gives, or undefined when the deadline passes or `signal` aborts first. */
+function within<T>(work: Promise<T>, deadline: number, signal?: AbortSignal): Promise<T | undefined> {
+  return new Promise((resolve) => {
+    if (signal?.aborted) return resolve(undefined);
+    const timer = Number.isFinite(deadline) ? setTimeout(() => finish(undefined), Math.max(0, deadline - Date.now())) : undefined;
+    const onAbort = () => finish(undefined);
+    signal?.addEventListener("abort", onAbort);
+    function finish(value: T | undefined) {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+      resolve(value);
+    }
+    work.then(finish, () => finish(undefined));
+  });
+}
+
+/** Instagram sent the page to sign-in, or to a check (kept as `at`, the sign-in window opens there). */
+function signInLanding(address: string): FindOutcome | null {
+  let u: URL;
   try {
-    return isSignInPath(new URL(address).pathname);
+    u = new URL(address);
   } catch {
-    return false;
+    return null;
   }
+  if (!isSignInPath(u.pathname)) return null;
+  return u.pathname.startsWith("/challenge") ? { type: "signedOut", at: u.href } : { type: "signedOut" };
 }

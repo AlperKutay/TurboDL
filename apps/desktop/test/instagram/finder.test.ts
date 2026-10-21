@@ -8,12 +8,16 @@ class FakePage implements PageDriver {
   loads: string[] = [];
   closed = false;
   looks = 0;
+  /** a load that never finishes, or one that throws */
+  loading: "ok" | "hangs" | "throws" = "ok";
   constructor(
     private readonly steps: string[][],
     private readonly landsOn?: string,
   ) {}
   async load(url: string) {
     this.loads.push(url);
+    if (this.loading === "hangs") await new Promise(() => undefined);
+    if (this.loading === "throws") throw new Error("no window");
   }
   async documents() {
     const step = this.steps[Math.min(this.looks, this.steps.length - 1)] ?? [];
@@ -48,9 +52,9 @@ describe("InstagramFinder", () => {
   });
 
   it("answers sign-in for Instagram's sign-in and check pages", async () => {
-    for (const landing of ["https://www.instagram.com/accounts/login/?next=%2Fp%2FC1abcDEF%2F", "https://www.instagram.com/challenge/xyz/"]) {
-      expect(await finder(new FakePage([[]], landing)).find({ kind: "post", code: "C1abcDEF" })).toEqual({ type: "signedOut" });
-    }
+    const login = "https://www.instagram.com/accounts/login/?next=%2Fp%2FC1abcDEF%2F";
+    expect(await finder(new FakePage([[]], login)).find({ kind: "post", code: "C1abcDEF" })).toEqual({ type: "signedOut" });
+    expect((await finder(new FakePage([[]], "https://www.instagram.com/challenge/xyz/")).find({ kind: "post", code: "C1abcDEF" })).type).toBe("signedOut");
   });
 
   it("answers nothing when the page shows nothing in time, and reports what it saw", async () => {
@@ -65,6 +69,45 @@ describe("InstagramFinder", () => {
     const outcome = await finder(page).find({ kind: "highlight", id: "17900000000000003" });
     expect(page.loads).toEqual(["https://www.instagram.com/stories/highlights/17900000000000003/"]);
     expect(outcome.type === "items" && outcome.items.map((i) => i.url.split("/").pop())).toEqual(["winter_one_1080.jpg"]);
+  });
+
+  it("asks to sign in for a post the signed-out page hides, and for any signed-out page that shows nothing", async () => {
+    const gated = '{"data":{"xig_polaris_media":{"code":"C1abcDEF","if_not_gated_logged_out":null}}}';
+    expect(await finder(new FakePage([[gated]])).find({ kind: "post", code: "C1abcDEF" })).toEqual({ type: "signedOut" });
+    const loggedOut = '{"__type":"preloader","id":"adp_PolarisLoggedOutMediaQuery","result":{}}';
+    expect(await finder(new FakePage([[loggedOut]])).find({ kind: "post", code: "C1abcDEF" })).toEqual({ type: "signedOut" });
+  });
+
+  it("keeps where Instagram's check page is, for the sign-in window to open", async () => {
+    const at = "https://www.instagram.com/challenge/xyz/";
+    expect(await finder(new FakePage([[]], at)).find({ kind: "post", code: "C1abcDEF" })).toEqual({ type: "signedOut", at });
+  });
+
+  it("gives up in time even when the page never finishes loading", async () => {
+    const page = new FakePage([[]]);
+    page.loading = "hangs";
+    const started = Date.now();
+    expect(await finder(page).find({ kind: "post", code: "C1abcDEF" })).toEqual({ type: "nothing" });
+    expect(Date.now() - started).toBeLessThan(2000);
+    expect(page.closed).toBe(true);
+  });
+
+  it("answers nothing when the window can't be made", async () => {
+    const page = new FakePage([[]]);
+    page.loading = "throws";
+    expect(await finder(page).find({ kind: "post", code: "C1abcDEF" })).toEqual({ type: "nothing" });
+    expect(page.closed).toBe(true);
+  });
+
+  it("stops and closes the page when the search is called off", async () => {
+    const page = new FakePage([[]]);
+    const stop = new AbortController();
+    const search = new InstagramFinder(() => page, { poll: 5, timeout: 60_000 }).find({ kind: "post", code: "C1abcDEF" }, stop.signal);
+    setTimeout(() => stop.abort(), 30);
+    const started = Date.now();
+    expect(await search).toEqual({ type: "nothing" });
+    expect(Date.now() - started).toBeLessThan(2000);
+    expect(page.closed).toBe(true);
   });
 
   it("closes the page afterwards, found or not", async () => {
