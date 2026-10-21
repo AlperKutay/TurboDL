@@ -154,7 +154,12 @@ export interface PendingInstagram {
 export type PendingItem = PendingDownload | PendingMedia | PendingInstagram;
 
 /** What the Instagram picker shows: the items, a sign-in to do, nothing found, or a request already closed. */
-export type InstagramFindResult = { type: "items"; items: InstagramItem[] } | { type: "signedOut" } | { type: "nothing" } | { type: "gone" };
+export type InstagramFindResult =
+  | { type: "items"; items: InstagramItem[] }
+  /** `at`: Instagram's check page the page landed on, where the sign-in window opens */
+  | { type: "signedOut"; at?: string }
+  | { type: "nothing" }
+  | { type: "gone" };
 
 export interface MediaFormatOption {
   id: string;
@@ -222,8 +227,8 @@ export interface TurboApi {
   findInstagram(pendingId: string): Promise<InstagramFindResult>;
   /** `indices` empty: every item */
   confirmInstagram(pendingId: string, indices: number[], mode: "now" | "later"): Promise<Result>;
-  /** Opens Instagram's sign-in in TurboDL; true once a session was kept. */
-  instagramSignIn(): Promise<boolean>;
+  /** Opens Instagram's sign-in in TurboDL (on the check page this picker's page landed on); true once a session was kept. */
+  instagramSignIn(pendingId?: string): Promise<boolean>;
   cancelCountdown(): Promise<void>;
   installExtension(): Promise<InstallResult>;
   copyText(text: string): Promise<void>;

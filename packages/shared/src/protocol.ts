@@ -33,6 +33,9 @@ export interface BrowserCookie {
   expires: number;
   name: string;
   value: string;
+  /** kept so a cookie put back into a browser session behaves as the site set it */
+  httpOnly?: boolean;
+  sameSite?: "no_restriction" | "lax" | "strict" | "unspecified";
 }
 
 export interface DownloadRequest {

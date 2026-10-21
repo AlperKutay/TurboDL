@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { parseDocument } from "./json";
-import { postItems, storyItems } from "./media";
+import { objectsInDocuments, parseDocument, str } from "./json";
+import { loggedOutView, postItems, postNeedsSignIn, storyItems } from "./media";
+import loggedOutReel from "./fixtures/instagram-reel-loggedout.txt?raw";
 import carousel from "./fixtures/instagram-v1-carousel.json";
 import graphSidecar from "./fixtures/instagram-graph-sidecar.json";
 import highlightShare from "./fixtures/instagram-highlight-share.json";
@@ -49,6 +50,30 @@ describe("postItems", () => {
 
   it("only counts the post in the address", () => {
     expect(postItems([doc(carousel)], "ZZZ")).toEqual([]);
+    // a page holding two posts gives each its own items
+    expect(postItems([doc(carousel), doc(reel)], "C2reel").map((i) => file(i.url))).toEqual(["reel_1080.mp4"]);
+    expect(postItems([doc(carousel), doc(reel)], "C1abcDEF")).toHaveLength(3);
+  });
+
+  it("reads a public post from the signed-out page", () => {
+    const found = postItems([loggedOutReel], "DReel123");
+    expect(found.map((i) => i.kind)).toEqual(["video"]);
+    expect(found[0].mediaId).toBe("3900000000000000001");
+  });
+
+  it("knows a post the signed-out page hides needs a sign-in", () => {
+    const gated = '{"data":{"xig_polaris_media":{"code":"DGated1","if_not_gated_logged_out":null}}}';
+    expect(postNeedsSignIn([gated], "DGated1")).toBe(true);
+    expect(postNeedsSignIn([loggedOutReel], "DReel123")).toBe(false);
+    expect(loggedOutView([loggedOutReel])).toBe(true);
+    expect(loggedOutView([doc(carousel)])).toBe(false);
+  });
+});
+
+describe("Instagram ids", () => {
+  it("keep every digit, though they are past what a double holds", () => {
+    const ids = objectsInDocuments(['{"items":[{"pk":3700000000000000002},{"pk":3700000000000000004}]}'], (o) => "pk" in o).map((o) => str(o.pk));
+    expect(ids).toEqual(["3700000000000000002", "3700000000000000004"]);
   });
 });
 

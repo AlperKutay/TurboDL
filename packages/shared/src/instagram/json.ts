@@ -11,7 +11,7 @@ export function parseDocument(text: string): unknown {
     let rest = body.trimStart();
     for (const guard of ["for (;;);", "while(1);"]) if (rest.startsWith(guard)) rest = rest.slice(guard.length);
     try {
-      return JSON.parse(rest);
+      return JSON.parse(rest, keepLongIds as (this: unknown, key: string, value: unknown) => unknown);
     } catch {
       return undefined;
     }
@@ -23,6 +23,15 @@ export function parseDocument(text: string): unknown {
     .map(value)
     .filter((v) => v !== undefined);
   return lines.length > 0 ? lines : null;
+}
+
+/**
+ * Instagram's ids (`pk`) are 64-bit and past what a double holds: such a number is kept as its own digits, from the
+ * text JSON.parse read it from (its `context.source`).
+ */
+function keepLongIds(_key: string, value: unknown, context?: { source?: string }): unknown {
+  if (typeof value === "number" && !Number.isSafeInteger(value) && context?.source && /^-?\d+$/.test(context.source)) return context.source;
+  return value;
 }
 
 /** Every object `match` accepts, depth-first: roots and arrays in order, an object's keys sorted. */

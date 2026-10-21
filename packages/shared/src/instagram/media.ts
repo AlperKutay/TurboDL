@@ -132,6 +132,16 @@ function clean(item: InstagramItem): InstagramItem {
   return Object.fromEntries(Object.entries(item).filter(([, v]) => v !== undefined)) as unknown as InstagramItem;
 }
 
+/** The signed-out page keeps a post it won't show (age-restricted, private) as an empty `if_not_gated_logged_out`. */
+export function postNeedsSignIn(documents: string[], code: string): boolean {
+  return objectsInDocuments(documents, (o) => str(o.code) === code && "if_not_gated_logged_out" in o && o.if_not_gated_logged_out === null).length > 0;
+}
+
+/** Instagram served the page as to a signed-out visitor (the session TurboDL keeps no longer works). */
+export function loggedOutView(documents: string[]): boolean {
+  return documents.some((d) => d.includes("PolarisLoggedOut"));
+}
+
 /** Instagram's sign-in and check pages. */
 export function isSignInPath(pathname: string): boolean {
   return pathname.startsWith("/accounts/login") || pathname.startsWith("/challenge");
