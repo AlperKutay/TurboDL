@@ -2,6 +2,13 @@ const path = require("node:path");
 
 const ffmpegDir = path.dirname(require.resolve("ffmpeg-static/package.json"));
 
+/**
+ * With the Developer ID certificate (CSC_LINK, the release workflow's macOS jobs) the Mac app is signed with the
+ * hardened runtime, and notarized by Apple when APPLE_API_KEY, APPLE_API_KEY_ID and APPLE_API_ISSUER are set too.
+ * Without it (local builds), it is signed ad hoc as before.
+ */
+const developerId = Boolean(process.env.CSC_LINK);
+
 /** @type {import("electron-builder").Configuration} */
 module.exports = {
   appId: "com.turbodl.app",
@@ -28,8 +35,9 @@ module.exports = {
     target: ["dmg"],
     icon: "build/icon.png",
     category: "public.app-category.utilities",
-    identity: "-",
-    hardenedRuntime: false,
+    ...(developerId
+      ? { hardenedRuntime: true, entitlements: "build/entitlements.mac.plist", entitlementsInherit: "build/entitlements.mac.plist" }
+      : { identity: "-", hardenedRuntime: false }),
     gatekeeperAssess: false,
   },
   dmg: {
