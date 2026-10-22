@@ -7,6 +7,7 @@ A download manager for Windows and macOS, inspired by IDM. It comes with a brows
 - **Fast downloads** — files are split into parts and downloaded over several connections at once.
 - **Resume** — unfinished downloads continue where they left off, even after a restart.
 - **Browser integration** — clicking a download link hands it to TurboDL. If TurboDL is closed, the extension starts it.
+- **Instagram** — posts, reels, stories and highlights from a link; your saved posts and collections; a profile's posts and highlights. Pick what you want, or back a collection, profile or its highlights up into a folder, where later backups only save what is new.
 - **Video downloads** — a "⬇ TurboDL" button appears on videos. HLS/DASH streams are downloaded by TurboDL itself; for sites like YouTube, [yt-dlp](https://github.com/yt-dlp/yt-dlp) finds the video addresses. You choose the quality.
 - **Queue and scheduler** — start downloads at a set time and shut down or sleep the computer when they finish.
 - **Automatic sorting** — files go into Video, Music, Programs, Archives, Documents, Images and Other folders.
@@ -64,6 +65,7 @@ apps/extension     browser extension (Manifest V3)
 
 - yt-dlp and Deno are downloaded on first use. ffmpeg is bundled through [ffmpeg-static](https://github.com/eugeneware/ffmpeg-static). These tools have their own licenses.
 - DRM-protected videos cannot be downloaded. Respect the terms of the sites you download from.
+- Instagram features use your own Instagram session (stored encrypted). TurboDL paces its requests and stops when Instagram asks it to slow down, but Instagram may still limit accounts that download a lot.
 - TurboDL is not affiliated with Internet Download Manager.
 
 ## License
