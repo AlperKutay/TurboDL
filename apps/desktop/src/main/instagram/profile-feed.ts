@@ -5,6 +5,7 @@ import {
   profileIn,
   profilePosts,
   profilePostsAnswer,
+  signedOutProfile,
   signedOutProfileView,
   type Highlight,
   type InstagramProfile,
@@ -32,6 +33,8 @@ export interface ProfileFeedOptions {
   requestWait?: number;
   /** where the page is loaded from: Instagram, or a stand-in in end-to-end tests */
   site?: string;
+  /** the page was loaded with a session: its signed-out view counts only when the signed-in one never comes */
+  signedIn?: boolean;
 }
 
 /** ms one look at the page may take */
@@ -47,6 +50,8 @@ export class ProfileFeed {
   private first: ProfilePosts | null = null;
   /** the profile's highlights, once it is loaded; empty when it has none or the page didn't send them in time */
   highlights: Highlight[] = [];
+  /** seen as signed-out visitors see it: its first posts by their covers, no next pages */
+  limited = false;
 
   constructor(
     private readonly driver: ProfileDriver,
@@ -100,7 +105,6 @@ export class ProfileFeed {
       if (failed) break;
       if (onSignInPage(this.driver.finalUrl())) throw new SavedError("signedOut");
       let documents = (await within(this.driver.documents(), Date.now() + LOOK)) ?? [];
-      if (signedOutProfileView(documents, this.username)) throw new SavedError("signedOut");
       const profile = profileIn(documents, this.username);
       const posts = profilePosts(documents);
       // posts carry their owner without the count and may come before the profile does; only the last look settles for that
@@ -117,6 +121,16 @@ export class ProfileFeed {
         this.driver.stopCollecting();
         return profile;
       }
+      // a public profile as signed-out visitors see it (with a session: only when the signed-in view never came)
+      const open = signedOutProfile(documents, this.username);
+      if (open && (!this.o.signedIn || lastLook)) {
+        this.first = { posts: open.posts, hasNext: false };
+        this.highlights = open.highlights;
+        this.limited = true;
+        this.driver.stopCollecting();
+        return open.profile;
+      }
+      if (signedOutProfileView(documents, this.username)) throw new SavedError("signedOut");
       if (!lastLook) await sleep(poll);
     }
     throw new SavedError("badAnswer");

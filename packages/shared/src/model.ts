@@ -103,6 +103,8 @@ export interface Settings {
   closeToTray: boolean;
   notifyOnComplete: boolean;
   watchClipboard: boolean;
+  /** Instagram downloads in a folder per account (`Instagram/<username>/`) */
+  instagramByAccount: boolean;
   scheduler: SchedulerSettings;
 }
 
@@ -167,7 +169,8 @@ export type SavedPageResult = { type: "page"; page: SavedPage } | { type: "signe
 
 /** A profile as its screen shows it, or why it can't. */
 export type ProfileResult =
-  | { type: "profile"; profile: InstagramProfile; highlights: Highlight[] }
+  /** `limited`: seen as signed-out visitors see it (its first posts only; backups and highlights' stories need sign-in) */
+  | { type: "profile"; profile: InstagramProfile; highlights: Highlight[]; limited?: boolean }
   | { type: "signedOut" }
   | { type: "rateLimited" }
   | { type: "failed"; message: string };

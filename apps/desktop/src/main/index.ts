@@ -94,7 +94,8 @@ async function start(): Promise<void> {
           signIn: (at) => signInToInstagram(at),
           collections: (username, cookies) => loadCollections(() => new ElectronInstagramPage(cookies), username, { site: instagramTestSite }),
           signOut: () => instagramSession().clearStorageData(),
-          openProfile: (username, cookies) => new ProfileFeed(new ElectronInstagramPage(cookies), username, { site: instagramTestSite }),
+          openProfile: (username, cookies) =>
+            new ProfileFeed(new ElectronInstagramPage(cookies), username, { site: instagramTestSite, signedIn: cookies.some((c) => c.name === "sessionid" && c.value) }),
           crypt: {
             available: () => safeStorage.isEncryptionAvailable(),
             encrypt: (text) => safeStorage.encryptString(text),

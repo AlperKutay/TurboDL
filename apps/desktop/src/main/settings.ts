@@ -18,6 +18,7 @@ export function defaultSettings(downloadsDir: string): Settings {
     closeToTray: true,
     notifyOnComplete: true,
     watchClipboard: true,
+    instagramByAccount: true,
     scheduler: { enabled: false, startTime: "02:00", stopTime: null, afterAll: "none" },
   };
 }
@@ -58,6 +59,7 @@ export function normalizeSettings(input: unknown, defaults: Settings): Settings 
     closeToTray: bool(src.closeToTray, defaults.closeToTray),
     notifyOnComplete: bool(src.notifyOnComplete, defaults.notifyOnComplete),
     watchClipboard: bool(src.watchClipboard, defaults.watchClipboard),
+    instagramByAccount: bool(src.instagramByAccount, defaults.instagramByAccount),
     scheduler: {
       enabled: bool(schedSrc.enabled, d.enabled),
       startTime: typeof schedSrc.startTime === "string" && TIME.test(schedSrc.startTime) ? schedSrc.startTime : d.startTime,

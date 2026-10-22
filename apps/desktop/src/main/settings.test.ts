@@ -31,6 +31,12 @@ describe("settings", () => {
     expect(normalizeSettings({ watchClipboard: "no" }, defaults).watchClipboard).toBe(true);
   });
 
+  it("puts Instagram downloads in a folder per account unless switched off", () => {
+    expect(defaults.instagramByAccount).toBe(true);
+    expect(normalizeSettings({ instagramByAccount: false }, defaults).instagramByAccount).toBe(false);
+    expect(normalizeSettings({ instagramByAccount: "no" }, defaults).instagramByAccount).toBe(true);
+  });
+
   it("validates scheduler times", () => {
     const s = normalizeSettings({ scheduler: { enabled: true, startTime: "25:00", stopTime: "07:30", afterAll: "explode" } }, defaults);
     expect(s.scheduler).toEqual({ enabled: true, startTime: "02:00", stopTime: "07:30", afterAll: "none" });

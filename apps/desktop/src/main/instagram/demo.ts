@@ -73,6 +73,7 @@ export function demoInstagram(base: string): InstagramDeps {
           return found.profile;
         },
         highlights: found?.highlights ?? [],
+        limited: false,
         page: async (cursor) => {
           const k = cursor ? Number(cursor) : 0;
           return { posts: found?.pages[k] ?? [], ...(found && k + 1 < found.pages.length ? { next: String(k + 1) } : {}) };

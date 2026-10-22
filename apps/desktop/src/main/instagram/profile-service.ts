@@ -1,8 +1,6 @@
-import path from "node:path";
 import {
   SavedError,
   isLocked,
-  sanitizeFilename,
   type BackupPlan,
   type BrowserCookie,
   type Highlight,
@@ -17,6 +15,7 @@ import {
   type SavedPost,
 } from "@turbodl/shared";
 import type { Backups } from "./backups";
+import { accountFolder, highlightsFolder } from "./folders";
 import { failedPage, type InstagramPacer } from "./pacer";
 import type { ProfileIndex } from "./profile-index";
 import type { InstagramSession } from "./session";
@@ -26,6 +25,8 @@ export interface ProfileSource {
   /** loads the page once; throws SavedError */
   profile(): Promise<InstagramProfile>;
   readonly highlights: Highlight[];
+  /** seen as signed-out visitors see it: posts known by their covers, no next pages */
+  readonly limited: boolean;
   /** no cursor: the posts its page loaded */
   page(cursor?: string, signal?: AbortSignal): Promise<SavedPage>;
   close(): void;
@@ -36,6 +37,10 @@ export interface ProfileServiceDeps {
   open(username: string, cookies: BrowserCookie[]): ProfileSource;
   /** one highlight's stories from its own page; null when it showed none; throws SavedError("signedOut") */
   findHighlight(id: string, signal?: AbortSignal): Promise<InstagramItem[] | null>;
+  /** one post's items from its own page (it works signed out for public posts); null when it showed none */
+  findPost(code: string, signal?: AbortSignal): Promise<InstagramItem[] | null>;
+  /** downloads kept in a folder per account */
+  byAccount(): boolean;
   pacer: InstagramPacer;
   backups: Backups;
   index: ProfileIndex;
@@ -45,6 +50,7 @@ export interface ProfileServiceDeps {
 
 /** posts kept per profile for estimates */
 const SAMPLE = 500;
+const SIGN_IN_TO_BACK_UP = "Sign in to Instagram to back up a profile.";
 
 /**
  * Profiles in the main process: one hidden page per open profile (it holds the request its posts are paged with),
@@ -65,15 +71,15 @@ export class ProfileService {
 
   constructor(private readonly deps: ProfileServiceDeps) {}
 
+  /** Without a session, a public profile shows as signed-out visitors see it (`limited`). */
   async load(username: string): Promise<ProfileResult> {
-    if (!this.deps.session.signedIn()) return { type: "signedOut" };
     const key = username.toLowerCase();
     const source = this.sourceFor(key);
     try {
       const profile = await source.profile();
       this.profiles.set(key, profile);
       this.trays.set(key, source.highlights);
-      return { type: "profile", profile, highlights: source.highlights };
+      return { type: "profile", profile, highlights: source.highlights, ...(source.limited ? { limited: true } : {}) };
     } catch (err) {
       // a page that failed is not tried again: the next load opens a fresh one
       if (this.current?.source === source) this.release();
@@ -102,14 +108,32 @@ export class ProfileService {
     }
   }
 
-  /** The picked posts' items, in pick order; posts never served are left out. */
-  pickedItems(postIds: string[]): InstagramItem[] {
-    return postIds.flatMap((id) => this.posts.get(id)?.items ?? []);
+  /**
+   * The picked posts' items, in pick order; a post known only by its cover (seen signed out) is read from its own
+   * page first, in the account's pace, and left out when it shows nothing. Posts never served are left out.
+   */
+  async readPicks(postIds: string[]): Promise<InstagramItem[]> {
+    const items: InstagramItem[] = [];
+    for (const id of postIds) {
+      const post = this.posts.get(id);
+      if (!post) continue;
+      if (!post.unread || !post.code) {
+        items.push(...post.items);
+        continue;
+      }
+      const code = post.code;
+      const { pacer } = this.deps;
+      if (pacer.held()) break;
+      await pacer.pace();
+      const found = await pacer.ask(() => this.deps.findPost(code)).catch(() => null);
+      items.push(...(found ?? []));
+    }
+    return items;
   }
 
   /** `<baseDir>/Instagram/<username>`: a profile's picks and backups. */
   folder(username: string): string {
-    return path.join(this.deps.baseDir(), "Instagram", sanitizeFilename(username));
+    return accountFolder(this.deps.baseDir(), username);
   }
 
   plan(username: string): Promise<BackupPlan> {
@@ -128,6 +152,7 @@ export class ProfileService {
     const opened = await this.pageFor(key);
     if ("error" in opened) return { ok: false, error: opened.error };
     const { profile, source } = opened;
+    if (source.limited) return { ok: false, error: SIGN_IN_TO_BACK_UP };
     if (isLocked(profile)) return { ok: false, error: "This account is private." };
     const result = await this.deps.backups.start(
       {
@@ -177,9 +202,9 @@ export class ProfileService {
     return ids.flatMap((id) => this.stories.get(id) ?? []);
   }
 
-  /** `<baseDir>/Instagram/<username> · Highlights`: a profile's highlight picks and backups. */
+  /** A profile's highlight picks and backups: `Instagram/<username>/Highlights`, or `Instagram/<username> · Highlights`. */
   highlightsFolder(username: string): string {
-    return path.join(this.deps.baseDir(), "Instagram", sanitizeFilename(`${username} · Highlights`));
+    return highlightsFolder(this.deps.baseDir(), username, this.deps.byAccount());
   }
 
   highlightsPlan(username: string): Promise<BackupPlan> {
@@ -201,6 +226,7 @@ export class ProfileService {
     const { profile, source } = opened;
     // the tray came with the page; a page opened only for this is no longer needed
     if (this.current?.source !== source && this.backupSource !== source) source.close();
+    if (source.limited) return { ok: false, error: SIGN_IN_TO_BACK_UP };
     if (isLocked(profile)) return { ok: false, error: "This account is private." };
     const tray = this.trays.get(key) ?? [];
     if (tray.length === 0) return { ok: false, error: "This profile has no highlights." };
@@ -257,7 +283,7 @@ export class ProfileService {
     const known = this.profiles.get(key);
     if (this.current?.key === key && known) return { profile: known, source: this.current.source };
     if (this.backupKey === key && this.backupSource && known) return { profile: known, source: this.backupSource };
-    if (!this.deps.session.signedIn()) return { error: "Sign in to Instagram first." };
+    if (!this.deps.session.signedIn()) return { error: SIGN_IN_TO_BACK_UP };
     const source = this.deps.open(key, this.deps.session.cookies());
     try {
       const profile = await source.profile();

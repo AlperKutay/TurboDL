@@ -842,6 +842,7 @@ describe("Instagram profiles", () => {
             return found.profile;
           },
           highlights: [{ id: "17900000000000002", title: "Summer" }],
+          limited: false,
           page: async (cursor) => {
             asked.push({ username, cursor, at: now });
             const k = cursor ? Number(cursor) : 0;
@@ -891,11 +892,11 @@ describe("Instagram profiles", () => {
     expect(ui.opened.map((p) => p.type === "instagram" && p.link.kind)).toEqual(["post", "post"]);
   });
 
-  it("loads nothing without a session", async () => {
+  it("opens a profile's page without a session too (as signed-out visitors see it)", async () => {
     const ig = fakeProfiles({ "sample.user": SAMPLE });
     const c = await start({}, null, ig.deps);
-    expect(await c.profileLoad("sample.user")).toEqual({ type: "signedOut" });
-    expect(ig.opened).toEqual([]);
+    expect((await c.profileLoad("sample.user")).type).toBe("profile");
+    expect(ig.opened).toEqual(["sample.user"]);
   });
 
   it("answers the profile and its highlights from its page", async () => {
@@ -1079,6 +1080,7 @@ describe("Instagram highlights", () => {
       openProfile: () => ({
         profile: async () => PROFILE,
         highlights: TRAY,
+        limited: false,
         page: async () => ({ posts: [] }),
         close: () => undefined,
       }),
@@ -1102,7 +1104,7 @@ describe("Instagram highlights", () => {
     return c.snapshot().instagramBackup;
   }
 
-  const FOLDER = () => path.join(root, "dl", "Instagram", "sample.user · Highlights");
+  const FOLDER = () => path.join(root, "dl", "Instagram", "sample.user", "Highlights");
 
   it("opens the picked highlights' stories in the picker, in pick order, into the highlights folder", async () => {
     const hl = fakeHighlights({ "17900000000000002": [story("s1"), story("s2")], "17900000000000003": [story("s3")] });
@@ -1182,5 +1184,95 @@ describe("Instagram highlights", () => {
     const c = await opened(hl.deps);
     await c.startHighlightsBackup("sample.user");
     expect(await backupEnds(c)).toMatchObject({ state: "signedOut", saved: 1 });
+  });
+});
+
+describe("Instagram signed out, and a folder per account", () => {
+  const sessionJar: BrowserCookie[] = [
+    { domain: ".instagram.com", hostOnly: false, path: "/", secure: true, expires: 0, name: "sessionid", value: "s" },
+  ];
+  const PROFILE: InstagramProfile = { id: "5100000000000000001", username: "sample.user", fullName: "Sample User", isPrivate: false, following: false };
+  const cover = (id: string, code: string): SavedPost => ({ id, code, cover: `https://cdn.example/${id}.jpg`, items: [], unread: true, mediaType: 8 });
+  const item = (id: string, owner = "sample.user"): InstagramItem => ({ kind: "image", url: server.url(`/ig/${id}.jpg`), mediaId: id, owner });
+
+  /** A public profile seen signed out (covers only), and post or highlight pages that show `pages[code or id]`. */
+  function fakeSignedOut(pages: Record<string, InstagramItem[]>) {
+    const opened: { username: string; cookies: string[] }[] = [];
+    const read: string[] = [];
+    const deps: InstagramDeps = {
+      find: async (link) => {
+        const key = link.kind === "post" ? link.code : link.kind === "highlight" ? link.id : link.kind;
+        read.push(key);
+        const found = pages[key];
+        return found ? { type: "items", items: found } : { type: "nothing" };
+      },
+      signIn: async () => null,
+      crypt: { available: () => false, encrypt: (t: string) => Buffer.from(t), decrypt: (b: Buffer) => b.toString() },
+      agent: "TestAgent/1",
+      wait: async () => undefined,
+      fetch: async (_url, file) => writeFileSync(file, "x"),
+      openProfile: (username, cookies) => {
+        opened.push({ username, cookies: cookies.map((c) => c.name) });
+        return {
+          profile: async () => PROFILE,
+          highlights: [{ id: "17900000000000002", title: "Summer" }],
+          limited: true,
+          page: async () => ({ posts: [cover("p1", "C1"), cover("p2", "C2")] }),
+          close: () => undefined,
+        };
+      },
+    };
+    return { deps, opened, read };
+  }
+
+  beforeEach(() => {
+    for (const id of ["a", "b", "c"]) server.setFile(`/ig/${id}.jpg`, { data: Buffer.alloc(300, 1), contentType: "image/jpeg" });
+  });
+
+  it("opens a public profile without a session, as Instagram shows it to signed-out visitors", async () => {
+    const so = fakeSignedOut({});
+    const c = await start({}, null, so.deps);
+    expect(await c.profileLoad("sample.user")).toEqual({ type: "profile", profile: PROFILE, highlights: [{ id: "17900000000000002", title: "Summer" }], limited: true });
+    expect(so.opened).toEqual([{ username: "sample.user", cookies: [] }]);
+  });
+
+  it("reads picked posts from their own pages when only their covers are known, skipping those that show nothing", async () => {
+    const so = fakeSignedOut({ C1: [item("a"), item("b")] });
+    const c = await start({}, null, so.deps);
+    await c.profileLoad("sample.user");
+    await c.profilePage("sample.user");
+    expect(await c.openProfilePicks("sample.user", ["p2", "p1"])).toEqual({ ok: true });
+    expect(so.read).toEqual(["C2", "C1"]);
+    const found = await c.findInstagram(ui.opened[0].pendingId);
+    expect(found.type === "items" && found.items.map((i) => i.mediaId)).toEqual(["a", "b"]);
+    expect(await c.openProfilePicks("sample.user", ["p2"])).toEqual({ ok: false, error: "Couldn't read these posts." });
+  });
+
+  it("asks to sign in before backing up a profile seen signed out", async () => {
+    const so = fakeSignedOut({});
+    const c = await start({}, null, so.deps);
+    await c.profileLoad("sample.user");
+    const signIn = { ok: false, error: "Sign in to Instagram to back up a profile." };
+    expect(await c.startProfileBackup("sample.user")).toEqual(signIn);
+    expect(await c.startHighlightsBackup("sample.user")).toEqual(signIn);
+  });
+
+  it("puts a link's items in their account's folder, highlights under it, and in Instagram when that is switched off", async () => {
+    const so = fakeSignedOut({ C1abcDEF: [item("a", "someone")], "17900000000000009": [item("b", "someone")] });
+    const c = await start({}, null, so.deps);
+    c.instagramSession.take(sessionJar);
+    const pick = async (url: string) => {
+      ui.opened = [];
+      await c.handleDownloadRequest({ url, source: "manual" });
+      const id = ui.opened[0].pendingId;
+      await c.findInstagram(id);
+      await c.confirmInstagram(id, [], "later");
+      return c.manager.list().map((d) => d.dir);
+    };
+    expect(await pick("https://www.instagram.com/p/C1abcDEF/")).toEqual([path.join(root, "dl", "Instagram", "someone")]);
+    expect(await pick("https://www.instagram.com/stories/highlights/17900000000000009/")).toContain(path.join(root, "dl", "Instagram", "someone", "Highlights"));
+    await c.updateSettings({ instagramByAccount: false });
+    c.manager.remove(c.manager.list().map((d) => d.id), false);
+    expect(await pick("https://www.instagram.com/p/C1abcDEF/")).toEqual([path.join(root, "dl", "Instagram")]);
   });
 });

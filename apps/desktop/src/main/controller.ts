@@ -48,6 +48,7 @@ import { createBridgeServer, type BridgeServer } from "./bridge-server";
 import { HttpDownloadTask } from "./engine/download-task";
 import { delay } from "./engine/http";
 import { fetchMedia } from "./instagram/fetch-media";
+import { itemFolder } from "./instagram/folders";
 import { Backups } from "./instagram/backups";
 import { LedgerStore } from "./instagram/ledger";
 import { InstagramPacer } from "./instagram/pacer";
@@ -128,6 +129,7 @@ export interface InstagramDeps {
 const NO_PROFILE: ProfileSource = {
   profile: () => Promise.reject(new SavedError("badAnswer")),
   highlights: [],
+  limited: false,
   page: () => Promise.reject(new SavedError("badAnswer")),
   close: () => undefined,
 };
@@ -243,6 +245,12 @@ export class AppController {
         if (outcome.type === "signedOut") throw new SavedError("signedOut");
         return outcome.type === "items" ? outcome.items : null;
       },
+      findPost: async (code, signal) => {
+        const outcome = await ig.find({ kind: "post", code }, this.instagramSession.cookies(), signal);
+        if (outcome.type === "signedOut") throw new SavedError("signedOut");
+        return outcome.type === "items" ? outcome.items : null;
+      },
+      byAccount: () => this.settings.instagramByAccount,
       pacer: this.pacer,
       backups: this.backups,
       index: new ProfileIndex(path.join(o.userDataDir, "instagram-profiles.json"), ledgers),
@@ -466,18 +474,24 @@ export class AppController {
     const chosen = indices.length > 0 ? indices.map((i) => items[i]).filter((item): item is InstagramItem => item !== undefined) : items;
     if (chosen.length === 0) return { ok: false, error: "Nothing was picked." };
     const fallback = p.link.kind === "post" ? p.link.code : p.link.kind === "story" ? p.link.item : p.link.kind === "highlight" ? p.link.id : "instagram";
-    const named = chosen.map((item, k) => ({ item, filename: sanitizeFilename(`${item.mediaId ?? `${fallback}-${k + 1}`}.${instagramExtension(item)}`) }));
+    // each item into its account's folder when downloads are kept per account
+    const where = { baseDir: this.settings.baseDir, byAccount: this.settings.instagramByAccount, highlight: p.link.kind === "highlight" };
+    const named = chosen.map((item, k) => ({
+      item,
+      dir: itemFolder(p.defaultDir, item, where),
+      filename: sanitizeFilename(`${item.mediaId ?? `${fallback}-${k + 1}`}.${instagramExtension(item)}`),
+    }));
     // a profile's or its highlights' picks go where their backups go: what is there already isn't downloaded again
-    const fresh = p.keepsFolder ? named.filter(({ filename }) => !existsSync(path.join(p.defaultDir, filename))) : named;
+    const fresh = p.keepsFolder ? named.filter(({ dir, filename }) => !existsSync(path.join(dir, filename))) : named;
     if (fresh.length === 0) return { ok: false, error: `These are already in ${p.keepsFolder}.` };
-    fresh.forEach(({ item, filename }) => {
+    fresh.forEach(({ item, dir, filename }) => {
       this.manager.add(
         {
           kind: "http",
           url: item.url,
           pageUrl: p.pageUrl,
           filename,
-          dir: p.defaultDir,
+          dir,
           category: item.kind === "video" ? "video" : "images",
           size: null,
           resumable: true,
@@ -557,8 +571,9 @@ export class AppController {
 
   /** The picker over the picked posts' items, in pick order, into the profile's own folder. */
   async openProfilePicks(username: string, postIds: string[]): Promise<Result> {
-    const items = this.profiles.pickedItems(postIds);
-    if (items.length === 0) return { ok: false, error: "Nothing was picked." };
+    if (postIds.length === 0) return { ok: false, error: "Nothing was picked." };
+    const items = await this.profiles.readPicks(postIds);
+    if (items.length === 0) return { ok: false, error: "Couldn't read these posts." };
     const pendingId = newId();
     this.instagramItems.set(pendingId, items);
     this.openPending({

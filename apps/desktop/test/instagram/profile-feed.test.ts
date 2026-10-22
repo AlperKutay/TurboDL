@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import nextAnswer from "../../../../packages/shared/src/instagram/fixtures/instagram-profile-next.json?raw";
 import profilePage from "../../../../packages/shared/src/instagram/fixtures/instagram-profile-page.json?raw";
+import loggedOutPage from "../../../../packages/shared/src/instagram/fixtures/instagram-profile-loggedout.json?raw";
 import { SavedError } from "@turbodl/shared";
 import { ProfileFeed, type ProfileDriver } from "../../src/main/instagram/profile-feed";
 
@@ -42,7 +43,7 @@ class FakeProfilePage implements ProfileDriver {
   }
 }
 
-const feed = (page: FakeProfilePage, o: { firstLoad?: number; trayWait?: number; requestWait?: number } = {}) =>
+const feed = (page: FakeProfilePage, o: { firstLoad?: number; trayWait?: number; requestWait?: number; signedIn?: boolean } = {}) =>
   new ProfileFeed(page, "sample.user", { poll: 5, firstLoad: 2000, trayWait: 200, requestWait: 200, ...o });
 
 async function failure(work: Promise<unknown>): Promise<string | undefined> {
@@ -115,6 +116,24 @@ describe("ProfileFeed", () => {
     const f = feed(new FakeProfilePage([DOCUMENTS], [{ status: 429, text: "" }]));
     await f.profile();
     expect(await failure(f.page("cursor-2"))).toBe("rateLimited");
+  });
+
+  it("shows a public profile as signed-out visitors see it: the first posts' covers, no more pages", async () => {
+    const f = feed(new FakeProfilePage([JSON.parse(loggedOutPage) as string[]]));
+    expect((await f.profile()).username).toBe("sample.user");
+    expect(f.limited).toBe(true);
+    const first = await f.page();
+    expect([first.posts.map((p) => p.code), first.next]).toEqual([["C0001", "C0002", "C0003"], undefined]);
+    expect(f.highlights.map((h) => h.title)).toEqual(["Summer", "Winter"]);
+  });
+
+  it("with a session, takes the signed-out view only when the signed-in one never comes", async () => {
+    const page = new FakeProfilePage([JSON.parse(loggedOutPage) as string[]]);
+    const f = feed(page, { signedIn: true, firstLoad: 100 });
+    const started = Date.now();
+    await f.profile();
+    expect(f.limited).toBe(true);
+    expect(Date.now() - started).toBeGreaterThanOrEqual(90);
   });
 
   it("loads the page once however often the profile is asked for", async () => {
