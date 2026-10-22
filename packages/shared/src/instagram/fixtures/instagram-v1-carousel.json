@@ -1,0 +1,44 @@
+{
+ "require": [["ScheduledServerJS", "handle", null, [{"__bbox": {"require": [["RelayPrefetchedStreamCache", "next", [], ["adp_PolarisPostRootQueryRelayPreloader", {"__bbox": {"result": {"data": {
+  "xdt_api__v1__media__shortcode__web_info": {
+   "items": [
+    {
+     "code": "C1abcDEF",
+     "pk": "3300000000000000001",
+     "media_type": 8,
+     "user": {"username": "someone"},
+     "carousel_media": [
+      {
+       "pk": "3300000000000000011",
+       "media_type": 1,
+       "image_versions2": {"candidates": [
+        {"width": 640, "height": 800, "url": "https://scontent.cdninstagram.example/v/t51/photo1_640.jpg?stp=dst"},
+        {"width": 1080, "height": 1350, "url": "https://scontent.cdninstagram.example/v/t51/photo1_1080.jpg?stp=dst"}
+       ]}
+      },
+      {
+       "pk": "3300000000000000012",
+       "media_type": 2,
+       "video_duration": 12.5,
+       "image_versions2": {"candidates": [
+        {"width": 720, "height": 1280, "url": "https://scontent.cdninstagram.example/v/t51/video2_cover.jpg"}
+       ]},
+       "video_versions": [
+        {"type": 102, "width": 480, "height": 854, "url": "https://scontent.cdninstagram.example/o1/v/t16/video2_480.mp4?efg=x"},
+        {"type": 101, "width": 720, "height": 1280, "url": "https://scontent.cdninstagram.example/o1/v/t16/video2_720.mp4?efg=x"}
+       ]
+      },
+      {
+       "pk": "3300000000000000013",
+       "media_type": 1,
+       "image_versions2": {"candidates": [
+        {"width": 1080, "height": 1080, "url": "https://scontent.cdninstagram.example/v/t51/photo3_1080.jpg"},
+        {"width": 320, "height": 320, "url": "https://scontent.cdninstagram.example/v/t51/photo3_320.jpg"}
+       ]}
+      }
+     ]
+    }
+   ]
+  }
+ }}}}]]]}}]]]
+}

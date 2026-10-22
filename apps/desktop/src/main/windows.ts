@@ -37,17 +37,18 @@ export class WindowManager {
     this.main = win;
   }
 
-  openDialog(pendingId: string, kind: "new" | "media"): void {
+  openDialog(pendingId: string, kind: "new" | "media" | "instagram"): void {
     const media = kind === "media";
+    const instagram = kind === "instagram";
     const win = this.create({
-      width: media ? 640 : 580,
-      height: media ? 560 : 420,
+      width: instagram ? 920 : media ? 640 : 580,
+      height: instagram ? 660 : media ? 560 : 420,
       minWidth: 480,
       minHeight: 360,
-      minimizable: false,
-      maximizable: false,
-      alwaysOnTop: true,
-      title: media ? "Download video" : "New download",
+      minimizable: instagram,
+      maximizable: instagram,
+      alwaysOnTop: !instagram,
+      title: instagram ? "Instagram" : media ? "Download video" : "New download",
     });
     win.on("closed", () => {
       this.dialogs.delete(pendingId);

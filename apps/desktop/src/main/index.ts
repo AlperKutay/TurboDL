@@ -1,8 +1,15 @@
-import { existsSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { Notification, app, clipboard, shell, type Tray } from "electron";
+import { Notification, app, clipboard, safeStorage, shell, type Tray } from "electron";
 import { ClipboardWatcher } from "./clipboard-watcher";
 import { AppController } from "./controller";
+import { chromeAgent } from "./instagram/agent";
+import { DEMO_COOKIE, demoInstagram } from "./instagram/demo";
+import { InstagramFinder } from "./instagram/finder";
+import { loadCollections } from "./instagram/collections";
+import { ProfileFeed } from "./instagram/profile-feed";
+import { ElectronInstagramPage, allowTestSite, instagramSession } from "./instagram/page";
+import { signInToInstagram } from "./instagram/signin";
 import { EVENT_CHANNEL, broadcast, registerIpc } from "./ipc";
 import { isBackgroundLaunch, registerNativeHost } from "./native-host";
 import { CompletionNotifier, notificationIdentity, revealDownload } from "./notifications";
@@ -11,6 +18,11 @@ import { createTray } from "./tray";
 import { WindowManager } from "./windows";
 
 if (process.env.TURBODL_USER_DATA) app.setPath("userData", process.env.TURBODL_USER_DATA);
+/** A made-up Instagram for the e2e tests; only with an isolated profile. */
+const instagramDemoBase = process.env.TURBODL_USER_DATA ? process.env.TURBODL_INSTAGRAM_DEMO_BASE : undefined;
+/** A local stand-in for Instagram's pages, read by the real hidden pages, for the e2e tests; only with an isolated profile. */
+const instagramTestSite = process.env.TURBODL_USER_DATA ? process.env.TURBODL_INSTAGRAM_SITE : undefined;
+if (instagramTestSite) allowTestSite(instagramTestSite);
 const identity = notificationIdentity({ isPackaged: app.isPackaged, isolated: Boolean(process.env.TURBODL_USER_DATA) });
 
 let controller: AppController | null = null;
@@ -68,14 +80,31 @@ async function start(): Promise<void> {
     ffmpegPath: ffmpegPath(),
     ui: {
       broadcast: (event) => broadcast(EVENT_CHANNEL, event),
-      openPending: (item) => wm.openDialog(item.pendingId, item.type === "media" ? "media" : "new"),
+      openPending: (item) => wm.openDialog(item.pendingId, item.type === "download" ? "new" : item.type),
       closePending: (pendingId) => wm.closeDialog(pendingId),
       showMain: () => wm.showMain(),
       notifyCompleted: (record) => notifier.show(path.join(record.dir, record.filename)),
       setLaunchAtLogin: (enabled) => app.setLoginItemSettings({ openAtLogin: enabled, args: ["--hidden"] }),
       quit: () => app.quit(),
     },
+    instagram: instagramDemoBase
+      ? demoInstagram(instagramDemoBase)
+      : {
+          find: (link, cookies, signal) => new InstagramFinder(() => new ElectronInstagramPage(cookies), { report: instagramReport(), site: instagramTestSite }).find(link, signal),
+          signIn: (at) => signInToInstagram(at),
+          collections: (username, cookies) => loadCollections(() => new ElectronInstagramPage(cookies), username, { site: instagramTestSite }),
+          signOut: () => instagramSession().clearStorageData(),
+          openProfile: (username, cookies) => new ProfileFeed(new ElectronInstagramPage(cookies), username, { site: instagramTestSite }),
+          crypt: {
+            available: () => safeStorage.isEncryptionAvailable(),
+            encrypt: (text) => safeStorage.encryptString(text),
+            decrypt: (data) => safeStorage.decryptString(data),
+          },
+          agent: chromeAgent(app.userAgentFallback),
+        },
   });
+  // test runs: the demo, or the real pages against a stand-in site, start signed in
+  if (instagramDemoBase || instagramTestSite) c.instagramSession.take([DEMO_COOKIE]);
   controller = c;
   registerIpc(c);
   // let the extension start TurboDL; test runs (TURBODL_USER_DATA) must not touch the real browser registration
@@ -100,4 +129,14 @@ async function start(): Promise<void> {
   const hidden = isBackgroundLaunch(process.argv) || app.getLoginItemSettings().wasOpenedAtLogin;
   if (!hidden) wm.showMain();
   void tray;
+}
+
+/** TURBODL_INSTAGRAM_REPORTS=<folder>: what an Instagram page held when nothing was found on it, for debugging. */
+function instagramReport(): ((url: string, documents: string[]) => void) | undefined {
+  const dir = process.env.TURBODL_INSTAGRAM_REPORTS;
+  if (!dir) return undefined;
+  return (url, documents) => {
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(path.join(dir, `${Date.now()}-instagram.json`), JSON.stringify({ url, documents }, null, 1));
+  };
 }

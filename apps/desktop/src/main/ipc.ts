@@ -1,9 +1,15 @@
 import { existsSync } from "node:fs";
 import { BrowserWindow, clipboard, dialog, ipcMain, shell, type OpenDialogOptions } from "electron";
-import { RELEASES_URL, type DownloadDecision, type MediaChoice, type MediaDecision, type Settings } from "@turbodl/shared";
+import { RELEASES_URL, type DownloadDecision, type MediaChoice, type MediaDecision, type SavedSource, type Settings } from "@turbodl/shared";
 import type { AppController } from "./controller";
 
 export const EVENT_CHANNEL = "turbodl:event";
+
+/** A feed as the renderer names it; anything else is All. */
+function savedSource(v: unknown): SavedSource {
+  const o = v as { kind?: unknown; id?: unknown } | null;
+  return o?.kind === "collection" && typeof o.id === "string" ? { kind: "collection", id: o.id } : { kind: "all" };
+}
 
 export function registerIpc(c: AppController): void {
   const handle = (name: string, fn: (...args: any[]) => unknown) => {
@@ -44,6 +50,37 @@ export function registerIpc(c: AppController): void {
   handle("probeMediaFormats", (id: string) => c.probeMediaFormats(id));
   handle("probeStream", (id: string, index: number) => c.probeStream(String(id), Number(index)));
   handle("confirmMedia", (id: string, choice: MediaChoice, decision: MediaDecision) => c.confirmMedia(id, choice, decision));
+  handle("findInstagram", (id: string) => c.findInstagram(String(id)));
+  handle("confirmInstagram", (id: string, indices: unknown, mode: unknown) =>
+    c.confirmInstagram(String(id), Array.isArray(indices) ? indices.map(Number).filter(Number.isInteger) : [], mode === "later" ? "later" : "now"),
+  );
+  handle("instagramSignIn", (id: unknown) => c.instagramSignIn(typeof id === "string" ? id : undefined));
+  handle("instagramAccount", () => c.instagramAccount());
+  handle("instagramSignOut", () => c.instagramSignOut());
+  handle("savedCollections", (refresh: unknown) => c.savedCollections(refresh === true));
+  handle("savedPage", (source: unknown, cursor: unknown) => c.savedPage(savedSource(source), typeof cursor === "string" ? cursor : undefined));
+  handle("openSavedPicks", (ids: unknown) => c.openSavedPicks(Array.isArray(ids) ? ids.filter((id): id is string => typeof id === "string") : []));
+  handle("backupPlan", (id: unknown) => c.backupPlan(String(id)));
+  handle("startBackup", (id: unknown) => c.startBackup(String(id)));
+  handle("stopBackup", () => c.stopBackup());
+  handle("continueBackup", () => c.continueBackup());
+  const name = (v: unknown) => (typeof v === "string" ? v : "");
+  handle("profileLoad", (username: unknown) => c.profileLoad(name(username)));
+  handle("profilePage", (username: unknown, cursor: unknown) => c.profilePage(name(username), typeof cursor === "string" ? cursor : undefined));
+  handle("openProfilePicks", (username: unknown, ids: unknown) =>
+    c.openProfilePicks(name(username), Array.isArray(ids) ? ids.filter((id): id is string => typeof id === "string") : []),
+  );
+  handle("profileBackupPlan", (username: unknown) => c.profileBackupPlan(name(username)));
+  handle("startProfileBackup", (username: unknown) => c.startProfileBackup(name(username)));
+  handle("instagramProfiles", () => c.instagramProfiles());
+  handle("removeInstagramProfile", (id: unknown) => c.removeInstagramProfile(name(id)));
+  handle("closeProfile", (username: unknown) => c.closeProfile(name(username)));
+  handle("takeOpenRequest", () => c.takeOpenRequest());
+  const ids = (v: unknown) => (Array.isArray(v) ? v.filter((id): id is string => typeof id === "string") : []);
+  handle("loadHighlight", (username: unknown, id: unknown) => c.loadHighlight(name(username), name(id)));
+  handle("openHighlightPicks", (username: unknown, picked: unknown) => c.openHighlightPicks(name(username), ids(picked)));
+  handle("highlightsBackupPlan", (username: unknown) => c.highlightsBackupPlan(name(username)));
+  handle("startHighlightsBackup", (username: unknown) => c.startHighlightsBackup(name(username)));
   handle("cancelCountdown", () => c.cancelCountdown());
   handle("installExtension", async () => {
     const result = await c.installExtension();

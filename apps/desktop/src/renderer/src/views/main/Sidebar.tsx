@@ -9,9 +9,24 @@ const STATUS_FILTERS: { filter: Filter; label: string; icon: IconName }[] = [
   { filter: { kind: "status", status: "queue" }, label: "Queue", icon: "queue" },
 ];
 
-export function Sidebar({ downloads, filter, onChange }: { downloads: DownloadView[]; filter: Filter; onChange(f: Filter): void }) {
+/** What the main window shows: the downloads (filtered), or Instagram's Saved or Profiles. */
+export type Section = "downloads" | "saved" | "profiles";
+
+export function Sidebar({
+  downloads,
+  filter,
+  section,
+  onChange,
+  onSection,
+}: {
+  downloads: DownloadView[];
+  filter: Filter;
+  section: Section;
+  onChange(f: Filter): void;
+  onSection(s: Section): void;
+}) {
   const item = (f: Filter, label: string, icon: IconName) => (
-    <button key={label} type="button" className={`side-item${sameFilter(f, filter) ? " active" : ""}`} onClick={() => onChange(f)}>
+    <button key={label} type="button" className={`side-item${section === "downloads" && sameFilter(f, filter) ? " active" : ""}`} onClick={() => onChange(f)}>
       <Icon name={icon} />
       <span className="side-label">{label}</span>
       <span className="count">{downloads.filter((d) => matchesFilter(d, f)).length}</span>
@@ -24,6 +39,15 @@ export function Sidebar({ downloads, filter, onChange }: { downloads: DownloadVi
       {CATEGORY_ORDER.map((c) => item({ kind: "category", category: c }, CATEGORY_LABELS[c], CATEGORY_ICONS[c]))}
       <div className="side-title">Status</div>
       {STATUS_FILTERS.map((s) => item(s.filter, s.label, s.icon))}
+      <div className="side-title">Instagram</div>
+      <button type="button" className={`side-item${section === "saved" ? " active" : ""}`} onClick={() => onSection("saved")}>
+        <Icon name="bookmark" />
+        <span className="side-label">Saved</span>
+      </button>
+      <button type="button" className={`side-item${section === "profiles" ? " active" : ""}`} onClick={() => onSection("profiles")}>
+        <Icon name="user" />
+        <span className="side-label">Profiles</span>
+      </button>
     </nav>
   );
 }

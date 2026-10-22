@@ -21,6 +21,8 @@ export async function cookieJar(url: string): Promise<BrowserCookie[]> {
       expires: c.expirationDate ? Math.floor(c.expirationDate) : 0,
       name: c.name,
       value: c.value,
+      httpOnly: c.httpOnly,
+      sameSite: c.sameSite,
     }));
   } catch {
     return [];

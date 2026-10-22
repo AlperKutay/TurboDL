@@ -1,11 +1,12 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import http from "node:http";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import type { AppEvent, PendingItem } from "@turbodl/shared";
-import { AppController, type ControllerUi } from "../src/main/controller";
+import { SavedError, type AppEvent, type BrowserCookie, type InstagramItem, type InstagramProfile, type PendingItem, type SavedPost } from "@turbodl/shared";
+import { AppController, type ControllerUi, type InstagramDeps } from "../src/main/controller";
+import type { FindOutcome } from "../src/main/instagram/finder";
 import { FFMPEG, makeClips, serveFolder, type Clips } from "./fixtures/media";
 import { startTestServer, type TestServer } from "./fixtures/test-server";
 
@@ -75,7 +76,7 @@ afterEach(async () => {
   rmSync(root, { recursive: true, force: true });
 });
 
-async function start(settings: Record<string, unknown> = {}, ffmpegPath: string | null = null): Promise<AppController> {
+async function start(settings: Record<string, unknown> = {}, ffmpegPath: string | null = null, instagram?: InstagramDeps): Promise<AppController> {
   const userData = path.join(root, "user");
   mkdirSync(userData, { recursive: true });
   const port = (settings.bridgePort as number | undefined) ?? (await freePort());
@@ -93,6 +94,7 @@ async function start(settings: Record<string, unknown> = {}, ffmpegPath: string 
     ui,
     mediaTools: { ensure: async () => ({ ytdlp: "unused", deno: null, ffmpeg: null }), updateIfStale: async () => undefined },
     ytdlpCommand: () => ({ file: process.execPath, args: [FAKE_YTDLP] }),
+    instagram,
   });
   await controller.init();
   return controller;
@@ -381,5 +383,804 @@ describe("AppController", () => {
       expect(await c.probeStream(id, 1)).toEqual({ ok: false, error: "This item is not a stream." });
       expect(await c.probeStream("gone", 0)).toEqual({ ok: false, error: "This request no longer exists." });
     });
+  });
+});
+
+describe("Instagram links", () => {
+  const sessionJar: BrowserCookie[] = [
+    { domain: ".instagram.com", hostOnly: false, path: "/", secure: true, expires: 0, name: "sessionid", value: "s" },
+    { domain: ".instagram.com", hostOnly: false, path: "/", secure: true, expires: 0, name: "csrftoken", value: "c" },
+  ];
+  const memoryCrypt = { available: () => false, encrypt: (t: string) => Buffer.from(t), decrypt: (b: Buffer) => b.toString() };
+
+  /** Instagram stood in for: what a page shows and what a sign-in gives. */
+  function fakeInstagram(outcome: (signal?: AbortSignal) => FindOutcome | Promise<FindOutcome>, signIn: BrowserCookie[] | null = null) {
+    const finds: { code: string; cookies: string[] }[] = [];
+    const signInPages: (string | undefined)[] = [];
+    let signIns = 0;
+    const deps: InstagramDeps = {
+      find: async (link, cookies, signal) => {
+        finds.push({ code: link.kind === "post" ? link.code : link.kind, cookies: cookies.map((c) => c.name) });
+        return outcome(signal);
+      },
+      signIn: async (at) => {
+        signIns++;
+        signInPages.push(at);
+        return signIn;
+      },
+      crypt: memoryCrypt,
+      agent: "TestAgent/1",
+    };
+    return { deps, finds, signIns: () => signIns, signInPages };
+  }
+
+  const items = () => ({
+    type: "items" as const,
+    items: [
+      { kind: "image" as const, url: server.url("/ig/photo.jpg"), mediaId: "3800000000000000001" },
+      { kind: "video" as const, url: server.url("/ig/clip.mp4"), mediaId: "3800000000000000002" },
+    ],
+  });
+
+  beforeEach(() => {
+    server.setFile("/ig/photo.jpg", { data: Buffer.alloc(1500, 3), contentType: "image/jpeg" });
+    server.setFile("/ig/clip.mp4", { data: Buffer.alloc(2500, 4), contentType: "video/mp4" });
+  });
+
+  async function waitDone(c: AppController, count: number) {
+    for (let i = 0; i < 100 && c.manager.list().filter((d) => d.status === "completed").length < count; i++) await new Promise((r) => setTimeout(r, 50));
+  }
+
+  it("opens a post link in the Instagram picker without fetching the page itself", async () => {
+    const ig = fakeInstagram(items);
+    const c = await start({}, null, ig.deps);
+    const res = await c.handleDownloadRequest({ url: "https://www.instagram.com/p/C1abcDEF/?igsh=x", source: "context-menu", cookieJar: sessionJar });
+    expect(res).toEqual({ accepted: true });
+    const pending = ui.opened[0];
+    expect(pending).toMatchObject({ type: "instagram", link: { kind: "post", code: "C1abcDEF" }, defaultDir: path.join(root, "dl", "Instagram") });
+    expect(server.requests).toHaveLength(0);
+  });
+
+  it("takes the extension's cookie jar as the Instagram session", async () => {
+    const ig = fakeInstagram(items);
+    const c = await start({}, null, ig.deps);
+    await c.handleDownloadRequest({ url: "https://www.instagram.com/reel/C2reel/", source: "context-menu", cookieJar: sessionJar });
+    await c.findInstagram(ui.opened[0].pendingId);
+    expect(ig.finds).toEqual([{ code: "C2reel", cookies: ["sessionid", "csrftoken"] }]);
+  });
+
+  it("adds one download per pick, named by Instagram's id, with the CDN's headers and no cookies", async () => {
+    const ig = fakeInstagram(items);
+    const c = await start({}, null, ig.deps);
+    await c.handleDownloadRequest({ url: "https://www.instagram.com/p/C1abcDEF/", source: "context-menu", cookieJar: sessionJar });
+    const id = ui.opened[0].pendingId;
+    expect((await c.findInstagram(id)).type).toBe("items");
+    expect(await c.confirmInstagram(id, [1], "now")).toEqual({ ok: true });
+    const [record] = c.manager.list();
+    expect(record).toMatchObject({ filename: "3800000000000000002.mp4", dir: path.join(root, "dl", "Instagram"), category: "video" });
+    expect(c.manager.get(record.id)?.headers).toEqual({ Referer: "https://www.instagram.com/", "User-Agent": "TestAgent/1" });
+    expect(ui.closed).toEqual([id]);
+    await waitDone(c, 1);
+    expect(readFileSync(path.join(root, "dl", "Instagram", "3800000000000000002.mp4")).length).toBe(2500);
+  });
+
+  it("downloads every item when none is picked", async () => {
+    const ig = fakeInstagram(items);
+    const c = await start({}, null, ig.deps);
+    await c.handleDownloadRequest({ url: "https://www.instagram.com/p/C1abcDEF/", source: "manual", cookieJar: sessionJar });
+    const id = ui.opened[0].pendingId;
+    await c.findInstagram(id);
+    await c.confirmInstagram(id, [], "now");
+    expect(c.manager.list().map((d) => d.filename).sort()).toEqual(["3800000000000000001.jpg", "3800000000000000002.mp4"]);
+  });
+
+  it("gives each link its own picker; closing one leaves the other", async () => {
+    const ig = fakeInstagram(items);
+    const c = await start({}, null, ig.deps);
+    await c.handleDownloadRequest({ url: "https://www.instagram.com/p/C1abcDEF/", source: "context-menu", cookieJar: sessionJar });
+    await c.handleDownloadRequest({ url: "https://www.instagram.com/p/C1abcDEF/", source: "context-menu", cookieJar: sessionJar });
+    const [first, second] = ui.opened.map((p) => p.pendingId);
+    expect(first).not.toBe(second);
+    c.cancelPending(first);
+    expect(await c.findInstagram(first)).toEqual({ type: "gone" });
+    expect((await c.findInstagram(second)).type).toBe("items");
+  });
+
+  it("reads a public post without a session, as Instagram shows it to anyone", async () => {
+    const ig = fakeInstagram(items);
+    const c = await start({}, null, ig.deps);
+    await c.handleDownloadRequest({ url: "https://www.instagram.com/reel/C2reel/", source: "manual" });
+    expect((await c.findInstagram(ui.opened[0].pendingId)).type).toBe("items");
+    expect(ig.finds).toEqual([{ code: "C2reel", cookies: [] }]);
+    expect(ig.signIns()).toBe(0);
+  });
+
+  it("asks to sign in when Instagram shows the page only to signed-in visitors, and signing in lets it be read", async () => {
+    let reads = 0;
+    const ig = fakeInstagram(() => (reads++ === 0 ? { type: "signedOut" } : items()), sessionJar);
+    const c = await start({}, null, ig.deps);
+    await c.handleDownloadRequest({ url: "https://www.instagram.com/stories/highlights/17900000000000002/", source: "manual" });
+    const id = ui.opened[0].pendingId;
+    expect(await c.findInstagram(id)).toEqual({ type: "signedOut" });
+    expect(await c.instagramSignIn()).toBe(true);
+    expect((await c.findInstagram(id)).type).toBe("items");
+    expect(ig.finds.map((f) => f.cookies)).toEqual([[], ["sessionid", "csrftoken"]]);
+    expect(ig.signIns()).toBe(1);
+  });
+
+  it("calls the page off when its picker is closed", async () => {
+    let aborted = false;
+    const ig = fakeInstagram(
+      (signal) =>
+        new Promise<FindOutcome>((resolve) => {
+          signal?.addEventListener("abort", () => {
+            aborted = true;
+            resolve({ type: "nothing" });
+          });
+        }),
+    );
+    const c = await start({}, null, ig.deps);
+    await c.handleDownloadRequest({ url: "https://www.instagram.com/p/C1abcDEF/", source: "context-menu", cookieJar: sessionJar });
+    const id = ui.opened[0].pendingId;
+    const search = c.findInstagram(id);
+    await new Promise((r) => setTimeout(r, 20));
+    c.cancelPending(id);
+    expect(await search).toEqual({ type: "gone" });
+    expect(aborted).toBe(true);
+  });
+
+  it("answers nothing, not a stuck picker, when reading the page fails", async () => {
+    const ig = fakeInstagram(() => {
+      throw new Error("no window");
+    });
+    const c = await start({}, null, ig.deps);
+    await c.handleDownloadRequest({ url: "https://www.instagram.com/p/C1abcDEF/", source: "context-menu", cookieJar: sessionJar });
+    expect(await c.findInstagram(ui.opened[0].pendingId)).toEqual({ type: "nothing" });
+  });
+
+  it("opens the sign-in window on Instagram's check page when that is where the page landed", async () => {
+    const at = "https://www.instagram.com/challenge/xyz/";
+    const ig = fakeInstagram(() => ({ type: "signedOut", at }), sessionJar);
+    const c = await start({}, null, ig.deps);
+    await c.handleDownloadRequest({ url: "https://www.instagram.com/p/C1abcDEF/", source: "context-menu", cookieJar: sessionJar });
+    const id = ui.opened[0].pendingId;
+    expect(await c.findInstagram(id)).toEqual({ type: "signedOut", at });
+    await c.instagramSignIn(id);
+    expect(ig.signInPages).toEqual([at]);
+  });
+
+  it("declines Instagram pages it doesn't read yet instead of handing them to yt-dlp", async () => {
+    const ig = fakeInstagram(items);
+    const c = await start({}, null, ig.deps);
+    for (const url of ["https://www.instagram.com/explore/", "https://www.instagram.com/direct/inbox/", "https://www.instagram.com/"]) {
+      const res = await c.handleDownloadRequest({ url, source: "context-menu", cookieJar: sessionJar });
+      expect(res.accepted, url).toBe(false);
+    }
+    expect(ui.opened).toHaveLength(0);
+    expect(server.requests).toHaveLength(0);
+  });
+
+  it("sends an Instagram page from the media button to the picker too", async () => {
+    const ig = fakeInstagram(items);
+    const c = await start({}, null, ig.deps);
+    await c.handleMediaRequest({ pageUrl: "https://www.instagram.com/reel/C2reel/", title: "x", items: [], cookieJar: sessionJar });
+    expect(ui.opened[0]).toMatchObject({ type: "instagram", link: { kind: "post", code: "C2reel" } });
+  });
+
+  it("keeps the Instagram session from yt-dlp on the media button's Instagram pages it doesn't read", async () => {
+    const ig = fakeInstagram(items);
+    const c = await start({}, null, ig.deps);
+    await c.handleMediaRequest({ pageUrl: "https://www.instagram.com/explore/", title: "x", items: [], cookieJar: sessionJar });
+    expect(ui.opened[0]).toMatchObject({ type: "media", cookieJar: [] });
+  });
+});
+
+describe("Instagram Saved", () => {
+  const sessionJar: BrowserCookie[] = [
+    { domain: ".instagram.com", hostOnly: false, path: "/", secure: true, expires: 0, name: "sessionid", value: "s" },
+    { domain: ".instagram.com", hostOnly: false, path: "/", secure: true, expires: 0, name: "csrftoken", value: "c" },
+  ];
+  const picture = (name: string) => ({ candidates: [{ url: server.url(`/ig/${name}.jpg`), width: 640, height: 640 }] });
+  const photo = (pk: string) => ({ pk, code: `C${pk}`, image_versions2: picture(pk) });
+  const video = (pk: string) => ({ pk, code: `C${pk}`, image_versions2: picture(`${pk}-cover`), video_versions: [{ url: server.url(`/ig/${pk}.mp4`), width: 640, height: 640 }] });
+  const carousel = (pk: string, ...children: object[]) => ({ pk, code: `C${pk}`, image_versions2: picture(pk), carousel_media: children });
+
+  /** Instagram's saved feeds stood in for: every feed answers these posts on one page. */
+  function fakeSaved(o: { posts?: object[]; collections?: { id: string; name: string; count?: number; isAll: boolean }[]; limitFirst?: boolean } = {}) {
+    const asked: string[] = [];
+    /** each request with the fake clock's time when it was sent */
+    const times: { url: string; at: number }[] = [];
+    let feeds = 0;
+    const waits: number[] = [];
+    let now = 0;
+    let signOuts = 0;
+    const posts = o.posts ?? [carousel("3", photo("31"), video("32")), photo("1")];
+    const deps: InstagramDeps = {
+      find: async () => ({ type: "nothing" }),
+      signIn: async () => null,
+      crypt: { available: () => false, encrypt: (t: string) => Buffer.from(t), decrypt: (b: Buffer) => b.toString() },
+      agent: "TestAgent/1",
+      get: async (url) => {
+        asked.push(url);
+        times.push({ url, at: now });
+        if (url.endsWith("/web_form_data/")) return { status: 200, body: JSON.stringify({ form_data: { username: "sample.user" }, status: "ok" }) };
+        if (o.limitFirst && feeds++ === 0) return { status: 429, body: "" };
+        return { status: 200, body: JSON.stringify({ items: posts.map((media) => ({ media })), more_available: false, status: "ok" }) };
+      },
+      collections: async () => o.collections ?? [{ id: "100", name: "All posts", count: 40, isAll: true }, { id: "102", name: "Trips", count: 2, isAll: false }],
+      wait: async (ms) => {
+        waits.push(ms);
+        now += ms;
+      },
+      now: () => now,
+      signOut: async () => {
+        signOuts++;
+      },
+    };
+    return {
+      deps,
+      asked,
+      times,
+      waits,
+      signOuts: () => signOuts,
+      advance: (ms: number) => {
+        now += ms;
+      },
+    };
+  }
+
+  beforeEach(() => {
+    for (const name of ["1", "3", "31", "32-cover", "41-cover", "42", "43"]) server.setFile(`/ig/${name}.jpg`, { data: Buffer.alloc(800, 5), contentType: "image/jpeg" });
+    server.setFile("/ig/32.mp4", { data: Buffer.alloc(1600, 6), contentType: "video/mp4" });
+  });
+
+  async function signedIn(deps: InstagramDeps) {
+    const c = await start({}, null, deps);
+    c.instagramSession.take(sessionJar);
+    return c;
+  }
+
+  async function backupEnds(c: AppController) {
+    for (let i = 0; i < 200 && c.snapshot().instagramBackup?.state === "running"; i++) await new Promise((r) => setTimeout(r, 25));
+    return c.snapshot().instagramBackup;
+  }
+
+  it("shows the signed-in account's username, and asks Instagram nothing without a session", async () => {
+    const saved = fakeSaved();
+    const c = await start({}, null, saved.deps);
+    expect(await c.instagramAccount()).toEqual({ signedIn: false });
+    expect(saved.asked).toHaveLength(0);
+    c.instagramSession.take(sessionJar);
+    expect(await c.instagramAccount()).toEqual({ signedIn: true, username: "sample.user" });
+  });
+
+  it("forgets the session on sign-out", async () => {
+    const saved = fakeSaved();
+    const c = await signedIn(saved.deps);
+    await c.instagramSignOut();
+    expect(await c.instagramAccount()).toEqual({ signedIn: false });
+    expect(saved.signOuts()).toBe(1);
+  });
+
+  it("never asks for saved pages closer than 1.5 s apart", async () => {
+    const saved = fakeSaved();
+    const c = await signedIn(saved.deps);
+    await Promise.all([c.savedPage({ kind: "all" }), c.savedPage({ kind: "all" })]);
+    expect(saved.waits).toEqual([1500]);
+  });
+
+  it("opens picked posts in the picker, their items in pick order, without reading a page", async () => {
+    const saved = fakeSaved();
+    const c = await signedIn(saved.deps);
+    const answer = await c.savedPage({ kind: "all" });
+    expect(answer.type === "page" && answer.page.posts.map((p) => p.id)).toEqual(["3", "1"]);
+    expect(await c.openSavedPicks(["1", "3"])).toEqual({ ok: true });
+    const pending = ui.opened[0];
+    expect(pending).toMatchObject({ type: "instagram", link: { kind: "saved", username: "sample.user" }, defaultDir: path.join(root, "dl", "Instagram") });
+    const found = await c.findInstagram(pending.pendingId);
+    expect(found.type === "items" && found.items.map((i) => i.mediaId)).toEqual(["1", "31", "32"]);
+  });
+
+  it("backs up only the owner's collections, one at a time", async () => {
+    const saved = fakeSaved();
+    const c = await signedIn(saved.deps);
+    await c.savedCollections(true);
+    expect((await c.startBackup("100")).ok).toBe(false);
+    expect(await c.startBackup("102")).toEqual({ ok: true });
+    expect(await c.startBackup("102")).toEqual({ ok: false, error: "A backup is already running." });
+    await c.stopBackup();
+  });
+
+  it("backs a collection up into its folder and reports its progress", async () => {
+    const saved = fakeSaved();
+    const c = await signedIn(saved.deps);
+    await c.savedCollections(true);
+    await c.startBackup("102");
+    expect(await backupEnds(c)).toMatchObject({ state: "finished", name: "Trips", done: 2, left: 0, saved: 3 });
+    expect(readFileSync(path.join(root, "dl", "Instagram", "Saved", "Trips", "32.mp4")).length).toBe(1600);
+    expect(existsSync(path.join(root, "dl", "Instagram", "Saved", "Trips", "31.jpg"))).toBe(true);
+    expect(ui.events.some((e) => e.type === "instagramBackup" && e.backup?.state === "running")).toBe(true);
+  });
+
+  it("names a collection's folder safely", async () => {
+    const saved = fakeSaved({ collections: [{ id: "105", name: "Trips: 2024/25?", isAll: false }] });
+    const c = await signedIn(saved.deps);
+    await c.savedCollections(true);
+    await c.startBackup("105");
+    await backupEnds(c);
+    const folders = readdirSync(path.join(root, "dl", "Instagram", "Saved"));
+    expect(folders).toHaveLength(1);
+    expect(folders[0]).not.toMatch(/[:/?]/);
+  });
+
+  it("estimates a backup from the posts loaded so far", async () => {
+    const saved = fakeSaved({
+      posts: [carousel("3", video("31"), photo("32")), carousel("4", video("41"), photo("42"), photo("43"))],
+      collections: [{ id: "102", name: "Trips", count: 10, isAll: false }],
+    });
+    const c = await signedIn(saved.deps);
+    await c.savedCollections(true);
+    await c.savedPage({ kind: "collection", id: "102" });
+    const plan = await c.backupPlan("102");
+    expect(plan).toMatchObject({ count: 10, bytes: (10 * (2 * 8_000_000 + 3 * 600_000)) / 2, large: false, resumes: false });
+    expect(plan.freeBytes).toBeGreaterThan(0);
+  });
+
+  it("spaces every saved-feed request 1.5 s apart, a backup's and the grid's alike", async () => {
+    const saved = fakeSaved();
+    const c = await signedIn(saved.deps);
+    await c.savedCollections(true);
+    await c.startBackup("102");
+    await c.savedPage({ kind: "all" });
+    await backupEnds(c);
+    const feeds = saved.times.filter((t) => t.url.includes("/feed/"));
+    expect(feeds).toHaveLength(2);
+    expect(feeds[1].at - feeds[0].at).toBeGreaterThanOrEqual(1500);
+  });
+
+  it("sends only the latest feed's request when the grid switched feeds before the others were sent", async () => {
+    const saved = fakeSaved();
+    const c = await signedIn(saved.deps);
+    await Promise.all([c.savedPage({ kind: "collection", id: "102" }), c.savedPage({ kind: "collection", id: "103" }), c.savedPage({ kind: "all" })]);
+    expect(saved.asked.filter((u) => u.includes("/feed/"))).toEqual(["https://www.instagram.com/api/v1/feed/saved/posts/"]);
+  });
+
+  it("asks Instagram nothing for a while after it asked to slow down, neither for the grid nor for a backup", async () => {
+    const saved = fakeSaved({ limitFirst: true });
+    const c = await signedIn(saved.deps);
+    await c.savedCollections(true);
+    expect((await c.savedPage({ kind: "all" })).type).toBe("rateLimited");
+    const sent = saved.asked.length;
+    expect((await c.savedPage({ kind: "all" })).type).toBe("rateLimited");
+    expect((await c.startBackup("102")).ok).toBe(false);
+    expect(saved.asked.length).toBe(sent);
+    saved.advance(2 * 60_000);
+    expect((await c.savedPage({ kind: "all" })).type).toBe("page");
+  });
+
+  it("waits, when quitting, for a backup's item in flight to be dropped", async () => {
+    let cleaned = false;
+    const saved = fakeSaved();
+    saved.deps.fetch = (_url, _file, { signal }) =>
+      new Promise((_, reject) =>
+        signal?.addEventListener("abort", () =>
+          setTimeout(() => {
+            cleaned = true;
+            reject(new Error("Cancelled."));
+          }, 50),
+        ),
+      );
+    const c = await signedIn(saved.deps);
+    await c.savedCollections(true);
+    await c.startBackup("102");
+    await new Promise((r) => setTimeout(r, 30));
+    await c.shutdown();
+    controller = null;
+    expect(cleaned).toBe(true);
+  });
+
+  it("opens Saved for a saved link, taking the browser's session", async () => {
+    const saved = fakeSaved();
+    const c = await start({}, null, saved.deps);
+    expect(await c.handleDownloadRequest({ url: "https://www.instagram.com/sample.user/saved/", source: "context-menu", cookieJar: sessionJar })).toEqual({ accepted: true });
+    expect(ui.shown).toBe(1);
+    expect(ui.events).toContainEqual({ type: "openSaved" });
+    expect(c.instagramSession.signedIn()).toBe(true);
+    expect(ui.opened).toHaveLength(0);
+  });
+});
+
+describe("Instagram profiles", () => {
+  const sessionJar: BrowserCookie[] = [
+    { domain: ".instagram.com", hostOnly: false, path: "/", secure: true, expires: 0, name: "sessionid", value: "s" },
+    { domain: ".instagram.com", hostOnly: false, path: "/", secure: true, expires: 0, name: "csrftoken", value: "c" },
+  ];
+  const person = (id: string, username: string, o: Partial<InstagramProfile> = {}): InstagramProfile => ({
+    id,
+    username,
+    fullName: "Sample User",
+    isPrivate: false,
+    following: false,
+    picture: "https://cdn.example/sample.jpg",
+    postCount: 3,
+    ...o,
+  });
+  const photo = (id: string): SavedPost => ({ id, cover: server.url(`/ig/${id}.jpg`), items: [{ kind: "image", url: server.url(`/ig/${id}.jpg`), mediaId: id }] });
+
+  /** Profile pages stood in for: each username's profile, its pages of posts, its highlights. */
+  function fakeProfiles(profiles: Record<string, { profile: InstagramProfile; pages: SavedPost[][] }>, o: { hangFetch?: boolean } = {}) {
+    let now = 0;
+    const opened: string[] = [];
+    const closed: string[] = [];
+    /** each page asked of a profile, with the fake clock's time */
+    const asked: { username: string; cursor?: string; at: number }[] = [];
+    const fetched: string[] = [];
+    const deps: InstagramDeps = {
+      find: async () => ({ type: "nothing" }),
+      signIn: async () => null,
+      crypt: { available: () => false, encrypt: (t: string) => Buffer.from(t), decrypt: (b: Buffer) => b.toString() },
+      agent: "TestAgent/1",
+      get: async (url) => {
+        asked.push({ username: "saved", cursor: url, at: now });
+        return { status: 200, body: JSON.stringify({ items: [], more_available: false, status: "ok" }) };
+      },
+      wait: async (ms) => {
+        now += ms;
+      },
+      now: () => now,
+      fetch: async (url, file, { signal }) => {
+        fetched.push(url);
+        if (o.hangFetch) await new Promise((_, reject) => signal?.addEventListener("abort", () => reject(new Error("Cancelled."))));
+        writeFileSync(file, "x");
+      },
+      openProfile: (username) => {
+        opened.push(username);
+        const found = profiles[username];
+        return {
+          profile: async () => {
+            if (!found) throw new SavedError("badAnswer");
+            return found.profile;
+          },
+          highlights: [{ id: "17900000000000002", title: "Summer" }],
+          page: async (cursor) => {
+            asked.push({ username, cursor, at: now });
+            const k = cursor ? Number(cursor) : 0;
+            return { posts: found?.pages[k] ?? [], ...(found && k + 1 < found.pages.length ? { next: String(k + 1) } : {}) };
+          },
+          close: () => closed.push(username),
+        };
+      },
+    };
+    return { deps, opened, closed, asked, fetched };
+  }
+
+  /** sample.user: posts 1 and 2 on the first page, 3 on the second */
+  let SAMPLE: { profile: InstagramProfile; pages: SavedPost[][] };
+
+  beforeEach(() => {
+    for (const id of ["1", "2", "3"]) server.setFile(`/ig/${id}.jpg`, { data: Buffer.alloc(700, 9), contentType: "image/jpeg" });
+    SAMPLE = { profile: person("5100000000000000001", "sample.user"), pages: [[photo("1"), photo("2")], [photo("3")]] };
+  });
+
+  async function signedIn(deps: InstagramDeps) {
+    const c = await start({}, null, deps);
+    c.instagramSession.take(sessionJar);
+    return c;
+  }
+
+  async function backupEnds(c: AppController) {
+    for (let i = 0; i < 200 && c.snapshot().instagramBackup?.state === "running"; i++) await new Promise((r) => setTimeout(r, 25));
+    return c.snapshot().instagramBackup;
+  }
+
+  it("opens a profile link in Profiles, and a post under a username in the picker", async () => {
+    const ig = fakeProfiles({ "sample.user": SAMPLE });
+    const c = await start({}, null, ig.deps);
+    for (const url of ["https://www.instagram.com/sample.user/", "https://instagram.com/sample.user/reels/", "https://www.instagram.com/Sample.User/tagged/?igsh=x"]) {
+      expect(await c.handleDownloadRequest({ url, source: "manual", cookieJar: sessionJar })).toEqual({ accepted: true });
+    }
+    expect(ui.events.filter((e) => e.type === "openProfile")).toEqual([
+      { type: "openProfile", username: "sample.user" },
+      { type: "openProfile", username: "sample.user" },
+      { type: "openProfile", username: "sample.user" },
+    ]);
+    expect(ui.shown).toBe(3);
+    expect(c.instagramSession.signedIn()).toBe(true);
+    await c.handleDownloadRequest({ url: "https://www.instagram.com/sample.user/p/C1abcDEF/", source: "manual" });
+    await c.handleDownloadRequest({ url: "https://www.instagram.com/sample.user/reel/C2reel/", source: "manual" });
+    expect(ui.opened.map((p) => p.type === "instagram" && p.link.kind)).toEqual(["post", "post"]);
+  });
+
+  it("loads nothing without a session", async () => {
+    const ig = fakeProfiles({ "sample.user": SAMPLE });
+    const c = await start({}, null, ig.deps);
+    expect(await c.profileLoad("sample.user")).toEqual({ type: "signedOut" });
+    expect(ig.opened).toEqual([]);
+  });
+
+  it("answers the profile and its highlights from its page", async () => {
+    const ig = fakeProfiles({ "sample.user": SAMPLE });
+    const c = await signedIn(ig.deps);
+    expect(await c.profileLoad("sample.user")).toEqual({ type: "profile", profile: SAMPLE.profile, highlights: [{ id: "17900000000000002", title: "Summer" }] });
+    expect((await c.profileLoad("nobody")).type).toBe("failed");
+  });
+
+  it("asks nothing more of a private profile it doesn't follow", async () => {
+    const ig = fakeProfiles({ "shut.door": { profile: person("52", "shut.door", { isPrivate: true }), pages: [[photo("1")]] } });
+    const c = await signedIn(ig.deps);
+    await c.profileLoad("shut.door");
+    expect(await c.profilePage("shut.door")).toEqual({ type: "page", page: { posts: [] } });
+    expect(ig.asked).toEqual([]);
+  });
+
+  it("paces a profile's next pages with the saved feeds, 1.5 s apart", async () => {
+    const ig = fakeProfiles({ "sample.user": SAMPLE });
+    const c = await signedIn(ig.deps);
+    await c.profileLoad("sample.user");
+    // back to back (the stand-in clock moves only when something waits)
+    await c.profilePage("sample.user", "1");
+    await c.savedPage({ kind: "all" });
+    expect(ig.asked).toHaveLength(2);
+    expect(Math.abs(ig.asked[1].at - ig.asked[0].at)).toBeGreaterThanOrEqual(1500);
+  });
+
+  it("opens picked posts in the picker, into the profile's own folder", async () => {
+    const ig = fakeProfiles({ "sample.user": SAMPLE });
+    const c = await signedIn(ig.deps);
+    await c.profileLoad("sample.user");
+    await c.profilePage("sample.user");
+    expect(await c.openProfilePicks("sample.user", ["2", "1"])).toEqual({ ok: true });
+    const pending = ui.opened[0];
+    expect(pending).toMatchObject({ type: "instagram", link: { kind: "profile", username: "sample.user" }, defaultDir: path.join(root, "dl", "Instagram", "sample.user") });
+    const found = await c.findInstagram(pending.pendingId);
+    expect(found.type === "items" && found.items.map((i) => i.mediaId)).toEqual(["2", "1"]);
+  });
+
+  it("backs a profile up into its username's folder, keyed by the account's number, and lists it", async () => {
+    const ig = fakeProfiles({ "sample.user": SAMPLE });
+    const c = await signedIn(ig.deps);
+    await c.profileLoad("sample.user");
+    expect(await c.startProfileBackup("sample.user")).toEqual({ ok: true });
+    expect(await backupEnds(c)).toMatchObject({ state: "finished", name: "sample.user", done: 3, saved: 3 });
+    expect(readdirSync(path.join(root, "dl", "Instagram", "sample.user")).sort()).toEqual(["1.jpg", "2.jpg", "3.jpg"]);
+    expect(existsSync(path.join(root, "user", "instagram-backups", "profile-5100000000000000001.json"))).toBe(true);
+    expect(await c.instagramProfiles()).toMatchObject([{ id: "5100000000000000001", username: "sample.user", saved: 3 }]);
+  });
+
+  it("keeps a renamed account's ledger: nothing is fetched again", async () => {
+    const renamed = { profile: person("5100000000000000001", "renamed.user"), pages: SAMPLE.pages };
+    const ig = fakeProfiles({ "sample.user": SAMPLE, "renamed.user": renamed });
+    const c = await signedIn(ig.deps);
+    await c.profileLoad("sample.user");
+    await c.startProfileBackup("sample.user");
+    await backupEnds(c);
+    const fetchedBefore = ig.fetched.length;
+    await c.profileLoad("renamed.user");
+    await c.startProfileBackup("renamed.user");
+    expect(await backupEnds(c)).toMatchObject({ state: "finished", name: "renamed.user" });
+    expect(ig.fetched.length).toBe(fetchedBefore);
+    expect(await c.instagramProfiles()).toMatchObject([{ username: "renamed.user" }]);
+  });
+
+  it("runs one backup at a time, Saved's and profiles' alike", async () => {
+    const ig = fakeProfiles({ "sample.user": SAMPLE }, { hangFetch: true });
+    const c = await signedIn(ig.deps);
+    await c.profileLoad("sample.user");
+    await c.startProfileBackup("sample.user");
+    expect(await c.startProfileBackup("sample.user")).toEqual({ ok: false, error: "A backup is already running." });
+    expect((await c.startBackup("102")).ok).toBe(false);
+    await c.stopBackup();
+  });
+
+  it("keeps a backed-up profile's page open until its backup ends, even when another profile opens", async () => {
+    const ig = fakeProfiles({ "sample.user": SAMPLE, "other.user": { profile: person("53", "other.user"), pages: [[]] } }, { hangFetch: true });
+    const c = await signedIn(ig.deps);
+    await c.profileLoad("sample.user");
+    await c.startProfileBackup("sample.user");
+    await c.profileLoad("other.user");
+    expect(ig.closed).toEqual([]);
+    await c.stopBackup();
+    await new Promise((r) => setTimeout(r, 20));
+    expect(ig.closed).toEqual(["sample.user"]);
+  });
+
+  it("continues the last backup, of whatever kind, even after its profile was left", async () => {
+    const ig = fakeProfiles({ "sample.user": SAMPLE, "other.user": { profile: person("53", "other.user"), pages: [[]] } }, { hangFetch: true });
+    const c = await signedIn(ig.deps);
+    expect(await c.continueBackup()).toEqual({ ok: false, error: "There is no backup to continue." });
+    await c.profileLoad("sample.user");
+    await c.startProfileBackup("sample.user");
+    await c.profileLoad("other.user");
+    await c.stopBackup();
+    expect(await c.continueBackup()).toEqual({ ok: true });
+    expect(c.snapshot().instagramBackup).toMatchObject({ state: "running", name: "sample.user" });
+    await c.stopBackup();
+  });
+
+  it("keeps a link's request to open a screen until the main window takes it, once", async () => {
+    const ig = fakeProfiles({ "sample.user": SAMPLE });
+    const c = await start({}, null, ig.deps);
+    expect(await c.takeOpenRequest()).toBeNull();
+    await c.handleDownloadRequest({ url: "https://www.instagram.com/sample.user/", source: "context-menu", cookieJar: sessionJar });
+    expect(await c.takeOpenRequest()).toEqual({ section: "profiles", username: "sample.user" });
+    expect(await c.takeOpenRequest()).toBeNull();
+    await c.handleDownloadRequest({ url: "https://www.instagram.com/sample.user/saved/", source: "context-menu" });
+    expect(await c.takeOpenRequest()).toEqual({ section: "saved" });
+  });
+
+  it("doesn't download a picked post again that is already in the profile's folder", async () => {
+    const ig = fakeProfiles({ "sample.user": SAMPLE });
+    const c = await signedIn(ig.deps);
+    await c.profileLoad("sample.user");
+    await c.startProfileBackup("sample.user");
+    await backupEnds(c);
+    await c.profilePage("sample.user");
+    await c.openProfilePicks("sample.user", ["1", "2"]);
+    const all = ui.opened[0].pendingId;
+    await c.findInstagram(all);
+    expect(await c.confirmInstagram(all, [], "now")).toEqual({ ok: false, error: "These are already in Instagram › sample.user." });
+    expect(c.manager.list()).toHaveLength(0);
+    rmSync(path.join(root, "dl", "Instagram", "sample.user", "2.jpg"));
+    await c.openProfilePicks("sample.user", ["1", "2"]);
+    const some = ui.opened[1].pendingId;
+    await c.findInstagram(some);
+    expect(await c.confirmInstagram(some, [], "now")).toEqual({ ok: true });
+    expect(c.manager.list().map((d) => d.filename)).toEqual(["2.jpg"]);
+  });
+
+  it("forgets a profile from the list along with its ledger", async () => {
+    const ig = fakeProfiles({ "sample.user": SAMPLE });
+    const c = await signedIn(ig.deps);
+    await c.profileLoad("sample.user");
+    await c.startProfileBackup("sample.user");
+    await backupEnds(c);
+    await c.removeInstagramProfile("5100000000000000001");
+    expect(await c.instagramProfiles()).toEqual([]);
+    expect(existsSync(path.join(root, "user", "instagram-backups", "profile-5100000000000000001.json"))).toBe(false);
+  });
+});
+
+describe("Instagram highlights", () => {
+  const sessionJar: BrowserCookie[] = [
+    { domain: ".instagram.com", hostOnly: false, path: "/", secure: true, expires: 0, name: "sessionid", value: "s" },
+    { domain: ".instagram.com", hostOnly: false, path: "/", secure: true, expires: 0, name: "csrftoken", value: "c" },
+  ];
+  const PROFILE: InstagramProfile = { id: "5100000000000000001", username: "sample.user", fullName: "Sample User", isPrivate: false, following: true, postCount: 3 };
+  const TRAY = [
+    { id: "17900000000000002", title: "Summer", cover: "https://cdn.example/h2.jpg" },
+    { id: "17900000000000003", title: "Winter", cover: "https://cdn.example/h3.jpg" },
+  ];
+  const story = (id: string): InstagramItem => ({ kind: "image", url: server.url(`/ig/${id}.jpg`), mediaId: id });
+
+  /** A profile with two highlights; `stories` is what each highlight's page shows (changeable between runs). */
+  function fakeHighlights(stories: Record<string, InstagramItem[] | null | "signedOut">) {
+    let now = 0;
+    const read: { id: string; at: number }[] = [];
+    const fetched: string[] = [];
+    const deps: InstagramDeps = {
+      find: async (link) => {
+        if (link.kind !== "highlight") return { type: "nothing" };
+        read.push({ id: link.id, at: now });
+        const shown = stories[link.id];
+        if (shown === "signedOut") return { type: "signedOut" };
+        return shown && shown.length > 0 ? { type: "items", items: shown } : { type: "nothing" };
+      },
+      signIn: async () => null,
+      crypt: { available: () => false, encrypt: (t: string) => Buffer.from(t), decrypt: (b: Buffer) => b.toString() },
+      agent: "TestAgent/1",
+      wait: async (ms) => {
+        now += ms;
+      },
+      now: () => now,
+      fetch: async (url, file) => {
+        fetched.push(url);
+        writeFileSync(file, "x");
+      },
+      openProfile: () => ({
+        profile: async () => PROFILE,
+        highlights: TRAY,
+        page: async () => ({ posts: [] }),
+        close: () => undefined,
+      }),
+    };
+    return { deps, read, fetched };
+  }
+
+  beforeEach(() => {
+    for (const id of ["s1", "s2", "s3", "s4"]) server.setFile(`/ig/${id}.jpg`, { data: Buffer.alloc(600, 2), contentType: "image/jpeg" });
+  });
+
+  async function opened(deps: InstagramDeps) {
+    const c = await start({}, null, deps);
+    c.instagramSession.take(sessionJar);
+    await c.profileLoad("sample.user");
+    return c;
+  }
+
+  async function backupEnds(c: AppController) {
+    for (let i = 0; i < 200 && c.snapshot().instagramBackup?.state === "running"; i++) await new Promise((r) => setTimeout(r, 25));
+    return c.snapshot().instagramBackup;
+  }
+
+  const FOLDER = () => path.join(root, "dl", "Instagram", "sample.user · Highlights");
+
+  it("opens the picked highlights' stories in the picker, in pick order, into the highlights folder", async () => {
+    const hl = fakeHighlights({ "17900000000000002": [story("s1"), story("s2")], "17900000000000003": [story("s3")] });
+    const c = await opened(hl.deps);
+    expect(await c.loadHighlight("sample.user", "17900000000000003")).toEqual({ type: "stories", count: 1 });
+    expect(await c.loadHighlight("sample.user", "17900000000000002")).toEqual({ type: "stories", count: 2 });
+    expect(await c.openHighlightPicks("sample.user", ["17900000000000003", "17900000000000002"])).toEqual({ ok: true });
+    const pending = ui.opened[0];
+    expect(pending).toMatchObject({ type: "instagram", defaultDir: FOLDER() });
+    const found = await c.findInstagram(pending.pendingId);
+    expect(found.type === "items" && found.items.map((i) => i.mediaId)).toEqual(["s3", "s1", "s2"]);
+  });
+
+  it("skips a highlight that shows nothing, and says so when none could be read", async () => {
+    const hl = fakeHighlights({ "17900000000000002": [story("s1")], "17900000000000003": null });
+    const c = await opened(hl.deps);
+    expect(await c.loadHighlight("sample.user", "17900000000000003")).toEqual({ type: "nothing" });
+    await c.loadHighlight("sample.user", "17900000000000002");
+    await c.openHighlightPicks("sample.user", ["17900000000000003", "17900000000000002"]);
+    const found = await c.findInstagram(ui.opened[0].pendingId);
+    expect(found.type === "items" && found.items.map((i) => i.mediaId)).toEqual(["s1"]);
+    expect(await c.openHighlightPicks("sample.user", ["17900000000000003"])).toEqual({ ok: false, error: "Couldn't read these highlights." });
+  });
+
+  it("answers signed out when a highlight's page is Instagram's sign-in page", async () => {
+    const hl = fakeHighlights({ "17900000000000002": "signedOut" });
+    const c = await opened(hl.deps);
+    expect(await c.loadHighlight("sample.user", "17900000000000002")).toEqual({ type: "signedOut" });
+  });
+
+  it("reads highlights one at a time, in the account's pace", async () => {
+    const hl = fakeHighlights({ "17900000000000002": [story("s1")], "17900000000000003": [story("s3")] });
+    const c = await opened(hl.deps);
+    await c.loadHighlight("sample.user", "17900000000000002");
+    await c.loadHighlight("sample.user", "17900000000000003");
+    expect(hl.read[1].at - hl.read[0].at).toBeGreaterThanOrEqual(1500);
+  });
+
+  it("backs every highlight up into its folder, by story, counting highlights", async () => {
+    const hl = fakeHighlights({ "17900000000000002": [story("s1"), story("s2")], "17900000000000003": [story("s3")] });
+    const c = await opened(hl.deps);
+    expect(await c.startHighlightsBackup("sample.user")).toEqual({ ok: true });
+    expect(await backupEnds(c)).toMatchObject({ state: "finished", kind: "highlights", name: "sample.user · Highlights", done: 2, left: 0, saved: 3 });
+    expect(readdirSync(FOLDER()).sort()).toEqual(["s1.jpg", "s2.jpg", "s3.jpg"]);
+    expect(existsSync(path.join(root, "user", "instagram-backups", "highlights-5100000000000000001.json"))).toBe(true);
+    expect(await c.instagramProfiles()).toMatchObject([{ username: "sample.user", saved: 3 }]);
+  });
+
+  it("goes through every highlight on a later run and saves only a new story", async () => {
+    const stories: Record<string, InstagramItem[] | null> = { "17900000000000002": [story("s1")], "17900000000000003": [story("s3")] };
+    const hl = fakeHighlights(stories);
+    const c = await opened(hl.deps);
+    await c.startHighlightsBackup("sample.user");
+    await backupEnds(c);
+    stories["17900000000000002"] = [story("s1"), story("s4")];
+    const before = hl.fetched.length;
+    const readBefore = hl.read.length;
+    await c.startHighlightsBackup("sample.user");
+    expect(await backupEnds(c)).toMatchObject({ state: "finished", saved: 1 });
+    expect(hl.fetched.slice(before)).toEqual([server.url("/ig/s4.jpg")]);
+    expect(hl.read.slice(readBefore).map((r) => r.id)).toEqual(["17900000000000002", "17900000000000003"]);
+  });
+
+  it("counts a highlight that shows nothing as failed and tries it again next run", async () => {
+    const stories: Record<string, InstagramItem[] | null> = { "17900000000000002": [story("s1")], "17900000000000003": null };
+    const hl = fakeHighlights(stories);
+    const c = await opened(hl.deps);
+    await c.startHighlightsBackup("sample.user");
+    expect(await backupEnds(c)).toMatchObject({ state: "finished", done: 1, failed: 1 });
+    stories["17900000000000003"] = [story("s3")];
+    await c.startHighlightsBackup("sample.user");
+    expect(await backupEnds(c)).toMatchObject({ state: "finished", done: 2, failed: 0, saved: 1 });
+  });
+
+  it("stops the backup as signed out when a highlight's page asks to sign in", async () => {
+    const hl = fakeHighlights({ "17900000000000002": [story("s1")], "17900000000000003": "signedOut" });
+    const c = await opened(hl.deps);
+    await c.startHighlightsBackup("sample.user");
+    expect(await backupEnds(c)).toMatchObject({ state: "signedOut", saved: 1 });
   });
 });

@@ -1,0 +1,31 @@
+{
+ "items": [
+  {"media": {
+   "pk": 3700000000000000002, "id": "3700000000000000002_1000000002", "code": "DS2reel", "media_type": 2,
+   "product_type": "clips", "taken_at": 1790000100, "video_duration": 30.0,
+   "original_width": 1080, "original_height": 1920,
+   "saved_collection_ids": ["17900000000000102"], "has_viewer_saved": true,
+   "user": {"pk": "1000000002", "username": "someone_else"},
+   "image_versions2": {"candidates": [
+    {"width": 640, "height": 1136, "url": "https://scontent.cdninstagram.example/v/t51/reel2_640.jpg?stp=a"}
+   ]},
+   "video_versions": [
+    {"type": 101, "width": 1080, "height": 1920, "url": "https://scontent.cdninstagram.example/o1/v/t16/reel2_1080.mp4?efg=a"}
+   ]
+  }},
+  {"media": {
+   "pk": 3700000000000000004, "id": "3700000000000000004_1000000004", "code": "DS4photo", "media_type": 1,
+   "product_type": "feed", "taken_at": 1790000400, "original_width": 1080, "original_height": 1350,
+   "saved_collection_ids": ["17900000000000102"], "has_viewer_saved": true,
+   "user": {"pk": "1000000004", "username": "a_fourth"},
+   "image_versions2": {"candidates": [
+    {"width": 1080, "height": 1350, "url": "https://scontent.cdninstagram.example/v/t51/photo4_1080.jpg?stp=a"},
+    {"width": 480, "height": 600, "url": "https://scontent.cdninstagram.example/v/t51/photo4_480.jpg?stp=a"}
+   ]}
+  }}
+ ],
+ "num_results": 2,
+ "more_available": false,
+ "auto_load_more_enabled": true,
+ "status": "ok"
+}

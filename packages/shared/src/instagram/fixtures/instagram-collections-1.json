@@ -1,0 +1,25 @@
+{"data": {"viewer": {"collections_unified_with_auto_collections": {
+ "edges": [
+  {"cursor": "e0", "node": {"__typename": "IGAllMediaAutoCollection", "__isXDTSavedCollectionItem": "IGAllMediaAutoCollection",
+   "collection_id": "100", "collection_name": "All posts", "collection_media_count": 40, "cover_media": null,
+   "cover_media_list": [{"id": "3700000000000000001_1000000001", "image_versions2": {"candidates": [
+    {"width": 640, "height": 800, "url": "https://scontent.cdninstagram.example/v/t51/all_640.jpg?stp=a"},
+    {"width": 320, "height": 400, "url": "https://scontent.cdninstagram.example/v/t51/all_320.jpg?stp=a"}
+   ]}}],
+   "cover_audio_list": []}},
+  {"cursor": "e1", "node": {"__typename": "XDTAudioAutoCollection", "__isXDTSavedCollectionItem": "XDTAudioAutoCollection",
+   "collection_id": "101", "collection_name": "Audio", "collection_media_count": null, "cover_media": null,
+   "cover_audio_list": [{"thumbnail_uri": "https://scontent.cdninstagram.example/v/t51/audio.jpg"}]}},
+  {"cursor": "e2", "node": {"__typename": "MediaCollection", "__isXDTSavedCollectionItem": "MediaCollection", "__isNode": "MediaCollection",
+   "id": "102", "collection_id": "102", "collection_name": "Trips", "collection_media_count": 12,
+   "cover_media": {"id": "3700000000000000002_1000000002", "image_versions2": {"candidates": [
+    {"width": 640, "height": 1136, "url": "https://scontent.cdninstagram.example/v/t51/trips_640.jpg?stp=a"},
+    {"width": 320, "height": 568, "url": "https://scontent.cdninstagram.example/v/t51/trips_320.jpg?stp=a"}
+   ]}},
+   "cover_audio_list": []}},
+  {"cursor": "e3", "node": {"__typename": "MediaCollection", "__isXDTSavedCollectionItem": "MediaCollection", "__isNode": "MediaCollection",
+   "id": "103", "collection_id": "103", "collection_name": "Recipes", "collection_media_count": null, "cover_media": null,
+   "cover_audio_list": []}}
+ ],
+ "page_info": {"end_cursor": "c1", "has_next_page": true}
+}}}, "extensions": {"is_final": true}}

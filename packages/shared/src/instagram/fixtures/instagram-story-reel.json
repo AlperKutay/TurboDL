@@ -1,0 +1,13 @@
+{"require":[["ScheduledServerJS","handle",null,[{"__bbox":{"require":[["RelayPrefetchedStreamCache","next",[],["adp_PolarisStoriesV3ReelPageStandaloneQueryRelayPreloader",{"__bbox":{"result":{"data":{"xdt_api__v1__feed__reels_media":{"reels_media":[
+ {"id":"1000000001","reel_type":"user_reel","title":"","user":{"username":"someone"},"items":[
+  {"pk":"4010000000000000001","id":"4010000000000000001_1000000001","code":"DS1","media_type":2,"product_type":"story","taken_at":1792300000,"expiring_at":1792386400,"original_width":640,"original_height":1136,"video_duration":20.0,
+   "video_versions":[{"type":101,"url":"https://instagram.cdn.example/o1/v/t2/story_one.mp4?efg=a"},{"type":102,"url":"https://instagram.cdn.example/o1/v/t2/story_one.mp4?efg=a"}],
+   "image_versions2":{"candidates":[{"width":640,"height":1136,"url":"https://instagram.cdn.example/v/t51/story_one_640.jpg"},{"width":320,"height":568,"url":"https://instagram.cdn.example/v/t51/story_one_320.jpg"}]}},
+  {"pk":"4010000000000000002","id":"4010000000000000002_1000000001","code":"DS2","media_type":1,"product_type":"story","taken_at":1792300100,"expiring_at":1792386500,"original_width":1080,"original_height":1920,
+   "image_versions2":{"candidates":[{"width":1080,"height":1920,"url":"https://instagram.cdn.example/v/t51/story_two_1080.jpg"},{"width":480,"height":853,"url":"https://instagram.cdn.example/v/t51/story_two_480.jpg"}]}}
+ ]},
+ {"id":"highlight:17900000000000001","reel_type":"highlight_reel","title":"Trip","user":{"username":"someone"},"items":[
+  {"pk":"3900000000000000009","id":"3900000000000000009_1000000001","code":"DH1","media_type":1,"product_type":"story","original_width":1080,"original_height":1920,
+   "image_versions2":{"candidates":[{"width":1080,"height":1920,"url":"https://instagram.cdn.example/v/t51/highlight_one_1080.jpg"}]}}
+ ]}
+]}}}}}]]]}}]]]}

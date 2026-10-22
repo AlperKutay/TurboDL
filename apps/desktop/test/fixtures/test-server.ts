@@ -34,9 +34,18 @@ export interface RequestLog {
   headers: http.IncomingHttpHeaders;
 }
 
+/** What a handler answers a POST with, from its body. */
+export interface HandlerAnswer {
+  status?: number;
+  data: Buffer;
+  contentType?: string;
+}
+
 export interface TestServer {
   url(path: string): string;
   setFile(path: string, spec: FileSpec): void;
+  /** answers POSTs to `path` from their body */
+  setHandler(path: string, handler: (body: string) => HandlerAnswer): void;
   readonly requests: RequestLog[];
   readonly bytesSent: number;
   readonly maxConcurrent: number;
@@ -49,12 +58,24 @@ export interface TestServer {
 
 export async function startTestServer(): Promise<TestServer> {
   const files = new Map<string, FileSpec & { served: number; active: number }>();
+  const handlers = new Map<string, (body: string) => HandlerAnswer>();
   const state = { requests: [] as RequestLog[], bytesSent: 0, maxConcurrent: 0, active: 0, connections: 0, refused: 0 };
   const sockets = new Set<Socket>();
 
   const server = http.createServer((req, res) => {
     const path = (req.url ?? "/").split("?")[0];
     state.requests.push({ path, url: req.url ?? "/", range: req.headers.range, headers: req.headers });
+    const handler = req.method === "POST" ? handlers.get(path) : undefined;
+    if (handler) {
+      const chunks: Buffer[] = [];
+      req.on("data", (c: Buffer) => chunks.push(c));
+      req.on("end", () => {
+        const answer = handler(Buffer.concat(chunks).toString("utf8"));
+        res.writeHead(answer.status ?? 200, { "Content-Type": answer.contentType ?? "application/json", "Content-Length": String(answer.data.length) });
+        res.end(answer.data);
+      });
+      return;
+    }
     const spec = files.get(path);
     if (!spec) {
       res.writeHead(404);
@@ -173,6 +194,9 @@ export async function startTestServer(): Promise<TestServer> {
     url: (path: string) => `http://127.0.0.1:${port}${path}`,
     setFile: (path: string, spec: FileSpec) => {
       files.set(path, { ...spec, served: 0, active: 0 });
+    },
+    setHandler: (path: string, handler: (body: string) => HandlerAnswer) => {
+      handlers.set(path, handler);
     },
     get requests() {
       return state.requests;

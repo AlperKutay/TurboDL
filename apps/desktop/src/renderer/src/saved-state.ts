@@ -1,0 +1,83 @@
+import { parseInstagramLink, type BackupView, type SavedPage, type SavedPageResult, type SavedPost, type SavedSource } from "@turbodl/shared";
+
+/** What a grid shows: All, one of the account's collections, or someone's profile. */
+export type FeedSource = SavedSource | { kind: "profile"; username: string };
+
+/** Whether two grids show the same feed. */
+export function sameFeed(a: FeedSource, b: FeedSource): boolean {
+  if (a.kind === "all" || b.kind === "all") return a.kind === b.kind;
+  if (a.kind === "collection") return b.kind === "collection" && a.id === b.id;
+  return b.kind === "profile" && a.username.toLowerCase() === b.username.toLowerCase();
+}
+
+/** A grid (Saved's or a profile's): one feed, loaded page by page, and the posts picked in it. */
+export interface SavedState {
+  source: FeedSource;
+  posts: SavedPost[];
+  /** the next page's cursor; none before the first page and after the last */
+  next?: string;
+  status: "idle" | "loading" | "end" | "signedOut" | "rateLimited" | "failed";
+  error?: string;
+  /** post ids, in the order they were picked */
+  picked: string[];
+  /** bumped by `select`, so a page that arrives for an earlier feed is dropped */
+  generation: number;
+}
+
+export function initialSaved(): SavedState {
+  return { source: { kind: "all" }, posts: [], status: "idle", picked: [], generation: 0 };
+}
+
+export function select(state: SavedState, source: FeedSource): SavedState {
+  return { source, posts: [], status: "idle", picked: [], generation: state.generation + 1 };
+}
+
+/** Whether the next page may be asked for now. */
+export function canLoadMore(state: SavedState): boolean {
+  return state.status === "idle" && (state.posts.length === 0 || state.next !== undefined);
+}
+
+export function loading(state: SavedState): SavedState {
+  return { ...state, status: "loading", error: undefined };
+}
+
+export function pageArrived(state: SavedState, generation: number, page: SavedPage): SavedState {
+  if (generation !== state.generation) return state;
+  const known = new Set(state.posts.map((p) => p.id));
+  const fresh = page.posts.filter((p) => !known.has(p.id) && known.add(p.id));
+  const { next: _old, ...rest } = state;
+  return { ...rest, posts: [...state.posts, ...fresh], ...(page.next ? { next: page.next } : {}), status: page.next ? "idle" : "end" };
+}
+
+export function pageFailed(state: SavedState, generation: number, result: Exclude<SavedPageResult, { type: "page" }>): SavedState {
+  if (generation !== state.generation) return state;
+  return result.type === "failed" ? { ...state, status: "failed", error: result.message } : { ...state, status: result.type };
+}
+
+/** After a failure or Instagram asking to slow down, when the owner asks again. */
+export function retry(state: SavedState): SavedState {
+  return state.status === "failed" || state.status === "rateLimited" ? { ...state, status: "idle", error: undefined } : state;
+}
+
+/** What a backup's panel offers: Stop while it runs, sign-in when Instagram signed TurboDL out, else Continue. */
+export function backupAction(state: BackupView["state"]): "stop" | "continue" | "signIn" | "none" {
+  if (state === "running") return "stop";
+  if (state === "signedOut") return "signIn";
+  return state === "finished" ? "none" : "continue";
+}
+
+export function toggle(state: SavedState, postId: string): SavedState {
+  const picked = state.picked.includes(postId) ? state.picked.filter((id) => id !== postId) : [...state.picked, postId];
+  return { ...state, picked };
+}
+
+/** The username in a profile link or in what was typed (`@` or not), lowercased; null for anything else. */
+export function profileName(text: string): string | null {
+  const typed = text.trim();
+  if (/^https?:\/\//i.test(typed)) {
+    const link = parseInstagramLink(typed);
+    return link?.kind === "profile" ? link.username : null;
+  }
+  const name = typed.replace(/^@/, "");
+  return /^[a-z0-9._]{1,30}$/i.test(name) ? name.toLowerCase() : null;
+}

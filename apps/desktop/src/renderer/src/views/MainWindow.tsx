@@ -12,7 +12,9 @@ import { DownloadTable } from "./main/DownloadTable";
 import { RefreshUrlModal } from "./main/RefreshUrlModal";
 import { SchedulerModal } from "./main/SchedulerModal";
 import { SettingsModal } from "./main/SettingsModal";
-import { Sidebar } from "./main/Sidebar";
+import { ProfilesView } from "./main/ProfilesView";
+import { SavedView } from "./main/SavedView";
+import { Sidebar, type Section } from "./main/Sidebar";
 import { StatusBar } from "./main/StatusBar";
 import { Toolbar } from "./main/Toolbar";
 
@@ -39,12 +41,27 @@ async function clipboardUrl(): Promise<string> {
 export function MainWindow() {
   const state = useAppState();
   const [filter, setFilter] = useState<Filter>({ kind: "all" });
+  const [section, setSection] = useState<Section>("downloads");
+  /** the profile shown in Profiles; it stays open (its hidden page too) across sections until "All profiles" */
+  const [openProfile, setOpenProfile] = useState<string | null>(null);
   const [selected, setSelected] = useState<string[]>([]);
   const [modal, setModal] = useState<ModalState>(null);
   const [menu, setMenu] = useState<MenuState | null>(null);
 
   useEffect(() => {
     document.title = "TurboDL";
+    // a saved link from the browser or Add URL
+    // what a link asked for: kept by the app until taken, so one that started the app isn't lost
+    const take = () =>
+      void api.takeOpenRequest().then((request) => {
+        if (!request) return;
+        setSection(request.section);
+        if (request.section === "profiles") setOpenProfile(request.username);
+      });
+    take();
+    return api.onEvent((e) => {
+      if (e.type === "openSaved" || e.type === "openProfile") take();
+    });
   }, []);
 
   const items = useMemo(() => (state ? filterDownloads(state.downloads, filter) : []), [state, filter]);
@@ -52,7 +69,7 @@ export function MainWindow() {
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (modal || (e.target instanceof HTMLElement && e.target.closest("input, textarea, select"))) return;
+      if (modal || section !== "downloads" || (e.target instanceof HTMLElement && e.target.closest("input, textarea, select"))) return;
       if (e.key === "Delete" && selectedIds.length > 0) setModal({ type: "delete", ids: selectedIds, withFiles: false });
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "a") {
         e.preventDefault();
@@ -61,7 +78,7 @@ export function MainWindow() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [modal, selectedIds, items]);
+  }, [modal, section, selectedIds, items]);
 
   useEffect(() => {
     // Electron's default Edit menu may consume the Ctrl/⌘V keydown, but the page always gets a paste event
@@ -100,23 +117,46 @@ export function MainWindow() {
       />
       {!state.bridge.ok && <div className="banner banner-error">The browser extension cannot reach the app: {state.bridge.error ?? "bridge closed"}</div>}
       <div className="body">
-        <Sidebar downloads={state.downloads} filter={filter} onChange={setFilter} />
+        <Sidebar
+          downloads={state.downloads}
+          filter={filter}
+          section={section}
+          onChange={(f) => {
+            setFilter(f);
+            setSection("downloads");
+          }}
+          onSection={setSection}
+        />
         <main className="content">
-          <DownloadTable
-            items={items}
-            selected={selected}
-            onSelect={setSelected}
-            onOpen={open}
-            onContextMenu={(d, x, y) => {
-              const ids = selected.includes(d.id) ? selectedIds : [d.id];
-              if (!selected.includes(d.id)) setSelected([d.id]);
-              setMenu({ x, y, item: d, ids });
-            }}
-          />
-          {current && <DetailsPanel item={current} />}
+          {section === "saved" && <SavedView backup={state.instagramBackup} />}
+          {section === "profiles" && (
+            <ProfilesView
+              backup={state.instagramBackup}
+              open={openProfile}
+              onOpen={setOpenProfile}
+              onBack={() => {
+                if (openProfile) void api.closeProfile(openProfile);
+                setOpenProfile(null);
+              }}
+            />
+          )}
+          {section === "downloads" && (
+            <DownloadTable
+              items={items}
+              selected={selected}
+              onSelect={setSelected}
+              onOpen={open}
+              onContextMenu={(d, x, y) => {
+                const ids = selected.includes(d.id) ? selectedIds : [d.id];
+                if (!selected.includes(d.id)) setSelected([d.id]);
+                setMenu({ x, y, item: d, ids });
+              }}
+            />
+          )}
+          {section === "downloads" && current && <DetailsPanel item={current} />}
         </main>
       </div>
-      <StatusBar downloads={state.downloads} bridge={state.bridge} />
+      <StatusBar downloads={state.downloads} bridge={state.bridge} backup={state.instagramBackup} />
 
       {menu && (
         <ContextMenu

@@ -1,0 +1,17 @@
+{"data": {"viewer": {"collections_unified_with_auto_collections": {
+ "edges": [
+  {"cursor": "e2", "node": {"__typename": "MediaCollection", "__isXDTSavedCollectionItem": "MediaCollection", "__isNode": "MediaCollection",
+   "id": "102", "collection_id": "102", "collection_name": "Trips", "collection_media_count": 12,
+   "cover_media": {"id": "3700000000000000002_1000000002", "image_versions2": {"candidates": [
+    {"width": 640, "height": 1136, "url": "https://scontent.cdninstagram.example/v/t51/trips_640.jpg?stp=a"}
+   ]}},
+   "cover_audio_list": []}},
+  {"cursor": "e4", "node": {"__typename": "MediaCollection", "__isXDTSavedCollectionItem": "MediaCollection", "__isNode": "MediaCollection",
+   "id": "104", "collection_id": "104", "collection_name": "Music", "collection_media_count": 3,
+   "cover_media": {"id": "3700000000000000004_1000000004", "image_versions2": {"candidates": [
+    {"width": 480, "height": 600, "url": "https://scontent.cdninstagram.example/v/t51/music_480.jpg?stp=a"}
+   ]}},
+   "cover_audio_list": []}}
+ ],
+ "page_info": {"end_cursor": "c2", "has_next_page": false}
+}}}, "extensions": {"is_final": true}}

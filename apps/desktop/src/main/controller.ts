@@ -10,6 +10,15 @@ import {
   sanitizeFilename,
   type AppEvent,
   type AppSnapshot,
+  type BackupPlan,
+  type HighlightResult,
+  type InstagramAccount,
+  type OpenRequest,
+  type ProfileEntry,
+  type ProfileResult,
+  type SavedCollection,
+  type SavedPageResult,
+  type SavedSource,
   type BridgeConfig,
   type BridgeStatus,
   type Category,
@@ -19,6 +28,9 @@ import {
   type DownloadRequest,
   type DownloadResponse,
   type FormatsResult,
+  type InstagramFindResult,
+  type InstagramItem,
+  type InstagramLink,
   type InstallResult,
   type MediaChoice,
   type MediaDecision,
@@ -28,9 +40,24 @@ import {
   type Result,
   type Settings,
   type StreamOrigin,
+  type BrowserCookie,
+  SavedError,
+  parseInstagramLink,
 } from "@turbodl/shared";
 import { createBridgeServer, type BridgeServer } from "./bridge-server";
 import { HttpDownloadTask } from "./engine/download-task";
+import { delay } from "./engine/http";
+import { fetchMedia } from "./instagram/fetch-media";
+import { Backups } from "./instagram/backups";
+import { LedgerStore } from "./instagram/ledger";
+import { InstagramPacer } from "./instagram/pacer";
+import { ProfileIndex } from "./instagram/profile-index";
+import { ProfileService, type ProfileSource } from "./instagram/profile-service";
+import { httpGet, type HttpGet } from "./instagram/saved-client";
+import { SavedService } from "./instagram/saved-service";
+import type { FindOutcome } from "./instagram/finder";
+import { instagramExtension } from "./instagram/files";
+import { InstagramSession, type Crypt } from "./instagram/session";
 import { probe } from "./engine/probe";
 import { DownloadManager, type StateFile } from "./manager";
 import { cookiesFromHeader, withCookieFile } from "./media/cookies";
@@ -70,6 +97,62 @@ export interface ControllerOptions {
   mediaTools?: MediaTools;
   /** test seam: runs a stand-in instead of the real yt-dlp */
   ytdlpCommand?: YtdlpCommand;
+  /** Instagram: reading pages, signing in, keeping the session (Electron in the app, stand-ins in tests) */
+  instagram?: InstagramDeps;
+}
+
+export interface InstagramDeps {
+  /** reading stops when `signal` aborts (the picker was closed) */
+  find(link: InstagramLink, cookies: BrowserCookie[], signal?: AbortSignal): Promise<FindOutcome>;
+  /** Instagram's sign-in in TurboDL, at `at` (a check page) or the sign-in page; the cookies once signed in, null when closed first */
+  signIn(at?: string): Promise<BrowserCookie[] | null>;
+  crypt: Crypt;
+  /** the user agent media downloads present to Instagram's CDN */
+  agent: string;
+  /** Saved: the REST transport (default: the engine's request) */
+  get?: HttpGet;
+  /** Saved: the account's collections from its saved page, read in a hidden page */
+  collections?(username: string, cookies: BrowserCookie[]): Promise<SavedCollection[] | null>;
+  /** backups: one photo or video to disk */
+  fetch?: typeof fetchMedia;
+  /** pacing (default: a timer) */
+  wait?(ms: number, signal?: AbortSignal): Promise<void>;
+  now?(): number;
+  /** forgets the session in the hidden pages' partition */
+  signOut?(): Promise<void>;
+  /** a profile's page, read with the session */
+  openProfile?(username: string, cookies: BrowserCookie[]): ProfileSource;
+}
+
+/** Without Instagram (tests that don't need it): no profile ever loads. */
+const NO_PROFILE: ProfileSource = {
+  profile: () => Promise.reject(new SavedError("badAnswer")),
+  highlights: [],
+  page: () => Promise.reject(new SavedError("badAnswer")),
+  close: () => undefined,
+};
+
+const NO_INSTAGRAM: InstagramDeps = {
+  find: async () => ({ type: "nothing" }),
+  signIn: async () => null,
+  crypt: { available: () => false, encrypt: (text) => Buffer.from(text), decrypt: (data) => data.toString() },
+  agent: "",
+};
+
+/** Links whose items TurboDL reads itself: posts, reels, stories, highlights. */
+function instagramItemsLink(url: string): InstagramLink | null {
+  const link = parseInstagramLink(url);
+  return link && (link.kind === "post" || link.kind === "story" || link.kind === "highlight") ? link : null;
+}
+
+/** Instagram's own pages (not its CDN): yt-dlp can't read the ones TurboDL doesn't, and would get the session cookies. */
+function isInstagramPage(url: string): boolean {
+  try {
+    const host = new URL(url).hostname.toLowerCase();
+    return host === "instagram.com" || host === "www.instagram.com" || host === "m.instagram.com";
+  } catch {
+    return false;
+  }
 }
 
 export function buildHeaders(cookies?: string, referrer?: string, userAgent?: string): Record<string, string> {
@@ -109,8 +192,63 @@ export class AppController {
   private bridgeStatus: BridgeStatus = { ok: false, port: 0 };
   private countdown: CountdownState | null = null;
   private ownClipboardText: string | null = null;
+  private readonly instagram: InstagramDeps;
+  readonly instagramSession: InstagramSession;
+  /** what each open Instagram picker was shown */
+  private readonly instagramItems = new Map<string, InstagramItem[]>();
+  /** each open picker's page reading, called off when the picker closes */
+  private readonly instagramSearches = new Map<string, AbortController>();
+  /** the check page each picker's page landed on */
+  private readonly instagramChecks = new Map<string, string>();
+  private readonly saved: SavedService;
+  /** the account's one pace and one backup slot, Saved and profiles alike */
+  private readonly pacer: InstagramPacer;
+  private readonly backups: Backups;
+  private readonly profiles: ProfileService;
+  /** the screen the last link asked for, until the main window takes it */
+  private openRequest: OpenRequest | null = null;
 
   constructor(private readonly o: ControllerOptions) {
+    this.instagram = o.instagram ?? NO_INSTAGRAM;
+    this.instagramSession = new InstagramSession(path.join(o.userDataDir, "instagram-session.bin"), this.instagram.crypt);
+    this.instagramSession.load();
+    const ig = this.instagram;
+    const wait = (ms: number, signal?: AbortSignal) => (ig.wait ? ig.wait(ms, signal) : delay(ms, signal ?? new AbortController().signal));
+    this.pacer = new InstagramPacer(() => (ig.now ? ig.now() : Date.now()), wait);
+    const ledgers = new LedgerStore(path.join(o.userDataDir, "instagram-backups"));
+    this.backups = new Backups({
+      ledgers,
+      fetch: ig.fetch ?? fetchMedia,
+      wait,
+      headers: () => ({ Referer: "https://www.instagram.com/", ...(ig.agent ? { "User-Agent": ig.agent } : {}) }),
+      held: () => this.pacer.held(),
+      onBackup: (backup) => this.o.ui.broadcast({ type: "instagramBackup", backup }),
+    });
+    this.saved = new SavedService({
+      session: this.instagramSession,
+      agent: ig.agent,
+      get: ig.get ?? httpGet,
+      collections: (username, cookies) => (ig.collections ? ig.collections(username, cookies) : Promise.resolve(null)),
+      signOut: () => (ig.signOut ? ig.signOut() : Promise.resolve()),
+      userDataDir: o.userDataDir,
+      baseDir: () => this.settings.baseDir,
+      pacer: this.pacer,
+      backups: this.backups,
+    });
+    this.profiles = new ProfileService({
+      session: this.instagramSession,
+      open: (username, cookies) => (ig.openProfile ? ig.openProfile(username, cookies) : NO_PROFILE),
+      findHighlight: async (id, signal) => {
+        const outcome = await ig.find({ kind: "highlight", id }, this.instagramSession.cookies(), signal);
+        if (outcome.type === "signedOut") throw new SavedError("signedOut");
+        return outcome.type === "items" ? outcome.items : null;
+      },
+      pacer: this.pacer,
+      backups: this.backups,
+      index: new ProfileIndex(path.join(o.userDataDir, "instagram-profiles.json"), ledgers),
+      baseDir: () => this.settings.baseDir,
+      now: () => (ig.now ? ig.now() : Date.now()),
+    });
     this.defaults = defaultSettings(o.downloadsDir);
     this.settingsStore = new JsonStore<Settings>(path.join(o.userDataDir, "settings.json"));
     this.settings = normalizeSettings(this.settingsStore.load(() => this.defaults), this.defaults);
@@ -163,6 +301,7 @@ export class AppController {
       bridge: this.bridgeStatus,
       countdown: this.countdown,
       version: this.o.version,
+      instagramBackup: this.backups.view(),
     };
   }
 
@@ -175,6 +314,21 @@ export class AppController {
   }
 
   async handleDownloadRequest(req: DownloadRequest): Promise<DownloadResponse> {
+    const instagram = instagramItemsLink(req.url);
+    if (instagram) {
+      this.openInstagram(req.url, instagram, req.cookieJar);
+      return { accepted: true };
+    }
+    const page = parseInstagramLink(req.url);
+    if (page?.kind === "saved") {
+      this.openSaved(req.cookieJar);
+      return { accepted: true };
+    }
+    if (page?.kind === "profile") {
+      this.openProfile(page.username, req.cookieJar);
+      return { accepted: true };
+    }
+    if (isInstagramPage(req.url)) return { accepted: false, reason: "TurboDL opens Instagram posts, reels, stories and highlights." };
     const headers = buildHeaders(req.cookies, req.referrer, req.userAgent);
     let info;
     try {
@@ -217,6 +371,20 @@ export class AppController {
   }
 
   async handleMediaRequest(req: MediaRequest): Promise<void> {
+    const instagram = instagramItemsLink(req.pageUrl);
+    if (instagram) {
+      this.openInstagram(req.pageUrl, instagram, req.cookieJar);
+      return;
+    }
+    const page = parseInstagramLink(req.pageUrl);
+    if (page?.kind === "saved") {
+      this.openSaved(req.cookieJar);
+      return;
+    }
+    if (page?.kind === "profile") {
+      this.openProfile(page.username, req.cookieJar);
+      return;
+    }
     this.openPending({
       type: "media",
       pendingId: newId(),
@@ -225,7 +393,7 @@ export class AppController {
       items: req.items,
       headers: buildHeaders(req.cookies, req.referrer ?? req.pageUrl, req.userAgent),
       defaultDir: this.categoryDir("video"),
-      cookieJar: req.cookieJar ?? [],
+      cookieJar: isInstagramPage(req.pageUrl) ? [] : (req.cookieJar ?? []),
       useLogin: false,
     });
   }
@@ -258,6 +426,229 @@ export class AppController {
 
   cancelPending(pendingId: string): void {
     this.pending.delete(pendingId);
+    this.forgetInstagram(pendingId);
+  }
+
+  /**
+   * Reads the link's items from its page, signed in when a session is kept; without one, public posts and reels still
+   * read (stories, highlights and hidden posts answer signedOut). A new read calls off the picker's previous one.
+   */
+  async findInstagram(pendingId: string): Promise<InstagramFindResult> {
+    const p = this.pending.get(pendingId);
+    if (!p || p.type !== "instagram") return { type: "gone" };
+    // picked in Saved, on a profile or among highlights: the items came with the pick
+    const known = this.instagramItems.get(pendingId);
+    if (known) return { type: "items", items: known };
+    if (p.link.kind === "saved" || p.link.kind === "profile") return { type: "gone" };
+    this.instagramSearches.get(pendingId)?.abort();
+    const search = new AbortController();
+    this.instagramSearches.set(pendingId, search);
+    let outcome: FindOutcome;
+    try {
+      outcome = await this.instagram.find(p.link, this.instagramSession.cookies(), search.signal);
+    } catch {
+      outcome = { type: "nothing" };
+    } finally {
+      if (this.instagramSearches.get(pendingId) === search) this.instagramSearches.delete(pendingId);
+    }
+    if (!this.pending.has(pendingId) || search.signal.aborted) return { type: "gone" };
+    if (outcome.type === "items") this.instagramItems.set(pendingId, outcome.items);
+    if (outcome.type === "signedOut" && outcome.at) this.instagramChecks.set(pendingId, outcome.at);
+    else this.instagramChecks.delete(pendingId);
+    return outcome;
+  }
+
+  /** Queues the picked items (none picked: all of them), one download each, named by Instagram's id. */
+  async confirmInstagram(pendingId: string, indices: number[], mode: "now" | "later"): Promise<Result> {
+    const p = this.pending.get(pendingId);
+    const items = this.instagramItems.get(pendingId);
+    if (!p || p.type !== "instagram" || !items) return { ok: false, error: "This request no longer exists." };
+    const chosen = indices.length > 0 ? indices.map((i) => items[i]).filter((item): item is InstagramItem => item !== undefined) : items;
+    if (chosen.length === 0) return { ok: false, error: "Nothing was picked." };
+    const fallback = p.link.kind === "post" ? p.link.code : p.link.kind === "story" ? p.link.item : p.link.kind === "highlight" ? p.link.id : "instagram";
+    const named = chosen.map((item, k) => ({ item, filename: sanitizeFilename(`${item.mediaId ?? `${fallback}-${k + 1}`}.${instagramExtension(item)}`) }));
+    // a profile's or its highlights' picks go where their backups go: what is there already isn't downloaded again
+    const fresh = p.keepsFolder ? named.filter(({ filename }) => !existsSync(path.join(p.defaultDir, filename))) : named;
+    if (fresh.length === 0) return { ok: false, error: `These are already in ${p.keepsFolder}.` };
+    fresh.forEach(({ item, filename }) => {
+      this.manager.add(
+        {
+          kind: "http",
+          url: item.url,
+          pageUrl: p.pageUrl,
+          filename,
+          dir: p.defaultDir,
+          category: item.kind === "video" ? "video" : "images",
+          size: null,
+          resumable: true,
+          headers: { Referer: "https://www.instagram.com/", ...(this.instagram.agent ? { "User-Agent": this.instagram.agent } : {}) },
+        },
+        mode,
+      );
+    });
+    this.forgetInstagram(pendingId);
+    this.finishPending(pendingId);
+    return { ok: true };
+  }
+
+  /** Instagram's own sign-in in TurboDL, on the check page the picker's page landed on if any; its cookies become the session. */
+  async instagramSignIn(pendingId?: string): Promise<boolean> {
+    const cookies = await this.instagram.signIn(pendingId ? this.instagramChecks.get(pendingId) : undefined);
+    return cookies !== null && this.instagramSession.take(cookies);
+  }
+
+  instagramAccount(): Promise<InstagramAccount> {
+    return this.saved.accountInfo();
+  }
+
+  instagramSignOut(): Promise<void> {
+    return this.saved.signOut();
+  }
+
+  savedCollections(refresh: boolean): Promise<SavedCollection[] | "signedOut"> {
+    return this.saved.collections(refresh);
+  }
+
+  savedPage(source: SavedSource, cursor?: string): Promise<SavedPageResult> {
+    return this.saved.page(source, cursor);
+  }
+
+  /** The picker over the picked posts' items, in pick order, nothing picked in it yet. */
+  async openSavedPicks(postIds: string[]): Promise<Result> {
+    const items = this.saved.pickedItems(postIds);
+    if (items.length === 0) return { ok: false, error: "Nothing was picked." };
+    const username = (await this.saved.usernameIfAny()) ?? "";
+    const pendingId = newId();
+    this.instagramItems.set(pendingId, items);
+    this.openPending({
+      type: "instagram",
+      pendingId,
+      pageUrl: username ? `https://www.instagram.com/${encodeURIComponent(username)}/saved/` : "https://www.instagram.com/",
+      link: { kind: "saved", username },
+      defaultDir: path.join(this.settings.baseDir, "Instagram"),
+    });
+    return { ok: true };
+  }
+
+  backupPlan(collectionId: string): Promise<BackupPlan> {
+    return this.saved.plan(collectionId);
+  }
+
+  async startBackup(collectionId: string): Promise<Result> {
+    return this.saved.startBackup(collectionId);
+  }
+
+  stopBackup(): Promise<void> {
+    return this.backups.stop();
+  }
+
+  /** Starts the last backup again (Continue), whatever it backs up. */
+  continueBackup(): Promise<Result> {
+    return this.backups.continueLast();
+  }
+
+  profileLoad(username: string): Promise<ProfileResult> {
+    return this.profiles.load(username);
+  }
+
+  profilePage(username: string, cursor?: string): Promise<SavedPageResult> {
+    return this.profiles.page(username, cursor);
+  }
+
+  /** The picker over the picked posts' items, in pick order, into the profile's own folder. */
+  async openProfilePicks(username: string, postIds: string[]): Promise<Result> {
+    const items = this.profiles.pickedItems(postIds);
+    if (items.length === 0) return { ok: false, error: "Nothing was picked." };
+    const pendingId = newId();
+    this.instagramItems.set(pendingId, items);
+    this.openPending({
+      type: "instagram",
+      pendingId,
+      pageUrl: `https://www.instagram.com/${encodeURIComponent(username)}/`,
+      link: { kind: "profile", username },
+      keepsFolder: `Instagram › ${username}`,
+      defaultDir: this.profiles.folder(username),
+    });
+    return { ok: true };
+  }
+
+  loadHighlight(_username: string, id: string): Promise<HighlightResult> {
+    return this.profiles.loadHighlight(id);
+  }
+
+  /** The picker over the read highlights' stories, in pick order, into the highlights folder. */
+  async openHighlightPicks(username: string, ids: string[]): Promise<Result> {
+    const items = this.profiles.pickedStories(ids);
+    if (items.length === 0) return { ok: false, error: "Couldn't read these highlights." };
+    const pendingId = newId();
+    this.instagramItems.set(pendingId, items);
+    this.openPending({
+      type: "instagram",
+      pendingId,
+      pageUrl: `https://www.instagram.com/stories/highlights/${encodeURIComponent(ids[0])}/`,
+      link: { kind: "highlight", id: ids[0] },
+      keepsFolder: `Instagram › ${username} · Highlights`,
+      defaultDir: this.profiles.highlightsFolder(username),
+    });
+    return { ok: true };
+  }
+
+  highlightsBackupPlan(username: string): Promise<BackupPlan> {
+    return this.profiles.highlightsPlan(username);
+  }
+
+  startHighlightsBackup(username: string): Promise<Result> {
+    return this.profiles.startHighlightsBackup(username);
+  }
+
+  profileBackupPlan(username: string): Promise<BackupPlan> {
+    return this.profiles.plan(username);
+  }
+
+  startProfileBackup(username: string): Promise<Result> {
+    return this.profiles.startBackup(username);
+  }
+
+  async instagramProfiles(): Promise<ProfileEntry[]> {
+    return this.profiles.profilesList();
+  }
+
+  async removeInstagramProfile(id: string): Promise<void> {
+    this.profiles.remove(id);
+  }
+
+  async closeProfile(username: string): Promise<void> {
+    this.profiles.close(username);
+  }
+
+  /** A profile link: the browser's session is taken, and the main window shows the profile. */
+  private openProfile(username: string, cookieJar?: BrowserCookie[]): void {
+    if (cookieJar) this.instagramSession.take(cookieJar);
+    this.openRequest = { section: "profiles", username };
+    this.o.ui.showMain();
+    this.o.ui.broadcast({ type: "openProfile", username });
+  }
+
+  /** The screen the last link asked for, once (a window started by the link takes it when it is ready). */
+  async takeOpenRequest(): Promise<OpenRequest | null> {
+    const request = this.openRequest;
+    this.openRequest = null;
+    return request;
+  }
+
+  /** A saved link: the browser's session is taken, and the main window shows Saved. */
+  private openSaved(cookieJar?: BrowserCookie[]): void {
+    if (cookieJar) this.instagramSession.take(cookieJar);
+    this.openRequest = { section: "saved" };
+    this.o.ui.showMain();
+    this.o.ui.broadcast({ type: "openSaved" });
+  }
+
+  private forgetInstagram(pendingId: string): void {
+    this.instagramItems.delete(pendingId);
+    this.instagramChecks.delete(pendingId);
+    this.instagramSearches.get(pendingId)?.abort();
+    this.instagramSearches.delete(pendingId);
   }
 
   confirmDownload(pendingId: string, decision: DownloadDecision): Result {
@@ -455,6 +846,9 @@ export class AppController {
   }
 
   async shutdown(): Promise<void> {
+    // a backup's item in flight removes its temporary file before the app goes
+    await Promise.race([this.backups.stop(), new Promise((r) => setTimeout(r, 3000))]);
+    this.profiles.closeAll();
     this.scheduler.stop();
     await this.manager.shutdown();
     this.settingsStore.flush();
@@ -484,6 +878,11 @@ export class AppController {
   private isKnownUrl(url: string): boolean {
     for (const p of this.pending.values()) if (p.type === "download" && p.item.url === url) return true;
     return this.manager.list().some((d) => d.url === url && d.status !== "completed");
+  }
+
+  private openInstagram(pageUrl: string, link: InstagramLink, cookieJar?: BrowserCookie[]): void {
+    if (cookieJar) this.instagramSession.take(cookieJar);
+    this.openPending({ type: "instagram", pendingId: newId(), pageUrl, link, defaultDir: path.join(this.settings.baseDir, "Instagram") });
   }
 
   private openPending(item: PendingItem): void {
