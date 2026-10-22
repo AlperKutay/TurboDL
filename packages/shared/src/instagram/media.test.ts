@@ -119,3 +119,10 @@ describe("parseDocument", () => {
     expect(parseDocument("<html>")).toBeNull();
   });
 });
+
+describe("whose items they are", () => {
+  it("names the account a post, a story and a highlight belong to", () => {
+    expect(postItems([JSON.stringify(carousel)], "C1abcDEF").map((i) => i.owner)).toEqual(["someone", "someone", "someone"]);
+    expect(storyItems([JSON.stringify(highlightShare)], { kind: "highlight", id: "17900000000000003" }).map((i) => i.owner)).toEqual(["someone"]);
+  });
+});

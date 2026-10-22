@@ -13,6 +13,10 @@ export interface SavedPost {
   items: InstagramItem[];
   /** pinned to the top of its profile */
   pinned?: boolean;
+  /** known only by its cover (a profile seen signed out): its items are read from its own page when picked */
+  unread?: boolean;
+  /** 1 photo, 2 video, 8 carousel */
+  mediaType?: number;
 }
 
 /** One page of a saved feed; `next` is the following page's cursor, absent on the last one. */

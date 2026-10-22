@@ -14,6 +14,8 @@ export interface InstagramItem {
   mediaId?: string;
   /** the story a story link points at */
   shared?: boolean;
+  /** the account it belongs to, when the page says */
+  owner?: string;
 }
 
 /**
@@ -50,17 +52,23 @@ export function storyItems(
       : (reels.find((r) => arr(r.items).some((item) => str(item.pk) === link.item)) ??
         reels.find((r) => str(dict(r, "user")?.username) === link.username && str(r.reel_type) !== "highlight_reel"));
   if (!reel) return [];
+  const owner = str(dict(reel, "user")?.username) ?? (link.kind === "story" ? link.username : undefined);
   return arr(reel.items).flatMap((media) => {
-    const item = v1Item(media);
-    if (!item) return [];
+    const found = v1Item(media);
+    if (!found) return [];
+    const item = owner ? { ...found, owner } : found;
     return [link.kind === "story" && str(media.pk) === link.item ? { ...item, shared: true } : item];
   });
 }
 
-/** A carousel's children, or the post itself, each at its best version. */
+/** A carousel's children, or the post itself, each at its best version, with the post's account. */
 export function v1Items(post: Json): InstagramItem[] {
   const children = arr(post.carousel_media);
-  return (children.length > 0 ? children : [post]).flatMap((m) => v1Item(m) ?? []);
+  const owner = str(dict(post, "user")?.username);
+  return (children.length > 0 ? children : [post]).flatMap((m) => {
+    const item = v1Item(m);
+    return item ? [owner ? { ...item, owner } : item] : [];
+  });
 }
 
 export function v1Item(media: Json): InstagramItem | undefined {
@@ -99,7 +107,11 @@ function graphItems(post: Json): InstagramItem[] {
   const edges = arr(dict(post, "edge_sidecar_to_children")?.edges)
     .map((e) => dict(e, "node"))
     .filter((n): n is Json => n !== undefined);
-  return (edges.length > 0 ? edges : [post]).flatMap((n) => graphItem(n) ?? []);
+  const owner = str(dict(post, "owner")?.username);
+  return (edges.length > 0 ? edges : [post]).flatMap((n) => {
+    const item = graphItem(n);
+    return item ? [owner ? { ...item, owner } : item] : [];
+  });
 }
 
 function graphItem(node: Json): InstagramItem | undefined {

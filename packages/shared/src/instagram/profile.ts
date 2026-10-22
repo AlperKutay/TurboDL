@@ -116,3 +116,42 @@ function edgePosts(connection: Json): SavedPost[] {
     return [pinned ? { ...post, pinned: true } : post];
   });
 }
+
+/**
+ * A public profile as Instagram shows it to signed-out visitors (`data.xig_user_by_username`): the profile, its first
+ * posts known only by their covers and kinds, and its highlights. Undefined when the page doesn't show it that way.
+ */
+export function signedOutProfile(documents: string[], username: string): { profile: InstagramProfile; posts: SavedPost[]; highlights: Highlight[] } | undefined {
+  const name = username.toLowerCase();
+  const user = objectsInDocuments(documents, (o) => str(dict(o, "xig_user_by_username")?.username)?.toLowerCase() === name).map((o) => dict(o, "xig_user_by_username") as Json)[0];
+  const id = user && (str(user.pk) ?? str(user.id));
+  if (!user || !id) return undefined;
+  const picture = url(user.profile_pic_url);
+  const postCount = int(user.all_media_count);
+  const profile: InstagramProfile = {
+    id,
+    username: str(user.username) ?? username,
+    fullName: str(user.full_name) ?? "",
+    isPrivate: user.is_private === true,
+    following: false,
+    ...(picture ? { picture } : {}),
+    ...(postCount !== undefined ? { postCount } : {}),
+  };
+  const posts = arr(dict(user, "polaris_ordered_timeline_connection")?.edges).flatMap((edge) => {
+    const node = dict(edge, "node");
+    const pk = node && (str(node.pk) ?? str(node.id)?.split("_")[0]);
+    const code = node && str(node.code);
+    if (!node || !pk || !code) return [];
+    const cover = url(node.display_uri);
+    const mediaType = int(node.media_type);
+    return [{ id: pk, code, ...(cover ? { cover } : {}), items: [], unread: true as const, ...(mediaType !== undefined ? { mediaType } : {}) }];
+  });
+  const highlights = arr(dict(user, "lox_highlights_connection")?.edges).flatMap((edge) => {
+    const node = dict(edge, "node");
+    const full = str(node?.id);
+    if (!node || !full) return [];
+    const cover = url(node.cover_media_cropped_thumbnail_url);
+    return [{ id: full.replace(/^highlight:/, ""), title: str(node.title) ?? "", ...(cover ? { cover } : {}) }];
+  });
+  return { profile, posts, highlights };
+}

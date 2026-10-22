@@ -1,8 +1,9 @@
 import { describe, expect, it } from "vitest";
 import lockedPage from "./fixtures/instagram-profile-locked.json?raw";
+import loggedOutPage from "./fixtures/instagram-profile-loggedout.json?raw";
 import nextAnswer from "./fixtures/instagram-profile-next.json?raw";
 import profilePage from "./fixtures/instagram-profile-page.json?raw";
-import { highlightsTray, isLocked, profileIn, profilePosts, profilePostsAnswer, signedOutProfileView } from "./profile";
+import { highlightsTray, isLocked, profileIn, profilePosts, profilePostsAnswer, signedOutProfile, signedOutProfileView } from "./profile";
 import { SavedError } from "./saved";
 
 /** The page's documents, each its own JSON text (the fixture is an array of them). */
@@ -80,5 +81,35 @@ describe("profile pages", () => {
     const everyone = JSON.stringify({ data: { xig_user_by_igid_v2: { username: "sample.user", pk: "5100000000000000001" } } });
     expect(signedOutProfileView([everyone], "sample.user")).toBe(true);
     expect(signedOutProfileView(page, "sample.user")).toBe(false);
+  });
+});
+
+describe("profile pages signed out", () => {
+  const page = JSON.parse(loggedOutPage) as string[];
+
+  it("reads the profile, its first posts as covers with their kind, and its highlights", () => {
+    const found = signedOutProfile(page, "Sample.User");
+    expect(found?.profile).toEqual({
+      id: "5100000000000000001",
+      username: "sample.user",
+      fullName: "Sample User",
+      isPrivate: false,
+      following: false,
+      picture: "https://cdn.example/sample.jpg",
+    });
+    expect(found?.posts.map((p) => [p.id, p.code, p.cover, p.mediaType, p.unread, p.items])).toEqual([
+      ["3800000000000000001", "C0001", "https://cdn.example/c0001.jpg", 8, true, []],
+      ["3800000000000000002", "C0002", "https://cdn.example/c0002.jpg", 2, true, []],
+      ["3800000000000000003", "C0003", "https://cdn.example/c0003.jpg", 1, true, []],
+    ]);
+    expect(found?.highlights).toEqual([
+      { id: "17900000000000002", title: "Summer", cover: "https://cdn.example/hl02.jpg" },
+      { id: "17900000000000003", title: "Winter", cover: "https://cdn.example/hl03.jpg" },
+    ]);
+  });
+
+  it("never takes a suggested account for the profile, and finds nothing on a signed-in page", () => {
+    expect(signedOutProfile(page, "other.user")).toBeUndefined();
+    expect(signedOutProfile(JSON.parse(profilePage) as string[], "sample.user")).toBeUndefined();
   });
 });
