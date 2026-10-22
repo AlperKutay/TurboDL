@@ -50,7 +50,8 @@ jobs:
       - name: Build the installer
         run: pnpm --filter @turbodl/desktop exec electron-builder --config electron-builder.config.cjs --publish never
         env:
-          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+          # electron-builder signs only with discovery on: on for macOS with the certificate, off elsewhere
+          CSC_IDENTITY_AUTO_DISCOVERY: ${{ runner.os == 'macOS' && secrets.MAC_CERT_P12 != '' && 'true' || 'false' }}
           CSC_LINK: ${{ runner.os == 'macOS' && secrets.MAC_CERT_P12 || '' }}
           CSC_KEY_PASSWORD: ${{ runner.os == 'macOS' && secrets.MAC_CERT_PASSWORD || '' }}
           APPLE_API_KEY_ID: ${{ runner.os == 'macOS' && secrets.APPLE_API_KEY_ID || '' }}
