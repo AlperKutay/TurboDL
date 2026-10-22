@@ -124,7 +124,7 @@ test("highlights: picks two highlights, their stories into the highlights folder
     await download.click();
     await main.getByRole("button", { name: "All downloads" }).click();
     await expect(main.locator("tr[data-status='completed']")).toHaveCount(4, { timeout: 30_000 });
-    expect(readdirSync(path.join(baseDir, "Instagram", "demo.person · Highlights")).sort()).toEqual([
+    expect(readdirSync(path.join(baseDir, "Instagram", "demo.person", "Highlights")).sort()).toEqual([
       "h17900000000000002-1.png",
       "h17900000000000002-2.png",
       "h17900000000000003-1.png",
@@ -150,7 +150,7 @@ test("highlights: backs them up, and a run again saves nothing new", async () =>
     const panel = main.getByRole("region", { name: "Backup" });
     await expect(panel).toContainText("Backup finished", { timeout: 30_000 });
     await expect(panel).toContainText("New 4");
-    expect(readdirSync(path.join(baseDir, "Instagram", "demo.person · Highlights"))).toHaveLength(4);
+    expect(readdirSync(path.join(baseDir, "Instagram", "demo.person", "Highlights"))).toHaveLength(4);
     await main.getByRole("button", { name: "Back up highlights" }).click();
     await main.getByRole("dialog", { name: "Back up @demo.person's highlights" }).getByRole("button", { name: "Start backup" }).click();
     await expect(panel).toContainText("New 0", { timeout: 30_000 });
@@ -208,6 +208,60 @@ test("profiles: each side keeps its picks when switching between Posts and Highl
     await expect(main.getByRole("button", { name: "Next (1)" })).toBeVisible();
     await main.getByRole("tab", { name: "Highlights" }).click();
     await expect(main.getByRole("button", { name: "Winter", exact: true })).toHaveAttribute("aria-pressed", "true");
+  } finally {
+    await app.close();
+    await server.close();
+    rmSync(userData, { recursive: true, force: true });
+  }
+});
+
+test("profiles: a public profile opens signed out, and picked posts are read from their own pages", async () => {
+  const { server, app, userData, baseDir } = await demo();
+  try {
+    const main = await app.firstWindow();
+    await openProfile(main, "demo.public");
+    await expect(main.getByText("Not signed in")).toBeVisible({ timeout: 15_000 });
+    await expect(main.getByRole("button", { name: /^Post \d+$/ })).toHaveCount(3);
+    await expect(main.getByRole("button", { name: "Post 1", exact: true })).toContainText("Carousel");
+    await expect(main.getByRole("button", { name: "Post 2", exact: true })).toContainText("Video");
+    await expect(main.getByRole("button", { name: "Back up this profile" })).toHaveCount(0);
+    await main.getByRole("button", { name: "Post 1", exact: true }).click();
+    await main.getByRole("button", { name: "Post 2", exact: true }).click();
+    const dialogOpened = app.waitForEvent("window");
+    await main.getByRole("button", { name: "Next (2)" }).click();
+    const dialog = await dialogOpened;
+    const download = dialog.getByRole("button", { name: /^Download (all )?\d+$/ });
+    await expect(download).toHaveText("Download all 4", { timeout: 15_000 });
+    await download.click();
+    await main.getByRole("button", { name: "All downloads" }).click();
+    await expect(main.locator("tr[data-status='completed']")).toHaveCount(4, { timeout: 30_000 });
+    expect(readdirSync(path.join(baseDir, "Instagram", "demo.public")).sort()).toEqual(["DP1-1.png", "DP1-2.png", "DP2-1.png", "DP2-2.png"]);
+  } finally {
+    await app.close();
+    await server.close();
+    rmSync(userData, { recursive: true, force: true });
+  }
+});
+
+test("settings: Instagram downloads can all go into one folder instead of one per account", async () => {
+  const { server, app, userData, baseDir } = await demo();
+  try {
+    const main = await app.firstWindow();
+    await main.getByRole("button", { name: "Settings" }).click();
+    const perAccount = main.getByRole("checkbox", { name: "Put Instagram downloads in a folder per account" });
+    await expect(perAccount).toBeChecked();
+    await perAccount.uncheck();
+    await main.getByRole("dialog", { name: "Settings" }).getByRole("button", { name: "Save", exact: true }).click();
+    await main.getByRole("button", { name: "Add URL" }).click();
+    await main.getByPlaceholder("https://…").fill("https://www.instagram.com/p/DP3/");
+    const dialogOpened = app.waitForEvent("window");
+    await main.getByRole("button", { name: "Add", exact: true }).click();
+    const dialog = await dialogOpened;
+    const download = dialog.getByRole("button", { name: /^Download (all )?\d+$/ });
+    await expect(download).toHaveText("Download all 2", { timeout: 15_000 });
+    await download.click();
+    await expect(main.locator("tr[data-status='completed']")).toHaveCount(2, { timeout: 30_000 });
+    expect(readdirSync(path.join(baseDir, "Instagram")).sort()).toEqual(["DP3-1.png", "DP3-2.png"]);
   } finally {
     await app.close();
     await server.close();

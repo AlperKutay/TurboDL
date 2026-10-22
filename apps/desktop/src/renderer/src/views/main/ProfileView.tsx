@@ -55,6 +55,7 @@ export function ProfileView({ username, backup }: { username: string; backup: Ba
   }
 
   const { profile, highlights } = result;
+  const limited = result.limited === true;
   if (isLocked(profile)) {
     return (
       <>
@@ -66,6 +67,15 @@ export function ProfileView({ username, backup }: { username: string; backup: Ba
   return (
     <>
       <ProfileHeader profile={profile} />
+      {limited && (
+        <p className="profile-limited">
+          <strong>Not signed in.</strong> Instagram shows only this profile's first posts to signed-out visitors. Sign in to see them all, its
+          highlights' stories, and to back it up.{" "}
+          <button type="button" className="link-button" disabled={busy} onClick={() => void signIn()}>
+            Sign in to Instagram
+          </button>
+        </p>
+      )}
       {backup && <BackupPanel backup={backup} onSignedIn={() => undefined} />}
       <div className="saved-collections" role="tablist">
         <button type="button" role="tab" aria-selected={tab === "posts"} className="saved-collection" onClick={() => setTab("posts")}>
@@ -78,10 +88,10 @@ export function ProfileView({ username, backup }: { username: string; backup: Ba
       </div>
       {/* both sides stay, each with its own picks; only the one chosen shows */}
       <div className="profile-side" hidden={tab !== "posts"}>
-        <ProfilePosts profile={profile} backup={backup} busy={busy} onSignIn={() => void signIn()} />
+        <ProfilePosts profile={profile} limited={limited} backup={backup} busy={busy} onSignIn={() => void signIn()} />
       </div>
       <div className="profile-side" hidden={tab !== "highlights"}>
-        <ProfileHighlights profile={profile} highlights={highlights} backup={backup} busy={busy} onSignIn={() => void signIn()} />
+        <ProfileHighlights profile={profile} limited={limited} highlights={highlights} backup={backup} busy={busy} onSignIn={() => void signIn()} />
       </div>
     </>
   );
@@ -100,12 +110,25 @@ function ProfileHeader({ profile }: { profile: InstagramProfile }) {
   );
 }
 
-function ProfilePosts({ profile, backup, busy, onSignIn }: { profile: InstagramProfile; backup: BackupView | null; busy: boolean; onSignIn(): void }) {
+function ProfilePosts({
+  profile,
+  limited,
+  backup,
+  busy,
+  onSignIn,
+}: {
+  profile: InstagramProfile;
+  limited: boolean;
+  backup: BackupView | null;
+  busy: boolean;
+  onSignIn(): void;
+}) {
   const { username } = profile;
   const { state, setState, sentinel } = useFeed({ kind: "profile", username }, (_source, cursor) => api.profilePage(username, cursor));
   const [error, setError] = useState<string | null>(null);
   const [confirming, setConfirming] = useState<BackupPlan | null>(null);
   const [resumes, setResumes] = useState(false);
+  const [reading, setReading] = useState(false);
 
   // "Continue backup" when an earlier backup of it stopped before the end
   useEffect(() => {
@@ -117,16 +140,19 @@ function ProfilePosts({ profile, backup, busy, onSignIn }: { profile: InstagramP
     const res = await api.startProfileBackup(username);
     if (!res.ok) setError(res.error);
   };
+  // posts seen signed out are read from their own pages first, which takes a moment each
   const next = async () => {
     setError(null);
+    setReading(true);
     const res = await api.openProfilePicks(username, state.picked);
+    setReading(false);
     if (res.ok) setState((s) => ({ ...s, picked: [] }));
     else setError(res.error);
   };
 
   return (
     <>
-      {backup?.state !== "running" && (
+      {!limited && backup?.state !== "running" && (
         <div>
           <button type="button" className="btn" onClick={() => void api.profileBackupPlan(username).then(setConfirming)}>
             {resumes ? "Continue backup" : "Back up this profile"}
@@ -137,7 +163,7 @@ function ProfilePosts({ profile, backup, busy, onSignIn }: { profile: InstagramP
         <BackupConfirm title={`Back up @${username}`} folder={`Instagram › ${username}`} plan={confirming} onStart={() => void startBackup()} onClose={() => setConfirming(null)} />
       )}
       <PostGrid state={state} setState={setState} sentinel={sentinel} emptyText="No posts yet" busy={busy} onSignIn={onSignIn} />
-      <PickBar picked={state.picked.length} error={error} onNext={() => void next()} />
+      <PickBar picked={state.picked.length} error={error} working={reading ? "Reading the picked posts…" : undefined} onNext={() => void next()} />
     </>
   );
 }
@@ -148,12 +174,14 @@ function ProfilePosts({ profile, backup, busy, onSignIn }: { profile: InstagramP
  */
 function ProfileHighlights({
   profile,
+  limited,
   highlights,
   backup,
   busy,
   onSignIn,
 }: {
   profile: InstagramProfile;
+  limited: boolean;
   highlights: Highlight[];
   backup: BackupView | null;
   busy: boolean;
@@ -208,7 +236,7 @@ function ProfileHighlights({
   if (highlights.length === 0) return <p className="muted">No highlights</p>;
   return (
     <>
-      {backup?.state !== "running" && (
+      {!limited && backup?.state !== "running" && (
         <div>
           <button type="button" className="btn" onClick={() => void api.highlightsBackupPlan(username).then(setConfirming)}>
             {resumes ? "Continue backup" : "Back up highlights"}
@@ -276,7 +304,7 @@ function ProfileHighlights({
         <>
           {signedOut && (
             <p>
-              Instagram signed TurboDL out.{" "}
+              {limited ? "Instagram shows highlights' stories only to signed-in visitors." : "Instagram signed TurboDL out."}{" "}
               <button type="button" className="link-button" disabled={busy} onClick={onSignIn}>
                 Sign in again
               </button>

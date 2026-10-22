@@ -1042,3 +1042,11 @@ td.col-name {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+.profile-limited {
+  margin: 0;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--accent-soft);
+}

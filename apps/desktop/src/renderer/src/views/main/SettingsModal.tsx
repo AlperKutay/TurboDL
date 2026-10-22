@@ -145,6 +145,13 @@ export function SettingsModal({ settings, version, onClose }: { settings: Settin
         </p>
       </div>
 
+      <h3>Instagram</h3>
+      <label className="check">
+        <input type="checkbox" checked={draft.instagramByAccount} onChange={(e) => set("instagramByAccount", e.target.checked)} />
+        Put Instagram downloads in a folder per account
+      </label>
+      <p className="muted field-note">Instagram › account (its highlights in Instagram › account › Highlights). Off: single links and Saved picks go to Instagram.</p>
+
       <h3>System</h3>
       <label className="check">
         <input type="checkbox" checked={draft.launchAtLogin} onChange={(e) => set("launchAtLogin", e.target.checked)} />

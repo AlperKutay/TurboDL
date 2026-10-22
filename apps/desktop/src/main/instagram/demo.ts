@@ -25,9 +25,11 @@ export function demoInstagram(base: string): InstagramDeps {
   return {
     find: async (link) => (link.kind === "highlight" && link.id === "17900000000000099" ? { type: "signedOut" } : {
       type: "items",
-      // a highlight's two stories, named after it; any other link three photos
+      // a highlight's two stories, named after it; demo.public's posts (DP…) two photos of that account; any other link three photos
       items:
-        link.kind === "highlight"
+        link.kind === "post" && link.code.startsWith("DP")
+          ? [1, 2].map((n) => ({ kind: "image" as const, url: `${base}/ig/${n}.png`, thumbnail: `${base}/ig/${n}.png`, mediaId: `${link.code}-${n}`, owner: "demo.public" }))
+          : link.kind === "highlight"
           ? [1, 2].map((n) => ({ kind: "image" as const, url: `${base}/ig/${n}.png`, thumbnail: `${base}/ig/${n}.png`, mediaId: `h${link.id}-${n}` }))
           : [0, 1, 2].map((n) => ({ kind: "image" as const, url: `${base}/ig/${n}.png`, thumbnail: `${base}/ig/${n}.png`, width: 64, height: 64, mediaId: `demo${n}` })),
     }),
@@ -43,7 +45,8 @@ export function demoInstagram(base: string): InstagramDeps {
     collections: async () => COLLECTIONS,
     openProfile: (username) => {
       const post = (k: number): SavedPost => ({ id: `p${k}`, cover: `${base}/ig/${k % 3}.png`, items: [{ kind: "image", url: `${base}/ig/${k % 3}.png`, mediaId: `p${k}` }], ...(k === 1 ? { pinned: true } : {}) });
-      const profiles: Record<string, { profile: InstagramProfile; pages: SavedPost[][]; highlights?: Highlight[] }> = {
+      const cover = (code: string, mediaType: number): SavedPost => ({ id: `${code}-post`, code, cover: `${base}/ig/0.png`, items: [], unread: true, mediaType });
+      const profiles: Record<string, { profile: InstagramProfile; pages: SavedPost[][]; highlights?: Highlight[]; limited?: boolean }> = {
         "demo.person": {
           profile: { id: "5100000000000000007", username: "demo.person", fullName: "Demo Person", isPrivate: false, following: true, postCount: 6 },
           pages: [[post(1), post(2), post(3)], [post(4), post(5), post(6)]],
@@ -56,6 +59,13 @@ export function demoInstagram(base: string): InstagramDeps {
           profile: { id: "5100000000000000010", username: "demo.expired", fullName: "Demo Expired", isPrivate: false, following: true, postCount: 1 },
           pages: [[post(1)]],
           highlights: [{ id: "17900000000000099", title: "Gone", cover: `${base}/ig/0.png` }],
+        },
+        // seen signed out: covers only, read from their pages when picked
+        "demo.public": {
+          profile: { id: "5100000000000000011", username: "demo.public", fullName: "Demo Public", isPrivate: false, following: false },
+          pages: [[cover("DP1", 8), cover("DP2", 2), cover("DP3", 1)]],
+          highlights: [{ id: "17900000000000005", title: "Trips", cover: `${base}/ig/1.png` }],
+          limited: true,
         },
         "demo.plain": {
           profile: { id: "5100000000000000009", username: "demo.plain", fullName: "Demo Plain", isPrivate: false, following: true, postCount: 3 },
@@ -73,7 +83,7 @@ export function demoInstagram(base: string): InstagramDeps {
           return found.profile;
         },
         highlights: found?.highlights ?? [],
-        limited: false,
+        limited: found?.limited === true,
         page: async (cursor) => {
           const k = cursor ? Number(cursor) : 0;
           return { posts: found?.pages[k] ?? [], ...(found && k + 1 < found.pages.length ? { next: String(k + 1) } : {}) };

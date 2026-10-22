@@ -95,6 +95,9 @@ export function PostGrid({
                   {post.pinned && <span className="ig-badge ig-pin">Pinned</span>}
                   {post.items.length > 1 && <span className="ig-badge">{post.items.length} items</span>}
                   {only?.kind === "video" && <span className="ig-badge">▶ {only.duration !== undefined ? length(only.duration) : "Video"}</span>}
+                  {/* known only by its cover: its kind says what it holds */}
+                  {post.unread && post.mediaType === 8 && <span className="ig-badge">Carousel</span>}
+                  {post.unread && post.mediaType === 2 && <span className="ig-badge">▶ Video</span>}
                 </button>
               </li>
             );
@@ -138,13 +141,13 @@ export function PostGrid({
   );
 }
 
-/** The bottom bar: why the last action failed, and Next over the picked posts. */
-export function PickBar({ picked, error, onNext }: { picked: number; error: string | null; onNext(): void }) {
+/** The bottom bar: why the last action failed, and Next over the picked posts (or what Next is doing). */
+export function PickBar({ picked, error, working, onNext }: { picked: number; error: string | null; working?: string; onNext(): void }) {
   return (
     <div className="saved-actions">
       {error && <span className="error-text">{error}</span>}
-      <span className="muted">Click to pick · hold to see it large</span>
-      <button type="button" className="btn btn-primary" disabled={picked === 0} onClick={onNext}>
+      <span className="muted">{working ?? "Click to pick · hold to see it large"}</span>
+      <button type="button" className="btn btn-primary" disabled={picked === 0 || working !== undefined} onClick={onNext}>
         Next ({picked})
       </button>
     </div>
