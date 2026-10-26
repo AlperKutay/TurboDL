@@ -9,14 +9,13 @@ import {
   type InstagramProfile,
   type ProfileEntry,
   type ProfileResult,
-  type Result,
   type SavedPage,
   type SavedPageResult,
   type SavedPost,
 } from "@turbodl/shared";
-import type { Backups } from "./backups";
+import type { Backups, StartResult } from "./backups";
 import { accountFolder, highlightsFolder } from "./folders";
-import { failedPage, type InstagramPacer } from "./pacer";
+import { SLOW_DOWN, failedPage, type InstagramPacer } from "./pacer";
 import type { ProfileIndex } from "./profile-index";
 import type { InstagramSession } from "./session";
 
@@ -47,6 +46,17 @@ export interface ProfileServiceDeps {
   baseDir(): string;
   now(): number;
 }
+
+/** A job's read of a profile's first posts: their items, or why there are none. */
+export type FirstPosts =
+  | { type: "items"; profile: InstagramProfile; items: InstagramItem[]; limited: boolean }
+  | { type: "signedOut" }
+  | { type: "rateLimited" }
+  | { type: "private" }
+  | { type: "failed"; message: string };
+
+/** A backup that didn't start, and why. */
+type Refusal = Extract<StartResult, { ok: false }>;
 
 /** posts kept per profile for estimates */
 const SAMPLE = 500;
@@ -131,6 +141,41 @@ export class ProfileService {
     return items;
   }
 
+  /**
+   * A job's read of a profile's first posts on a page of its own: the screen's page is never used or closed. A post
+   * known only by its cover is read from its own page after the job's gap, in the account's pace.
+   */
+  async readFirstPosts(username: string, o: { gap(signal?: AbortSignal): Promise<void>; signal?: AbortSignal }): Promise<FirstPosts> {
+    const { pacer } = this.deps;
+    const source = this.deps.open(username.toLowerCase(), this.deps.session.cookies());
+    try {
+      const profile = await source.profile();
+      if (isLocked(profile)) return { type: "private" };
+      const page = await source.page(undefined, o.signal);
+      const items: InstagramItem[] = [];
+      for (const post of page.posts) {
+        if (!post.unread || !post.code) {
+          items.push(...post.items);
+          continue;
+        }
+        // a called-off read asks Instagram nothing more
+        if (o.signal?.aborted) break;
+        const code = post.code;
+        await o.gap(o.signal);
+        if (pacer.held()) return { type: "rateLimited" };
+        await pacer.pace(o.signal);
+        if (pacer.held()) return { type: "rateLimited" };
+        const found = await pacer.ask(() => this.deps.findPost(code, o.signal)).catch(() => null);
+        items.push(...(found ?? []));
+      }
+      return { type: "items", profile, items, limited: source.limited };
+    } catch (err) {
+      return failedPage(err);
+    } finally {
+      source.close();
+    }
+  }
+
   /** `<baseDir>/Instagram/<username>`: a profile's picks and backups. */
   folder(username: string): string {
     return accountFolder(this.deps.baseDir(), username);
@@ -146,14 +191,17 @@ export class ProfileService {
    * Backs up a profile into its username's folder, its ledger keyed by the account's number: through the open
    * profile's page, or a page of its own when the profile isn't open (Continue after leaving it).
    */
-  async startBackup(username: string): Promise<Result> {
-    if (this.deps.backups.isRunning()) return { ok: false, error: "A backup is already running." };
+  async startBackup(username: string): Promise<StartResult> {
+    if (this.deps.backups.isRunning()) return { ok: false, error: "A backup is already running.", reason: "busy" };
     const key = username.toLowerCase();
     const opened = await this.pageFor(key);
-    if ("error" in opened) return { ok: false, error: opened.error };
+    if ("error" in opened) return opened;
     const { profile, source } = opened;
-    if (source.limited) return { ok: false, error: SIGN_IN_TO_BACK_UP };
-    if (isLocked(profile)) return { ok: false, error: "This account is private." };
+    const refused = refusal(profile, source);
+    if (refused) {
+      this.letGo(source);
+      return refused;
+    }
     const result = await this.deps.backups.start(
       {
         id: `profile-${profile.id}`,
@@ -167,7 +215,7 @@ export class ProfileService {
       () => this.startBackup(key),
     );
     if (!result.ok) {
-      if (this.current?.source !== source && this.backupSource !== source) source.close();
+      this.letGo(source);
       return result;
     }
     this.deps.index.record(profile, this.deps.now());
@@ -218,18 +266,18 @@ export class ProfileService {
    * Backs up every story of every highlight, one highlight per page (its own page load, 3–6 s apart), into its own
    * folder. New stories land in old highlights, so every run goes through all of them: no early stop.
    */
-  async startHighlightsBackup(username: string): Promise<Result> {
-    if (this.deps.backups.isRunning()) return { ok: false, error: "A backup is already running." };
+  async startHighlightsBackup(username: string): Promise<StartResult> {
+    if (this.deps.backups.isRunning()) return { ok: false, error: "A backup is already running.", reason: "busy" };
     const key = username.toLowerCase();
     const opened = await this.pageFor(key);
-    if ("error" in opened) return { ok: false, error: opened.error };
+    if ("error" in opened) return opened;
     const { profile, source } = opened;
     // the tray came with the page; a page opened only for this is no longer needed
-    if (this.current?.source !== source && this.backupSource !== source) source.close();
-    if (source.limited) return { ok: false, error: SIGN_IN_TO_BACK_UP };
-    if (isLocked(profile)) return { ok: false, error: "This account is private." };
+    this.letGo(source);
+    const refused = refusal(profile, source);
+    if (refused) return refused;
     const tray = this.trays.get(key) ?? [];
-    if (tray.length === 0) return { ok: false, error: "This profile has no highlights." };
+    if (tray.length === 0) return { ok: false, error: "This profile has no highlights.", reason: "empty" };
     const { pacer } = this.deps;
     const result = await this.deps.backups.start(
       {
@@ -279,11 +327,11 @@ export class ProfileService {
   }
 
   /** The open profile's page and profile, a running backup's, or a page of its own for a backup. */
-  private async pageFor(key: string): Promise<{ profile: InstagramProfile; source: ProfileSource } | { error: string }> {
+  private async pageFor(key: string): Promise<{ profile: InstagramProfile; source: ProfileSource } | Refusal> {
     const known = this.profiles.get(key);
     if (this.current?.key === key && known) return { profile: known, source: this.current.source };
     if (this.backupKey === key && this.backupSource && known) return { profile: known, source: this.backupSource };
-    if (!this.deps.session.signedIn()) return { error: SIGN_IN_TO_BACK_UP };
+    if (!this.deps.session.signedIn()) return { ok: false, error: SIGN_IN_TO_BACK_UP, reason: "signInRequired" };
     const source = this.deps.open(key, this.deps.session.cookies());
     try {
       const profile = await source.profile();
@@ -293,8 +341,15 @@ export class ProfileService {
     } catch (err) {
       source.close();
       const failed = failedPage(err);
-      return { error: failed.type === "failed" ? failed.message : failed.type === "signedOut" ? "Sign in to Instagram again." : "Instagram asked TurboDL to slow down. Try again in a few minutes." };
+      if (failed.type === "failed") return { ok: false, error: failed.message, reason: "error" };
+      if (failed.type === "signedOut") return { ok: false, error: "Sign in to Instagram again.", reason: "signInRequired" };
+      return { ok: false, error: SLOW_DOWN, reason: "rateLimited" };
     }
+  }
+
+  /** Closes a page `pageFor` opened only for a backup that isn't using it; the screen's and a running backup's stay. */
+  private letGo(source: ProfileSource): void {
+    if (this.current?.source !== source && this.backupSource !== source) source.close();
   }
 
   private sourceFor(key: string): ProfileSource {
@@ -326,6 +381,13 @@ export class ProfileService {
     if (pacer.held()) throw new SavedError("rateLimited");
     return pacer.ask(() => source.page(cursor, signal));
   }
+}
+
+/** Why a profile can't be backed up from its page: seen as signed-out visitors see it, or private and not followed. */
+function refusal(profile: InstagramProfile, source: ProfileSource): Refusal | null {
+  if (source.limited) return { ok: false, error: SIGN_IN_TO_BACK_UP, reason: "signInRequired" };
+  if (isLocked(profile)) return { ok: false, error: "This account is private.", reason: "private" };
+  return null;
 }
 
 /** The last part of an address's path (a file name), without its query. */

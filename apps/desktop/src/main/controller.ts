@@ -54,7 +54,7 @@ import { HttpDownloadTask } from "./engine/download-task";
 import { delay } from "./engine/http";
 import { fetchMedia } from "./instagram/fetch-media";
 import { itemDownload } from "./instagram/item-download";
-import { Backups } from "./instagram/backups";
+import { Backups, type StartResult } from "./instagram/backups";
 import { LedgerStore } from "./instagram/ledger";
 import { InstagramPacer } from "./instagram/pacer";
 import { ProfileIndex } from "./instagram/profile-index";
@@ -553,7 +553,7 @@ export class AppController {
     return this.saved.plan(collectionId);
   }
 
-  async startBackup(collectionId: string): Promise<Result> {
+  async startBackup(collectionId: string): Promise<StartResult> {
     return this.saved.startBackup(collectionId);
   }
 
@@ -617,7 +617,7 @@ export class AppController {
     return this.profiles.highlightsPlan(username);
   }
 
-  startHighlightsBackup(username: string): Promise<Result> {
+  startHighlightsBackup(username: string): Promise<StartResult> {
     return this.profiles.startHighlightsBackup(username);
   }
 
@@ -625,7 +625,7 @@ export class AppController {
     return this.profiles.plan(username);
   }
 
-  startProfileBackup(username: string): Promise<Result> {
+  startProfileBackup(username: string): Promise<StartResult> {
     return this.profiles.startBackup(username);
   }
 

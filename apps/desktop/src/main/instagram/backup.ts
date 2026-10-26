@@ -32,6 +32,8 @@ export interface BackupDeps {
   random?: () => number;
   /** what the CDN gets with every fetch */
   headers: Record<string, string>;
+  /** each item put in the folder: fetched now, or found there already */
+  onFile?(file: string, existing: boolean): void;
 }
 
 /** ms between posts fetched (picked at random in the range) and before each next page, as the iPhone app waits. */
@@ -214,7 +216,10 @@ export class BackupRun {
   /** One item into the collection's folder; a file already there counts as saved. */
   private async save(id: string, item: InstagramItem, signal: AbortSignal): Promise<"fetched" | "onDisk" | "failed"> {
     const file = path.join(this.target.dir, sanitizeFilename(`${id}.${instagramExtension(item)}`));
-    if (existsSync(file)) return "onDisk";
+    if (existsSync(file)) {
+      this.deps.onFile?.(file, true);
+      return "onDisk";
+    }
     this.progress = 0;
     try {
       await this.deps.fetch(item.url, file, {
@@ -225,11 +230,12 @@ export class BackupRun {
           if (Date.now() - this.lastReport >= PROGRESS_EVERY) this.report();
         },
       });
-      this.saved++;
-      return "fetched";
     } catch {
       return "failed";
     }
+    this.saved++;
+    this.deps.onFile?.(file, false);
+    return "fetched";
   }
 
   private async pause(ms: number, signal: AbortSignal): Promise<void> {
