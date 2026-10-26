@@ -49,7 +49,8 @@ export interface ProfileServiceDeps {
 
 /** A job's read of a profile's first posts: their items, or why there are none. */
 export type FirstPosts =
-  | { type: "items"; profile: InstagramProfile; items: InstagramItem[]; limited: boolean }
+  /** `posts`: how many posts the page showed (a carousel's items are more than one) */
+  | { type: "items"; profile: InstagramProfile; items: InstagramItem[]; limited: boolean; posts: number }
   | { type: "signedOut" }
   | { type: "rateLimited" }
   | { type: "private" }
@@ -178,7 +179,7 @@ export class ProfileService {
       }
       // Instagram asked to slow down while the posts were read
       if (pacer.held()) return { type: "rateLimited" };
-      return { type: "items", profile, items, limited: source.limited };
+      return { type: "items", profile, items, limited: source.limited, posts: page.posts.length };
     } catch (err) {
       return failedPage(err);
     } finally {

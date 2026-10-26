@@ -955,12 +955,13 @@ describe("Instagram profiles", () => {
     const c = await signedIn(ig.deps);
     await c.profileLoad("sample.user");
     const gap = async () => undefined;
-    expect(await c["profiles"].readFirstPosts("other.user", { gap })).toEqual({ type: "items", profile: person("53", "other.user"), items: photo("3").items, limited: false });
+    expect(await c["profiles"].readFirstPosts("other.user", { gap })).toEqual({ type: "items", profile: person("53", "other.user"), items: photo("3").items, limited: false, posts: 1 });
     expect(await c["profiles"].readFirstPosts("Sample.User", { gap })).toEqual({
       type: "items",
       profile: SAMPLE.profile,
       items: [...photo("1").items, ...photo("2").items],
       limited: false,
+      posts: 2,
     });
     // the reads' own two pages, each closed once read; the screen's page is still the open profile's
     expect(ig.opened).toEqual(["sample.user", "other.user", "sample.user"]);
@@ -1287,7 +1288,7 @@ describe("Instagram signed out, and a folder per account", () => {
     const gap = async () => {
       gaps.push({ opened: so.opened.length, read: so.read.length });
     };
-    expect(await c["profiles"].readFirstPosts("sample.user", { gap })).toEqual({ type: "items", profile: PUBLIC_PROFILE, items: [item("a"), item("b")], limited: true });
+    expect(await c["profiles"].readFirstPosts("sample.user", { gap })).toEqual({ type: "items", profile: PUBLIC_PROFILE, items: [item("a"), item("b")], limited: true, posts: 2 });
     // a gap before the profile's page and before each post's own page, and the account's 1.5 s between the three
     expect(gaps).toEqual([
       { opened: 0, read: 0 },

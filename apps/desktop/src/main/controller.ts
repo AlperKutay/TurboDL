@@ -64,6 +64,8 @@ import { SavedService } from "./instagram/saved-service";
 import type { FindOutcome } from "./instagram/finder";
 import { InstagramSession, type Crypt } from "./instagram/session";
 import { probe } from "./engine/probe";
+import { runInstagramJob } from "./jobs/instagram-job";
+import { InstagramLane } from "./jobs/instagram-lane";
 import { Jobs } from "./jobs/jobs";
 import { jobKindOf } from "./jobs/kind";
 import type { JobRecord } from "./jobs/job-record";
@@ -224,6 +226,8 @@ export class AppController {
   private openRequest: OpenRequest | null = null;
   /** the jobs the API runs */
   readonly jobs: Jobs;
+  /** Instagram jobs' backups one at a time, and their page reads 3–6 s apart */
+  private readonly lane: InstagramLane;
 
   constructor(private readonly o: ControllerOptions) {
     this.instagram = o.instagram ?? NO_INSTAGRAM;
@@ -271,6 +275,13 @@ export class AppController {
       index: new ProfileIndex(path.join(o.userDataDir, "instagram-profiles.json"), ledgers),
       baseDir: () => this.settings.baseDir,
       now: () => (ig.now ? ig.now() : Date.now()),
+    });
+    this.lane = new InstagramLane({
+      wait,
+      now: () => (ig.now ? ig.now() : Date.now()),
+      random: Math.random,
+      held: () => this.pacer.held(),
+      settled: () => this.backups.settled(),
     });
     this.jobs = new Jobs({ run: (job) => this.runJob(job) });
     this.defaults = defaultSettings(o.downloadsDir);
@@ -890,24 +901,36 @@ export class AppController {
     this.o.ui.closePending(pendingId);
   }
 
-  /** Does one API job: file, page and stream links as downloads; Instagram's kinds are not run yet. */
+  /** Does one API job: file, page and stream links as downloads; Instagram's links, profiles and Saved as Instagram jobs. */
   private async runJob(job: JobRecord): Promise<void> {
     const { url } = job.request;
-    if (jobKindOf(url) === "file") {
-      if (isInstagramPage(url)) {
-        job.end({ state: "failed", reason: "unsupported", error: "TurboDL opens Instagram posts, reels, stories, highlights, profiles and Saved." });
-        return;
-      }
-      await runWebJob(job, {
+    const link = jobKindOf(url) === "file" ? null : parseInstagramLink(url);
+    if (link) {
+      await runInstagramJob(job, link, {
+        session: this.instagramSession,
+        find: (l, signal) => this.instagram.find(l, this.instagramSession.cookies(), signal),
+        profiles: this.profiles,
+        saved: this.saved,
+        backups: this.backups,
+        pacer: this.pacer,
+        lane: this.lane,
         manager: this.manager,
-        probe: (u) => probe(u, {}, undefined, 15000),
-        mediaInfo: async (pageUrl) => fetchMediaInfo(await this.tools.ensure(), pageUrl, {}, { command: this.o.ytdlpCommand, cookieFile: null }),
-        streamOptions: (kind, u) => streamOptions(kind, u, {}),
-        categoryDir: (category) => this.categoryDir(category),
+        settings: () => this.settings,
+        agent: this.instagram.agent,
       });
       return;
     }
-    job.end({ state: "failed", reason: "unsupported", error: "Instagram jobs are not supported yet." });
+    if (isInstagramPage(url)) {
+      job.end({ state: "failed", reason: "unsupported", error: "TurboDL opens Instagram posts, reels, stories, highlights, profiles and Saved." });
+      return;
+    }
+    await runWebJob(job, {
+      manager: this.manager,
+      probe: (u) => probe(u, {}, undefined, 15000),
+      mediaInfo: async (pageUrl) => fetchMediaInfo(await this.tools.ensure(), pageUrl, {}, { command: this.o.ytdlpCommand, cookieFile: null }),
+      streamOptions: (kind, u) => streamOptions(kind, u, {}),
+      categoryDir: (category) => this.categoryDir(category),
+    });
   }
 
   /** What the bridge serves the jobs API from; the Instagram name is only what the app already holds. */
