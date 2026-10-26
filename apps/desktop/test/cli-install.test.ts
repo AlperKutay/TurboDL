@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, utimesSync, wri
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { cliStatus, installCli, parseRegQuery, removeCli, shellLauncher, withEntry, withoutEntry, writeCliLauncher, type CliInstallDeps } from "../src/main/cli-install";
+import { cliStatus, installCli, parseUserPath, removeCli, shellLauncher, withEntry, withoutEntry, writeCliLauncher, type CliInstallDeps } from "../src/main/cli-install";
 
 let dir: string;
 beforeEach(() => {
@@ -10,7 +10,8 @@ beforeEach(() => {
 });
 afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
-const REG_OUT = (type: string, value: string) => `\r\nHKEY_CURRENT_USER\\Environment\r\n    Path    ${type}    ${value}\r\n\r\n`;
+const enc = (kind: string, value: string) => `${Buffer.from(`${kind}\n${value}`, "utf16le").toString("base64")}\r\n`;
+const KIND: Record<string, string> = { REG_SZ: "String", REG_EXPAND_SZ: "ExpandString" };
 
 describe("writeCliLauncher", () => {
   it("writes the Windows launcher and its two-line config", () => {
@@ -52,7 +53,12 @@ describe("writeCliLauncher", () => {
     if (process.platform !== "win32") expect(statSync(r.command).mode & 0o777).toBe(0o755);
   });
 
-  it("keeps working when the old launcher cannot be replaced", () => {
+  it("reports a launcher that cannot be copied when there is no old one", () => {
+    const o = { platform: "win32" as const, userDataDir: path.join(dir, "data"), execPath: "a", script: "b", launcherExe: path.join(dir, "missing.exe") };
+    expect(() => writeCliLauncher(o)).toThrow(/ENOENT/);
+  });
+
+  it.skipIf(process.platform !== "win32")("keeps working when the old launcher cannot be replaced", () => {
     const launcherExe = path.join(dir, "src.exe");
     writeFileSync(launcherExe, "EXE-1");
     const binDir = path.join(dir, "data", "bin");
@@ -80,15 +86,19 @@ describe("withEntry / withoutEntry", () => {
   });
 });
 
-describe("parseRegQuery", () => {
-  it("reads REG_EXPAND_SZ with spaces in the value", () => {
-    expect(parseRegQuery(REG_OUT("REG_EXPAND_SZ", "%USERPROFILE%\\AppData\\Local\\Microsoft\\WindowsApps;C:\\Program Files\\x"))).toEqual({
-      type: "REG_EXPAND_SZ",
-      value: "%USERPROFILE%\\AppData\\Local\\Microsoft\\WindowsApps;C:\\Program Files\\x",
-    });
+describe("parseUserPath", () => {
+  it("reads an expandable value with non-ASCII characters and spaces", () => {
+    const value = "%USERPROFILE%\\çğıİşö;C:\\Program Files\\x";
+    expect(parseUserPath(enc("ExpandString", value))).toEqual({ type: "REG_EXPAND_SZ", value });
   });
-  it("reads REG_SZ", () => expect(parseRegQuery(REG_OUT("REG_SZ", "C:\\a;C:\\b"))).toEqual({ type: "REG_SZ", value: "C:\\a;C:\\b" }));
-  it("answers null without a value", () => expect(parseRegQuery("\r\nHKEY_CURRENT_USER\\Environment\r\n")).toBeNull());
+  it("reads a plain string", () => expect(parseUserPath(enc("String", "C:\\a;C:\\b"))).toEqual({ type: "REG_SZ", value: "C:\\a;C:\\b" }));
+  it("reads an empty value", () => expect(parseUserPath(enc("String", ""))).toEqual({ type: "REG_SZ", value: "" }));
+  it('answers "none" when there is no value', () => expect(parseUserPath("none\r\n")).toBe("none"));
+  it("answers null for anything else", () => {
+    expect(parseUserPath("")).toBeNull();
+    expect(parseUserPath("Access denied")).toBeNull();
+    expect(parseUserPath(enc("Binary", "x"))).toBeNull();
+  });
 });
 
 function fake(over: Partial<CliInstallDeps> & { path?: { type: string; value: string } | null } = {}) {
@@ -102,13 +112,13 @@ function fake(over: Partial<CliInstallDeps> & { path?: { type: string; value: st
     supported: true,
     runReg: async (args) => {
       calls.push(args);
-      if (args[0] === "query") {
-        if (!current) throw new Error("exit 1");
-        return REG_OUT(current.type, current.value);
-      }
       current = { type: args[args.indexOf("/t") + 1], value: args[args.indexOf("/d") + 1] };
       events.push("add");
       return "";
+    },
+    readUserPath: async () => {
+      
+      return current ? enc(KIND[current.type], current.value) : "none";
     },
     broadcast: async () => void events.push("broadcast"),
     runAdmin: async (c) => void admin.push(c),
@@ -123,8 +133,7 @@ describe("Windows PATH", () => {
   it("adds the folder to the user PATH once, keeping its type and unexpanded entries, then tells running programs", async () => {
     const f = fake();
     expect(await installCli(f.deps)).toEqual({ ok: true });
-    expect(f.calls[0]).toEqual(["query", "HKCU\\Environment", "/v", "Path"]);
-    expect(f.calls[1]).toEqual(["add", "HKCU\\Environment", "/v", "Path", "/t", "REG_EXPAND_SZ", "/d", `%USERPROFILE%\\bin;C:\\Tools;${BIN}`, "/f"]);
+    expect(f.calls[0]).toEqual(["add", "HKCU\\Environment", "/v", "Path", "/t", "REG_EXPAND_SZ", "/d", `%USERPROFILE%\\bin;C:\\Tools;${BIN}`, "/f"]);
     expect(f.events).toEqual(["add", "broadcast"]);
     await installCli(f.deps);
     expect(f.calls.filter((c) => c[0] === "add")).toHaveLength(1);
@@ -139,7 +148,7 @@ describe("Windows PATH", () => {
   it("creates the PATH value as REG_EXPAND_SZ when there is none", async () => {
     const f = fake({ path: null });
     expect(await installCli(f.deps)).toEqual({ ok: true });
-    expect(f.calls[1]).toEqual(["add", "HKCU\\Environment", "/v", "Path", "/t", "REG_EXPAND_SZ", "/d", BIN, "/f"]);
+    expect(f.calls[0]).toEqual(["add", "HKCU\\Environment", "/v", "Path", "/t", "REG_EXPAND_SZ", "/d", BIN, "/f"]);
   });
 
   it("removes only its own entry", async () => {
@@ -153,6 +162,45 @@ describe("Windows PATH", () => {
     expect(await cliStatus(fake().deps)).toEqual({ supported: true, installed: false, where: BIN });
     expect(await cliStatus(fake({ path: { type: "REG_SZ", value: `C:\\a;${BIN}\\` } }).deps)).toEqual({ supported: true, installed: true, where: BIN });
     expect(await cliStatus(fake({ path: null }).deps)).toEqual({ supported: true, installed: false, where: BIN });
+  });
+});
+
+describe("an unreadable PATH", () => {
+  const broken = (read: () => Promise<string>) => fake({ readUserPath: read });
+  const MSG = { ok: false, error: "Couldn't read your PATH; nothing was changed." };
+  for (const [name, read] of [
+    ["fails", async () => Promise.reject(new Error("boom"))],
+    ["is garbage", async () => "Access denied"],
+  ] as const) {
+    it(`writes nothing when the read ${name}`, async () => {
+      const f = broken(read);
+      expect(await installCli(f.deps)).toEqual(MSG);
+      expect(await removeCli(f.deps)).toEqual(MSG);
+      expect(f.calls).toEqual([]);
+      expect(f.events).toEqual([]);
+      expect(await cliStatus(f.deps)).toEqual({ supported: true, installed: false, where: BIN });
+    });
+  }
+
+  it("keeps non-ASCII entries as they were read", async () => {
+    const f = fake({ path: { type: "REG_EXPAND_SZ", value: "%USERPROFILE%\\çğıİşö;C:\\plain" } });
+    await installCli(f.deps);
+    expect(f.value()?.value).toBe(`%USERPROFILE%\\çğıİşö;C:\\plain;${BIN}`);
+  });
+
+  it("removing with no entry of ours changes nothing, even with empty segments", async () => {
+    const f = fake({ path: { type: "REG_SZ", value: "C:\\a;;C:\\b;" } });
+    expect(await removeCli(f.deps)).toEqual({ ok: true });
+    expect(f.calls).toEqual([]);
+    expect(f.events).toEqual([]);
+  });
+
+  it("shows the first stderr line, not the PATH, when reg fails", async () => {
+    const f = fake();
+    f.deps.runReg = async () => {
+      throw Object.assign(new Error("Command failed: reg add ... /d C:\\very;long;PATH"), { stderr: "ERROR: Access is denied.\r\nmore" });
+    };
+    expect(await installCli(f.deps)).toEqual({ ok: false, error: "ERROR: Access is denied." });
   });
 });
 
