@@ -1417,6 +1417,92 @@ describe("Instagram signed out, and a folder per account", () => {
     expect(await c.findInstagram(ui.opened[0].pendingId)).toEqual({ type: "signedOut" });
   });
 
+  const H2 = { id: "17900000000000002", title: "Summer" };
+  const H3 = { id: "17900000000000003", title: "Winter" };
+  const H4 = { id: "17900000000000004", title: "Spring" };
+
+  it("opens a highlight's stories without a session, in the read slot and the account's pace", async () => {
+    const so = fakeSignedOut({ "17900000000000002": [item("a"), item("b")], "17900000000000003": [item("c")] }, { tray: [[H2, H3]] });
+    const times: number[] = [];
+    const find = so.deps.find;
+    so.deps.find = async (link, cookies, signal) => {
+      times.push(so.deps.now!());
+      return find(link, cookies, signal);
+    };
+    const c = await start({}, null, so.deps);
+    await c.profileLoad("sample.user");
+    expect(await c.loadHighlight("sample.user", H2.id)).toEqual({ type: "stories", count: 2 });
+    expect(await c.loadHighlight("sample.user", H3.id)).toEqual({ type: "stories", count: 1 });
+    expect(times[1] - times[0]).toBeGreaterThanOrEqual(3000);
+    expect(await c.openHighlightPicks("sample.user", [H3.id, H2.id])).toEqual({ ok: true });
+    const found = await c.findInstagram(ui.opened[0].pendingId);
+    expect(found.type === "items" && found.items.map((i) => i.mediaId)).toEqual(["c", "a", "b"]);
+  });
+
+  it("pages a long highlights tray when the profile opens, one page at a time, 3–6 s apart", async () => {
+    const so = fakeSignedOut({}, { tray: [[H2], [H3], [H4]] });
+    const c = await start({}, null, so.deps);
+    const loaded = await c.profileLoad("sample.user");
+    expect(loaded.type === "profile" && loaded.highlights.map((h) => h.id)).toEqual([H2.id, H3.id, H4.id]);
+    expect(so.trayAsked).toHaveLength(2);
+    expect(so.trayAsked[1] - so.trayAsked[0]).toBeGreaterThanOrEqual(3000);
+  });
+
+  it("pages at most 20 further pages of a tray", async () => {
+    const tray = Array.from({ length: 30 }, (_, k) => [{ id: `1790000000000${String(k).padStart(4, "0")}`, title: `h${k}` }]);
+    const so = fakeSignedOut({}, { tray });
+    const c = await start({}, null, so.deps);
+    const loaded = await c.profileLoad("sample.user");
+    expect(loaded.type === "profile" && loaded.highlights).toHaveLength(21);
+    expect(so.trayAsked).toHaveLength(20);
+  });
+
+  it("backs a profile's highlights up without a session, paging its tray, one highlight's page at a time, into the highlights folder", async () => {
+    const so = fakeSignedOut({ [H2.id]: [item("a"), item("b")], [H3.id]: [item("c")] }, { tray: [[H2], [H3]] });
+    const reads: number[] = [];
+    const find = so.deps.find;
+    so.deps.find = async (link, cookies, signal) => {
+      reads.push(so.deps.now!());
+      return find(link, cookies, signal);
+    };
+    const c = await start({}, null, so.deps);
+    expect(await c.startHighlightsBackup("sample.user")).toEqual({ ok: true });
+    expect(await backupEnds(c)).toMatchObject({ state: "finished", kind: "highlights", done: 2, failed: 0, saved: 3 });
+    expect(readdirSync(path.join(root, "dl", "Instagram", "sample.user", "Highlights")).sort()).toEqual(["a.jpg", "b.jpg", "c.jpg"]);
+    expect(so.read).toEqual([H2.id, H3.id]);
+    expect(so.opened).toEqual([{ username: "sample.user", cookies: [] }]);
+    const pages = [...reads, ...so.trayAsked].sort((x, y) => x - y);
+    expect(pages).toHaveLength(3);
+    for (let k = 1; k < pages.length; k++) expect(pages[k] - pages[k - 1]).toBeGreaterThanOrEqual(3000);
+  });
+
+  it("holds the account when a highlight's page lands on the login wall, stopping a signed-out highlights backup and keeping what it saved", async () => {
+    const so = fakeSignedOut({ [H2.id]: [item("a")], [H3.id]: [item("c")] }, { tray: [[H2, H3, H4]] });
+    const find = so.deps.find;
+    so.deps.find = async (link, cookies, signal) => {
+      const found = await find(link, cookies, signal);
+      return link.kind === "highlight" && link.id === H3.id ? { type: "signedOut" } : found;
+    };
+    const c = await start({}, null, so.deps);
+    expect(await c.startHighlightsBackup("sample.user")).toEqual({ ok: true });
+    expect(await backupEnds(c)).toMatchObject({ state: "rateLimited", done: 1, failed: 0 });
+    expect(c["pacer"].held()).toBe(true);
+    expect(so.read).toEqual([H2.id, H3.id]);
+    expect(readdirSync(path.join(root, "dl", "Instagram", "sample.user", "Highlights"))).toEqual(["a.jpg"]);
+  });
+
+  it("answers rate limited, holding the account, when a highlight opened from the screen lands on the login wall without a session", async () => {
+    const so = fakeSignedOut({});
+    so.deps.find = async () => ({ type: "signedOut" });
+    const c = await start({}, null, so.deps);
+    await c.profileLoad("sample.user");
+    expect(await c.loadHighlight("sample.user", H2.id)).toEqual({ type: "rateLimited" });
+    expect(c["pacer"].held()).toBe(true);
+    const asked = so.read.length;
+    expect(await c.loadHighlight("sample.user", H2.id)).toEqual({ type: "rateLimited" });
+    expect(so.read).toHaveLength(asked);
+  });
+
   it("puts a link's items in their account's folder, highlights under it, and in Instagram when that is switched off", async () => {
     const so = fakeSignedOut({ C1abcDEF: [item("a", "someone")], "17900000000000009": [item("b", "someone")] });
     const c = await start({}, null, so.deps);

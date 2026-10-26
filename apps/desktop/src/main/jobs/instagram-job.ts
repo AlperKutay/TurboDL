@@ -79,7 +79,7 @@ async function profileJob(job: JobRecord, username: string, deps: InstagramJobDe
   if (!signedIn && highlightsOnly) return fail(job, deps, "signInRequired", HIGHLIGHTS_SIGN_IN);
   let missedPosts = 0;
   if (!highlightsOnly) {
-    const posts = await backup(job, deps, () => profiles.startBackup(username), async () => job.warn(planWarning(await profiles.plan(username))));
+    const posts = await backup(job, deps, () => profiles.startBackup(username, true), async () => job.warn(planWarning(await profiles.plan(username))));
     if (posts === null) return;
     if (typeof posts !== "number") return refused(job, deps, posts);
     missedPosts = posts;
@@ -87,7 +87,7 @@ async function profileJob(job: JobRecord, username: string, deps: InstagramJobDe
   let missedHighlights = 0;
   if (highlights && !signedIn) job.warn(HIGHLIGHTS_SIGN_IN);
   else if (highlights) {
-    const stories = await backup(job, deps, () => profiles.startHighlightsBackup(username));
+    const stories = await backup(job, deps, () => profiles.startHighlightsBackup(username, true));
     if (stories === null) return;
     if (typeof stories === "number") missedHighlights = stories;
     else if (stories.reason === "empty") job.warn(NO_HIGHLIGHTS);

@@ -62,9 +62,12 @@ export const signedOutCover = (id: string, code: string): SavedPost => ({ id, co
  * A public profile seen signed out (covers only: `listing`, page by page; p1 and p2 on one page unless given), and
  * post or highlight pages that show `pages[code or id]`. Its clock moves only when something waits.
  */
-export function fakeSignedOut(pages: Record<string, InstagramItem[]>, o: { listing?: SavedPost[][]; profile?: InstagramProfile } = {}) {
+export function fakeSignedOut(pages: Record<string, InstagramItem[]>, o: { listing?: SavedPost[][]; profile?: InstagramProfile; tray?: Highlight[][] } = {}) {
   let now = 0;
   const listing = o.listing ?? [[signedOutCover("p1", "C1"), signedOutCover("p2", "C2")]];
+  const tray = o.tray ?? [[{ id: "17900000000000002", title: "Summer" }]];
+  /** the clock's time at each further page of the tray asked for */
+  const trayAsked: number[] = [];
   const opened: { username: string; cookies: string[] }[] = [];
   const closed: string[] = [];
   const read: string[] = [];
@@ -87,21 +90,29 @@ export function fakeSignedOut(pages: Record<string, InstagramItem[]>, o: { listi
     fetch: async (_url, file) => writeFileSync(file, "x"),
     openProfile: (username, cookies) => {
       opened.push({ username, cookies: cookies.map((c) => c.name) });
+      let shown = 0;
       return {
         profile: async () => o.profile ?? PUBLIC_PROFILE,
-        highlights: [{ id: "17900000000000002", title: "Summer" }],
+        highlights: tray[0],
         limited: true,
+        get trayCursor() {
+          return shown + 1 < tray.length ? String(shown + 1) : undefined;
+        },
         page: async (cursor) => {
           asked.push({ cursor, at: now });
           const k = cursor ? Number(cursor) : 0;
           return { posts: listing[k] ?? [], ...(k + 1 < listing.length ? { next: String(k + 1) } : {}) };
         },
-        moreHighlights: async () => null,
+        moreHighlights: async () => {
+          if (shown + 1 >= tray.length) return null;
+          trayAsked.push(now);
+          return tray[++shown];
+        },
         close: () => closed.push(username),
       };
     },
   };
-  return { deps, opened, closed, read, asked };
+  return { deps, opened, closed, read, asked, trayAsked };
 }
 
 /**
