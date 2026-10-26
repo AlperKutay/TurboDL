@@ -8,6 +8,13 @@ from typing import Any, Dict, Iterator, Optional, Tuple
 
 from .errors import AppNotReachable, TurboDLError
 
+_TIMEOUTS = (socket.timeout, TimeoutError)
+
+
+class JobNotFound(TurboDLError):
+    """The app doesn't know the job."""
+
+
 LOST = "Lost the connection to TurboDL."
 REFUSED = "TurboDL refused the key in api.json."
 
@@ -43,27 +50,29 @@ def stream_lines(port: int, token: str, path: str, deadline: Optional[float] = N
     Returns when the server closes the stream (or the connection breaks); raises the builtin TimeoutError at
     `deadline` (a time.monotonic() value) and TurboDLError for a refused or failed call."""
     conn = http.client.HTTPConnection("127.0.0.1", port, timeout=_remaining(deadline))
+    res = None
     try:
         try:
             conn.request("GET", path, headers={"Authorization": "Bearer " + token})
+            sock = conn.sock  # kept: the response may drop conn.sock (HTTP/1.0 or Connection: close)
             res = conn.getresponse()
-        except socket.timeout:
+        except _TIMEOUTS:
             raise TimeoutError() from None
         except (OSError, http.client.HTTPException):
             return
         if res.status != 200:
             res.read()
             if res.status == 404 and not_found:
-                raise TurboDLError(not_found)
+                raise JobNotFound(not_found)
             if res.status == 403:
                 raise TurboDLError(REFUSED)
             raise TurboDLError("TurboDL answered %d." % res.status)
         while True:
             try:
-                if deadline is not None and conn.sock is not None:
-                    conn.sock.settimeout(_remaining(deadline))
+                if deadline is not None and sock is not None:
+                    sock.settimeout(_remaining(deadline))
                 line = res.readline()
-            except socket.timeout:
+            except _TIMEOUTS:  # before Python 3.10 the builtin TimeoutError is not socket.timeout
                 raise TimeoutError() from None
             except (OSError, http.client.HTTPException):
                 return
@@ -76,6 +85,8 @@ def stream_lines(port: int, token: str, path: str, deadline: Optional[float] = N
             if isinstance(value, dict):
                 yield value
     finally:
+        if res is not None:
+            res.close()
         conn.close()
 
 

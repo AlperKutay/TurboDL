@@ -2,7 +2,7 @@
 
 import os
 import time
-from typing import Any, Callable, Dict, Iterator, List, Optional
+from typing import Any, Callable, Dict, Iterator, List, Optional, Set
 
 from . import _discover
 from ._http import request, stream_lines
@@ -22,6 +22,7 @@ class TurboDL:
         self._folder = _discover.user_data_dir(user_data)
         self._start = start
         self._timeout = timeout
+        self._cancelled = set()  # type: Set[str]  # ids this client cancelled
         self._port, self._token = _discover.connect(self._folder, start, timeout)
         api = self.info().get("api")
         if api != API_VERSION:
@@ -74,6 +75,7 @@ class TurboDL:
         return self._job_call("GET", "/v1/jobs/" + id, id)
 
     def _cancel_raw(self, id: str) -> Dict[str, Any]:
+        self._cancelled.add(id)
         return self._job_call("POST", "/v1/jobs/" + id + "/cancel", id)
 
     def _job_call(self, method: str, path: str, id: str) -> Dict[str, Any]:
@@ -82,10 +84,13 @@ class TurboDL:
     def _stream(self, id: str, deadline: Optional[float]) -> Iterator[Dict[str, Any]]:
         return stream_lines(self._port, self._token, "/v1/jobs/" + id + "/events", deadline, "No job %s." % id)
 
-    def _reconnect(self) -> bool:
-        """Looks api.json up again (the app may have restarted on another port) for up to RECONNECT_WINDOW seconds."""
+    def _reconnect(self, deadline: Optional[float] = None) -> bool:
+        """Looks api.json up again (the app may have restarted on another port) for up to RECONNECT_WINDOW seconds;
+        raises TimeoutError when `deadline` comes first."""
         began = time.monotonic()
         while True:
+            if deadline is not None and time.monotonic() >= deadline:
+                raise TimeoutError()
             file = _discover.read_api_file(self._folder)
             if file is not None and file.get("port") is not None and _discover._ping(file["port"], file["token"]):
                 self._port, self._token = file["port"], file["token"]

@@ -1,4 +1,6 @@
 import os
+import threading
+import time
 import unittest
 from unittest import mock
 
@@ -64,10 +66,10 @@ class FollowTests(JobCase):
 
     def test_limited_raises_sign_in_required_with_the_files_saved(self) -> None:
         t = self.serve()
-        self.script({"type": "end", "jobId": "j1", "job": ended(limited=True, warnings=["Only the first 12 posts."])})
+        self.script({"type": "end", "jobId": "j1", "job": ended(limited=True, warnings=["The folder and name are ignored.", "Sign in to Instagram to save everything."])})
         with self.assertRaises(SignInRequired) as cm:
             t.get(URL)
-        self.assertEqual(str(cm.exception), "Only the first 12 posts.")
+        self.assertEqual(str(cm.exception), "Sign in to Instagram to save everything.")
         self.assertEqual(cm.exception.job.files, [FILE])
         self.assertIsInstance(cm.exception, JobFailed)
 
@@ -115,6 +117,23 @@ class FollowTests(JobCase):
             job.wait()
         self.assertEqual(cm.exception.reason, "stopped")
 
+    def test_cancelled_through_the_client_has_no_reason(self) -> None:
+        t = self.serve()
+        job = t.add(URL)
+        t.cancel(job.id)
+        self.script({"type": "end", "jobId": "j1", "job": make_job("j1", state="cancelled")})
+        with self.assertRaises(Cancelled) as cm:
+            job.wait()
+        self.assertIsNone(cm.exception.reason)
+
+    def test_cancel_then_wait_on_the_returned_job(self) -> None:
+        t = self.serve()
+        t.add(URL)
+        self.script({"type": "end", "jobId": "j1", "job": make_job("j1", state="cancelled")})
+        with self.assertRaises(Cancelled) as cm:
+            t.cancel("j1").wait()
+        self.assertIsNone(cm.exception.reason)
+
     def test_unknown_job(self) -> None:
         t = self.serve()
         job = t.add(URL)
@@ -153,6 +172,50 @@ class InterruptionTests(JobCase):
         job = t.get(URL, on_event=seen.append)
         self.assertEqual([e["path"] for e in seen if e["type"] == "file"], [FILE, FILE2])
         self.assertEqual((job.state, job.files), ("done", [FILE, FILE2]))
+
+    def test_a_restarted_app_that_forgot_the_job_is_quit(self) -> None:
+        t = self.serve()
+        job = t.add(URL)
+        self.script({"type": "job", "jobId": "j1", "job": make_job("j1", state="running")},
+                    {"type": "file", "jobId": "j1", "path": FILE}, None)
+
+        def forget(event) -> None:
+            if event["type"] == "file":
+                del self.stub.jobs["j1"]  # a restart keeps no jobs: the re-subscribe is a 404
+
+        with self.assertRaises(AppNotReachable) as cm:
+            job.wait(on_event=forget)
+        self.assertEqual((str(cm.exception), cm.exception.job.id, cm.exception.job.files), ("TurboDL quit.", "j1", [FILE]))
+
+    def test_files_keep_their_order_over_a_replay(self) -> None:
+        t = self.serve()
+        job = t.add(URL)
+        self.script({"type": "file", "jobId": "j1", "path": FILE2}, {"type": "file", "jobId": "j1", "path": FILE}, None,
+                    {"type": "job", "jobId": "j1", "job": make_job("j1", state="running")},
+                    {"type": "end", "jobId": "j1", "job": make_job("j1", state="done", files=[FILE2, FILE])})
+        list(job.events())
+        self.assertEqual(job.files, [FILE2, FILE])
+
+    def test_the_deadline_holds_while_events_keep_arriving(self) -> None:
+        t = self.serve()
+        job = t.add(URL)
+        stop = threading.Event()
+
+        def feed() -> None:
+            while not stop.is_set():
+                self.stub.push("j1", {"type": "progress", "jobId": "j1", "progress": {"done": 1}})
+                time.sleep(0.02)
+
+        feeder = threading.Thread(target=feed, daemon=True)
+        feeder.start()
+        began = time.monotonic()
+        try:
+            with self.assertRaises(TimeoutError):
+                job.wait(timeout=0.3)
+        finally:
+            stop.set()
+            feeder.join(2)
+        self.assertLess(time.monotonic() - began, 2)
 
     def test_a_second_cut_gives_up(self) -> None:
         t = self.serve()

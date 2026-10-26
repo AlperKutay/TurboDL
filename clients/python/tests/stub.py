@@ -51,6 +51,8 @@ class StubApi:
         stub = self
 
         class Handler(BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.1"
+
             def log_message(self, *args: Any) -> None:
                 pass
 
@@ -96,18 +98,22 @@ class StubApi:
                     if len(parts) == 5 and parts[4] == "cancel" and post:
                         stub.cancelled.append(job["id"])
                         job["state"] = "cancelled"
-                        job["reason"] = "stopped"
                         return self.send(200, {"job": job})
                     if len(parts) == 5 and parts[4] == "events" and not post:
                         q = stub.events.setdefault(job["id"], queue.Queue())
                         self.send_response(200)
                         self.send_header("Content-Type", "application/x-ndjson")
+                        self.send_header("Transfer-Encoding", "chunked")
                         self.end_headers()
                         while True:
                             ev = q.get()
                             if ev is None:
+                                self.wfile.write(b"0\r\n\r\n")
+                                self.wfile.flush()
+                                self.close_connection = True
                                 return
-                            self.wfile.write((json.dumps(ev, ensure_ascii=False) + "\n").encode("utf-8"))
+                            data = (json.dumps(ev, ensure_ascii=False) + "\n").encode("utf-8")
+                            self.wfile.write(b"%x\r\n" % len(data) + data + b"\r\n")
                             self.wfile.flush()
                 self.send(404, {"error": "Not found"})
 

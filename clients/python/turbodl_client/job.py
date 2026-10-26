@@ -1,8 +1,9 @@
 """A download job, as the API describes it."""
 
 import time
-from typing import Any, Callable, Dict, Iterator, List, Optional, Set
+from typing import Any, Callable, Dict, Iterator, List, Optional
 
+from ._http import JobNotFound
 from .errors import AppNotReachable, Cancelled, JobFailed, RateLimited, SignInRequired, TurboDLError
 
 ENDED_STATES = ("done", "failed", "cancelled")
@@ -13,7 +14,6 @@ class Job:
 
     def __init__(self, data: Dict[str, Any], client: Any = None) -> None:
         self._client = client
-        self._cancelled_here = False
         self._set(data)
 
     def _set(self, d: Dict[str, Any]) -> None:
@@ -40,7 +40,6 @@ class Job:
         return self
 
     def cancel(self) -> "Job":
-        self._cancelled_here = True
         self._set(self._client._cancel_raw(self.id))
         return self
 
@@ -61,7 +60,6 @@ class Job:
                 if on_event is not None:
                     on_event(event)
         except KeyboardInterrupt:
-            self._cancelled_here = True
             try:
                 self.cancel()
             except TurboDLError:
@@ -69,36 +67,45 @@ class Job:
             raise
         return self._finish()
 
+    def _message(self, sign_in: bool) -> Optional[str]:
+        """The job's own words: its error; for a limited job the sign-in warning comes first."""
+        warned = next((w for w in self.warnings if "sign" in w.lower()), None)
+        if sign_in:
+            return warned or self.error or (self.warnings[-1] if self.warnings else None)
+        return self.error or (self.warnings[-1] if self.warnings else None)
+
     def _finish(self) -> "Job":
-        message = self.error or (self.warnings[0] if self.warnings else None)
         if self.state == "done" and not self.limited:
             return self
         if self.state == "done" or (self.state == "failed" and self.reason == "signInRequired"):
+            message = self._message(self.state == "done")
             raise SignInRequired(message or "Sign in to Instagram to save everything.", self.reason or "signInRequired", self)
         if self.state == "failed" and self.reason == "rateLimited":
-            raise RateLimited(message or "The site is limiting requests. Try again later.", "rateLimited", self)
+            raise RateLimited(self._message(False) or "The site is limiting requests. Try again later.", "rateLimited", self)
         if self.state == "cancelled":
-            raise Cancelled(message or "Cancelled.", None if self._cancelled_here else "stopped", self)
-        raise JobFailed(message or "The download failed.", self.reason or "error", self)
+            here = self._client is not None and self.id in self._client._cancelled
+            raise Cancelled(self._message(False) or "Cancelled.", None if here else "stopped", self)
+        raise JobFailed(self._message(False) or "The download failed.", self.reason or "error", self)
 
     def _follow(self, deadline: Optional[float]) -> Iterator[Dict[str, Any]]:
-        seen = set()  # type: Set[str]
+        seen = []  # type: List[str]
         for attempt in (1, 2):
             try:
                 for event in self._client._stream(self.id, deadline):
-                    skip = self._apply(event, seen)
-                    if not skip:
+                    if not self._apply(event, seen):
                         yield event
                     if event.get("type") == "end":
                         return
-            except AppNotReachable:
-                pass
-            if attempt == 1 and self._client._reconnect():
+            except JobNotFound:
+                if attempt == 1:
+                    raise
+                break  # the app restarted: jobs live in its memory
+            if attempt == 1 and self._client._reconnect(deadline):
                 continue
             break
         raise AppNotReachable("TurboDL quit.", self)
 
-    def _apply(self, event: Dict[str, Any], seen: Set[str]) -> bool:
+    def _apply(self, event: Dict[str, Any], seen: List[str]) -> bool:
         """Folds an event into the job; True for a `file` event already seen (a replay)."""
         kind = event.get("type")
         job = event.get("job")
@@ -116,7 +123,7 @@ class Job:
             path = event["path"]
             if path in seen:
                 return True
-            seen.add(path)
+            seen.append(path)
             if path not in self.files:
                 self.files.append(path)
         return False

@@ -126,7 +126,7 @@ class ClientTests(ClientCase):
         job = t.add("https://example.com/v")
         self.stub.jobs["j1"]["state"] = "running"
         self.assertEqual(job.refresh().state, "running")
-        self.assertEqual(job.cancel().reason, "stopped")
+        self.assertEqual(job.cancel().reason, None)
         self.assertEqual(t.cancel("j1").state, "cancelled")
 
     def test_unknown_job(self) -> None:
