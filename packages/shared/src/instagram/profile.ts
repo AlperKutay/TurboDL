@@ -117,11 +117,20 @@ function edgePosts(connection: Json): SavedPost[] {
   });
 }
 
+/** The signed-out profile page's posts query, by name. */
+export const SIGNED_OUT_POSTS_QUERY = "PolarisLoggedOutDesktopWWWProfilePostsTabContentQuery";
+/** The signed-out profile page's highlights tray query, by name. */
+export const SIGNED_OUT_TRAY_QUERY = "PolarisLoggedOutProfileStoryHighlightsTrayContentPaginationQuery";
+
 /**
  * A public profile as Instagram shows it to signed-out visitors (`data.xig_user_by_username`): the profile, its first
- * posts known only by their covers and kinds, and its highlights. Undefined when the page doesn't show it that way.
+ * posts known only by their covers and kinds, and its highlights, with where each first page ends and whether more
+ * follow. Undefined when the page doesn't show it that way.
  */
-export function signedOutProfile(documents: string[], username: string): { profile: InstagramProfile; posts: SavedPost[]; highlights: Highlight[] } | undefined {
+export function signedOutProfile(
+  documents: string[],
+  username: string,
+): { profile: InstagramProfile; posts: SavedPost[]; highlights: Highlight[]; cursor?: string; hasNext: boolean; trayCursor?: string; trayHasNext: boolean } | undefined {
   const name = username.toLowerCase();
   const user = objectsInDocuments(documents, (o) => str(dict(o, "xig_user_by_username")?.username)?.toLowerCase() === name).map((o) => dict(o, "xig_user_by_username") as Json)[0];
   const id = user && (str(user.pk) ?? str(user.id));
@@ -137,7 +146,47 @@ export function signedOutProfile(documents: string[], username: string): { profi
     ...(picture ? { picture } : {}),
     ...(postCount !== undefined ? { postCount } : {}),
   };
-  const posts = arr(dict(user, "polaris_ordered_timeline_connection")?.edges).flatMap((edge) => {
+  const posts = signedOutCovers(dict(user, "polaris_ordered_timeline_connection") ?? {});
+  const tray = signedOutHighlights(dict(user, "lox_highlights_connection") ?? {});
+  return { profile, posts: posts.posts, highlights: tray.highlights, ...(posts.cursor ? { cursor: posts.cursor } : {}), hasNext: posts.hasNext, ...(tray.cursor ? { trayCursor: tray.cursor } : {}), trayHasNext: tray.hasNext };
+}
+
+/** An answer to the signed-out posts query: covers (`unread`), the cursor, more or not; throws as `profilePostsAnswer` does. */
+export function signedOutPostsAnswer(body: string, status: number): ProfilePosts {
+  const connection = connectionIn(body, status, "polaris_ordered_timeline_connection");
+  return signedOutCovers(connection);
+}
+
+/** An answer to the signed-out tray query: highlights as the tray lists them; throws as `signedOutPostsAnswer` does. */
+export function signedOutTrayAnswer(body: string, status: number): { highlights: Highlight[]; cursor?: string; hasNext: boolean } {
+  return signedOutHighlights(connectionIn(body, status, "lox_highlights_connection"));
+}
+
+/** The operation id a script defines for `name` (`__d("<name>_instagramRelayOperation",[],(function(…){x.exports="<digits>"}),null)`). */
+export function relayOperationId(script: string, name: string): string | undefined {
+  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`__d\\("${escaped}_instagramRelayOperation",\\[\\],\\(function\\([^)]*\\)\\{[^}]*?\\.exports="(\\d+)"`).exec(script)?.[1];
+}
+
+/** The page's `lsd` token (`"LSD",[],{"token":"…"}` in its HTML). */
+export function pageLsd(html: string): string | undefined {
+  return /"LSD",\[\],\{"token":"([^"]+)"/.exec(html)?.[1];
+}
+
+/** The first `key` connection in an answer to a signed-out query; pushback and pages instead of answers throw as elsewhere. */
+function connectionIn(body: string, status: number, key: string): Json {
+  const parsed = parseDocument(body);
+  const answer = isJson(parsed) ? parsed : undefined;
+  pushBack(answer, status);
+  if (!answer) throw new SavedError("signedOut");
+  const connection = dict(objectsIn([answer], (o) => isJson(o[key]))[0], key);
+  if (!connection) throw new SavedError("badAnswer");
+  return connection;
+}
+
+/** A signed-out posts connection as covers; `hasNext` and the cursor from its page info. */
+function signedOutCovers(connection: Json): ProfilePosts {
+  const posts = arr(connection.edges).flatMap((edge) => {
     const node = dict(edge, "node");
     const pk = node && (str(node.pk) ?? str(node.id)?.split("_")[0]);
     const code = node && str(node.code);
@@ -146,12 +195,21 @@ export function signedOutProfile(documents: string[], username: string): { profi
     const mediaType = int(node.media_type);
     return [{ id: pk, code, ...(cover ? { cover } : {}), items: [], unread: true as const, ...(mediaType !== undefined ? { mediaType } : {}) }];
   });
-  const highlights = arr(dict(user, "lox_highlights_connection")?.edges).flatMap((edge) => {
+  const info = dict(connection, "page_info");
+  const cursor = str(info?.end_cursor);
+  return { posts, ...(cursor ? { cursor } : {}), hasNext: info?.has_next_page === true };
+}
+
+/** A signed-out highlights connection (`lox_highlights_connection`) as the tray lists it. */
+function signedOutHighlights(connection: Json): { highlights: Highlight[]; cursor?: string; hasNext: boolean } {
+  const highlights = arr(connection.edges).flatMap((edge) => {
     const node = dict(edge, "node");
     const full = str(node?.id);
     if (!node || !full) return [];
     const cover = url(node.cover_media_cropped_thumbnail_url);
     return [{ id: full.replace(/^highlight:/, ""), title: str(node.title) ?? "", ...(cover ? { cover } : {}) }];
   });
-  return { profile, posts, highlights };
+  const info = dict(connection, "page_info");
+  const cursor = str(info?.end_cursor);
+  return { highlights, ...(cursor ? { cursor } : {}), hasNext: info?.has_next_page === true };
 }
