@@ -287,6 +287,13 @@ export type AppEvent =
 
 export type Result = { ok: true } | { ok: false; error: string };
 
+/** Whether the `turbodl` command is on the PATH: `supported` only in the installed app, `where` the folder or link it lives at. */
+export interface CliStatus {
+  supported: boolean;
+  installed: boolean;
+  where: string;
+}
+
 export type DownloadDecision = { filename: string; dir: string; mode: "now" | "later" };
 export type MediaDecision = { dir: string; mode: "now" | "later" };
 export type FormatsResult = { ok: true; title: string; options: MediaFormatOption[]; usedLogin: boolean } | { ok: false; error: string };

@@ -12,9 +12,10 @@ import { ProfileFeed } from "./instagram/profile-feed";
 import { ElectronInstagramPage, allowTestSite, instagramSession } from "./instagram/page";
 import { signInToInstagram } from "./instagram/signin";
 import { EVENT_CHANNEL, broadcast, registerIpc } from "./ipc";
+import { writeCliLauncher } from "./cli-install";
 import { isBackgroundLaunch, registerNativeHost } from "./native-host";
 import { CompletionNotifier, notificationIdentity, revealDownload } from "./notifications";
-import { appIconPath, extensionSourceDir, ffmpegPath, nativeHostScript, trayIconPath } from "./paths";
+import { appIconPath, cliLauncherExe, cliScript, extensionSourceDir, ffmpegPath, nativeHostScript, trayIconPath } from "./paths";
 import { createTray } from "./tray";
 import { WindowManager } from "./windows";
 
@@ -119,6 +120,11 @@ async function start(): Promise<void> {
       execPath: process.execPath,
       hostScript: nativeHostScript(),
     }).catch((err: unknown) => console.warn("Could not register the browser launcher:", err));
+    try {
+      writeCliLauncher({ platform: process.platform, userDataDir: app.getPath("userData"), execPath: process.execPath, script: cliScript(), launcherExe: cliLauncherExe() });
+    } catch (err) {
+      console.warn("Could not write the turbodl launcher:", err);
+    }
   }
   await c.init();
   watcher = new ClipboardWatcher({ read: () => clipboard.readText(), onText: (text) => void c.handleClipboardText(text) });
