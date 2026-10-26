@@ -71,6 +71,13 @@ export class SavedService {
     }
   }
 
+  /** The account's username as far as the app already knows it (memory, then the collections cache); never asks Instagram. */
+  knownUsername(): string | undefined {
+    const session = this.deps.session.cookies().find((c) => c.name === "sessionid")?.value ?? "";
+    if (this.account?.session === session) return this.account.username;
+    return this.readCache()?.username;
+  }
+
   async signOut(): Promise<void> {
     await this.deps.backups.stop();
     this.deps.session.clear();

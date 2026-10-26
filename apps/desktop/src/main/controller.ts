@@ -1,6 +1,10 @@
 import { existsSync, promises as fsp } from "node:fs";
 import path from "node:path";
 import {
+  API_VERSION,
+  APP_ID,
+  type ApiLaunch,
+  type InstagramLoginResult,
   CATEGORY_LABELS,
   EXTENSION_ORIGIN,
   categorize,
@@ -43,6 +47,8 @@ import {
   SavedError,
   parseInstagramLink,
 } from "@turbodl/shared";
+import { writeApiFile } from "./api-file";
+import type { ApiHandlers } from "./api-routes";
 import { createBridgeServer, type BridgeServer } from "./bridge-server";
 import { HttpDownloadTask } from "./engine/download-task";
 import { delay } from "./engine/http";
@@ -58,6 +64,10 @@ import { SavedService } from "./instagram/saved-service";
 import type { FindOutcome } from "./instagram/finder";
 import { InstagramSession, type Crypt } from "./instagram/session";
 import { probe } from "./engine/probe";
+import { Jobs } from "./jobs/jobs";
+import { jobKindOf } from "./jobs/kind";
+import type { JobRecord } from "./jobs/job-record";
+import { runWebJob } from "./jobs/web-job";
 import { DownloadManager, type StateFile } from "./manager";
 import { cookiesFromHeader, withCookieFile } from "./media/cookies";
 import { pageDownload, streamDownload } from "./media/new-download";
@@ -99,6 +109,8 @@ export interface ControllerOptions {
   ytdlpCommand?: YtdlpCommand;
   /** Instagram: reading pages, signing in, keeping the session (Electron in the app, stand-ins in tests) */
   instagram?: InstagramDeps;
+  /** how API clients start this app in the background, written to api.json (default: this executable, hidden) */
+  launch?: ApiLaunch;
 }
 
 export interface InstagramDeps {
@@ -191,6 +203,8 @@ export class AppController {
   private readonly pending = new Map<string, PendingItem>();
   private bridge: BridgeServer | null = null;
   private bridgeStatus: BridgeStatus = { ok: false, port: 0 };
+  /** the token api.json holds, which the API asks for */
+  private apiToken = "";
   private countdown: CountdownState | null = null;
   private ownClipboardText: string | null = null;
   private readonly instagram: InstagramDeps;
@@ -208,6 +222,8 @@ export class AppController {
   private readonly profiles: ProfileService;
   /** the screen the last link asked for, until the main window takes it */
   private openRequest: OpenRequest | null = null;
+  /** the jobs the API runs */
+  readonly jobs: Jobs;
 
   constructor(private readonly o: ControllerOptions) {
     this.instagram = o.instagram ?? NO_INSTAGRAM;
@@ -256,6 +272,7 @@ export class AppController {
       baseDir: () => this.settings.baseDir,
       now: () => (ig.now ? ig.now() : Date.now()),
     });
+    this.jobs = new Jobs({ run: (job) => this.runJob(job) });
     this.defaults = defaultSettings(o.downloadsDir);
     this.settingsStore = new JsonStore<Settings>(path.join(o.userDataDir, "settings.json"));
     this.settings = normalizeSettings(this.settingsStore.load(() => this.defaults), this.defaults);
@@ -873,6 +890,53 @@ export class AppController {
     this.o.ui.closePending(pendingId);
   }
 
+  /** Does one API job: file, page and stream links as downloads; Instagram's kinds are not run yet. */
+  private async runJob(job: JobRecord): Promise<void> {
+    const { url } = job.request;
+    if (jobKindOf(url) === "file") {
+      if (isInstagramPage(url)) {
+        job.end({ state: "failed", reason: "unsupported", error: "TurboDL opens Instagram posts, reels, stories, highlights, profiles and Saved." });
+        return;
+      }
+      await runWebJob(job, {
+        manager: this.manager,
+        probe: (u) => probe(u, {}, undefined, 15000),
+        mediaInfo: async (pageUrl) => fetchMediaInfo(await this.tools.ensure(), pageUrl, {}, { command: this.o.ytdlpCommand, cookieFile: null }),
+        streamOptions: (kind, u) => streamOptions(kind, u, {}),
+        categoryDir: (category) => this.categoryDir(category),
+      });
+      return;
+    }
+    job.end({ state: "failed", reason: "unsupported", error: "Instagram jobs are not supported yet." });
+  }
+
+  /** What the bridge serves the jobs API from; the Instagram name is only what the app already holds. */
+  private apiHandlers(): ApiHandlers {
+    return {
+      token: () => this.apiToken,
+      info: async () => {
+        const signedIn = this.instagramSession.signedIn();
+        const username = signedIn ? this.saved.knownUsername() : undefined;
+        return { app: APP_ID, version: this.o.version, api: API_VERSION, instagram: { signedIn, ...(username ? { username } : {}) } };
+      },
+      createJob: (request) => this.jobs.create(request),
+      jobs: () => this.jobs.list(),
+      job: (id) => this.jobs.get(id),
+      cancelJob: (id) => this.jobs.cancel(id),
+      subscribe: (id, listener) => this.jobs.subscribe(id, listener),
+      instagramLogin: async () => {
+        await this.instagramSignIn();
+        return this.instagramApiAccount();
+      },
+      instagramLogout: () => this.instagramSignOut(),
+    };
+  }
+
+  private async instagramApiAccount(): Promise<InstagramLoginResult> {
+    const account = await this.instagramAccount();
+    return account.signedIn ? { signedIn: true, ...(account.username ? { username: account.username } : {}) } : { signedIn: false };
+  }
+
   private async startBridge(): Promise<void> {
     const port = this.settings.bridgePort;
     const server = createBridgeServer({
@@ -881,6 +945,7 @@ export class AppController {
       getConfig: () => this.bridgeConfig(),
       onDownload: (req) => this.handleDownloadRequest(req),
       onMedia: (req) => this.handleMediaRequest(req),
+      api: this.apiHandlers(),
     });
     try {
       await server.listen(port);
@@ -898,6 +963,12 @@ export class AppController {
             : `Could not start the browser bridge: ${message(err)}`,
       };
     }
+    this.apiToken = writeApiFile({
+      userDataDir: this.o.userDataDir,
+      version: this.o.version,
+      port: this.bridgeStatus.ok ? port : null,
+      launch: this.o.launch ?? { file: process.execPath, args: ["--hidden"] },
+    }).token;
     this.o.ui.broadcast({ type: "bridge", status: this.bridgeStatus });
   }
 

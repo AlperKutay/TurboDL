@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { Notification, app, clipboard, safeStorage, shell, type Tray } from "electron";
 import { ClipboardWatcher } from "./clipboard-watcher";
+import { clientLaunch } from "./api-file";
 import { AppController } from "./controller";
 import { chromeAgent } from "./instagram/agent";
 import { DEMO_COOKIE, demoInstagram } from "./instagram/demo";
@@ -73,6 +74,7 @@ async function start(): Promise<void> {
   windows = wm;
   const c = new AppController({
     version: app.getVersion(),
+    launch: clientLaunch({ platform: process.platform, execPath: process.execPath, isPackaged: app.isPackaged, appPath: app.getAppPath() }),
     userDataDir: app.getPath("userData"),
     downloadsDir: app.getPath("downloads"),
     documentsDir: app.getPath("documents"),
