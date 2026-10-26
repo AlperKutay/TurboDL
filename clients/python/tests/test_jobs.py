@@ -1,3 +1,4 @@
+import _thread
 import os
 import threading
 import time
@@ -6,7 +7,7 @@ from unittest import mock
 
 from turbodl_client import (AppNotReachable, Cancelled, JobFailed, RateLimited, SignInRequired, TurboDLError)
 from turbodl_client import client as client_module
-from tests.stub import make_job
+from tests.stub import StubApi, make_job, write_api_file
 from tests.test_client import ClientCase
 
 URL = "https://example.com/a"
@@ -16,6 +17,11 @@ FILE2 = os.path.join("C:\\", "Downloads", "b.jpg")
 
 def ended(**extra):
     return make_job("j1", state="done", reason="done", files=[FILE], endedAt=9, **extra)
+
+
+def readers():
+    """The threads still reading an events stream."""
+    return [t for t in threading.enumerate() if t.name == "turbodl-events" and t.is_alive()]
 
 
 class JobCase(ClientCase):
@@ -29,6 +35,13 @@ class JobCase(ClientCase):
         """Queues the stub's events for job j1 (the first job it creates)."""
         for ev in events:
             self.stub.push("j1", ev)
+
+    def later(self, seconds: float, fn) -> None:
+        """Runs `fn` on a timer thread, cancelled when the test ends."""
+        timer = threading.Timer(seconds, fn)
+        timer.daemon = True
+        self.addCleanup(timer.cancel)
+        timer.start()
 
 
 class FollowTests(JobCase):
@@ -142,6 +155,14 @@ class FollowTests(JobCase):
             list(job.events())
         self.assertEqual(str(cm.exception), "No job j1.")
 
+    def test_leaving_events_early_closes_the_stream(self) -> None:
+        t = self.serve()
+        job = t.add(URL)
+        self.script({"type": "job", "jobId": "j1", "job": make_job("j1", state="running")})
+        for _event in job.events():
+            break
+        self.assertEqual(readers(), [])
+
 
 class InterruptionTests(JobCase):
     def test_app_quitting_raises_app_not_reachable_with_the_job(self) -> None:
@@ -237,6 +258,72 @@ class InterruptionTests(JobCase):
         self.assertEqual(self.stub.cancelled, ["j1"])
         self.assertEqual(self.stub.jobs["j1"]["state"], "cancelled")
 
+    def ctrl_c_while_silent(self, wait) -> None:
+        """Ctrl+C while the app sends nothing (a queued job, a stall): `wait()` cancels the job at once."""
+        self.script({"type": "job", "jobId": "j1", "job": make_job("j1", state="running")})  # then nothing
+        fired = []
+
+        def ctrl_c() -> None:
+            fired.append(time.monotonic())
+            _thread.interrupt_main()
+
+        self.later(0.3, ctrl_c)
+        # an event long after: a client stuck in the read only sees the Ctrl+C then
+        self.later(4.0, lambda: self.stub.push("j1", {"type": "progress", "jobId": "j1", "progress": {"done": 1}}))
+        with self.assertRaises(KeyboardInterrupt):
+            wait()
+        self.assertLess(time.monotonic() - fired[0], 1.5)
+        self.assertEqual(self.stub.cancelled, ["j1"])
+        self.assertEqual(readers(), [])
+
+    def test_ctrl_c_in_get_while_nothing_arrives(self) -> None:
+        t = self.serve()
+        self.ctrl_c_while_silent(lambda: t.get(URL))
+
+    def test_ctrl_c_in_wait_with_a_timeout_while_nothing_arrives(self) -> None:
+        t = self.serve()
+        job = t.add(URL)
+        self.ctrl_c_while_silent(lambda: job.wait(timeout=60))
+
+    def test_a_ctrl_c_while_the_stream_is_cut_reaches_the_restarted_app(self) -> None:
+        t = self.serve()
+        job = t.add(URL)
+        self.script({"type": "job", "jobId": "j1", "job": make_job("j1", state="running")}, None)
+        old = self.stub
+        back = StubApi()  # the app once it answers again, on another port
+        back.jobs["j1"] = make_job("j1", state="running")
+        self.addCleanup(lambda: back.stop() if back.started else None)
+
+        def come_back() -> None:
+            if not back.started:
+                back.start()
+                write_api_file(self.tmp, back.port)
+
+        def restart(event) -> None:
+            if event["type"] == "job":
+                old.gone = come_back  # the old port answers no more; the cancel sent there brings the app back
+                write_api_file(self.tmp, None)  # starting again: no port yet
+                self.later(0.1, _thread.interrupt_main)  # pressed while the client waits for the app
+
+        with mock.patch.object(client_module, "RECONNECT_WINDOW", 5.0), self.assertRaises(KeyboardInterrupt):
+            job.wait(on_event=restart)
+        self.assertEqual((old.cancelled, back.cancelled), ([], ["j1"]))
+
+    def test_an_error_in_on_event_closes_the_stream(self) -> None:
+        t = self.serve()
+        job = t.add(URL)
+        self.script({"type": "job", "jobId": "j1", "job": make_job("j1", state="running")})
+
+        def boom(_event) -> None:
+            raise RuntimeError("boom")
+
+        try:
+            job.wait(on_event=boom)
+        except RuntimeError:
+            self.assertEqual(readers(), [])  # checked while the traceback still holds wait()'s frame
+        else:
+            self.fail("on_event's error was swallowed")
+
     def test_wait_timeout_leaves_the_job_running(self) -> None:
         t = self.serve()
         job = t.add(URL)
@@ -245,6 +332,7 @@ class InterruptionTests(JobCase):
             job.wait(timeout=0.3)
         self.assertEqual(self.stub.cancelled, [])
         self.assertEqual(job.state, "running")
+        self.assertEqual(readers(), [])
 
 
 if __name__ == "__main__":

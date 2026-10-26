@@ -2,7 +2,7 @@
 
 import os
 import time
-from typing import Any, Callable, Dict, Iterator, List, Optional, Set
+from typing import Any, Callable, Dict, Generator, List, Optional, Set
 
 from . import _discover
 from ._http import request, stream_lines
@@ -81,7 +81,7 @@ class TurboDL:
     def _job_call(self, method: str, path: str, id: str) -> Dict[str, Any]:
         return request(self._port, self._token, method, path, not_found="No job %s." % id)["job"]
 
-    def _stream(self, id: str, deadline: Optional[float]) -> Iterator[Dict[str, Any]]:
+    def _stream(self, id: str, deadline: Optional[float]) -> Generator[Dict[str, Any], None, None]:
         return stream_lines(self._port, self._token, "/v1/jobs/" + id + "/events", deadline, "No job %s." % id)
 
     def _reconnect(self, deadline: Optional[float] = None) -> bool:

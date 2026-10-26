@@ -4,9 +4,10 @@ import json
 import os
 import queue
 import socket
+import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 
 def free_port() -> int:
@@ -38,6 +39,14 @@ def write_api_file(folder: str, port: Optional[int], token: str = "tok", api: in
         json.dump(data, f, ensure_ascii=False)
 
 
+class _Server(ThreadingHTTPServer):
+    daemon_threads = True
+
+    def handle_error(self, request: Any, client_address: Any) -> None:
+        if not isinstance(sys.exc_info()[1], OSError):  # a client that hung up is not an error here
+            super().handle_error(request, client_address)
+
+
 class StubApi:
     def __init__(self, token: str = "tok", port: int = 0, api: int = 1) -> None:
         self.token = token
@@ -48,6 +57,8 @@ class StubApi:
         self.events = {}  # type: Dict[str, queue.Queue]
         self.instagram = {"signedIn": True, "username": "alper"}
         self.fail_add = None  # type: Optional[str]
+        # set: the app is on its way out; every request calls it, then is dropped unanswered
+        self.gone = None  # type: Optional[Callable[[], None]]
         stub = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -65,6 +76,10 @@ class StubApi:
                 self.wfile.write(raw)
 
             def route(self, post: bool) -> None:
+                if stub.gone is not None:
+                    stub.gone()
+                    self.close_connection = True
+                    return
                 if self.headers.get("Authorization") != "Bearer " + stub.token:
                     return self.send(403, {"error": "Forbidden"})
                 path = self.path
@@ -123,14 +138,17 @@ class StubApi:
             def do_POST(self) -> None:
                 self.route(True)
 
-        self.server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
-        self.server.daemon_threads = True
+        self.server = _Server(("127.0.0.1", port), Handler)
         self.port = self.server.server_address[1]
         self.thread = threading.Thread(target=self.server.serve_forever, kwargs={"poll_interval": 0.02}, daemon=True)
 
     def start(self) -> "StubApi":
         self.thread.start()
         return self
+
+    @property
+    def started(self) -> bool:
+        return self.thread.ident is not None
 
     def push(self, id: str, event: Optional[Dict[str, Any]]) -> None:
         """Queue one NDJSON line for /events; None closes the stream."""

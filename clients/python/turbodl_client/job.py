@@ -1,7 +1,7 @@
 """A download job, as the API describes it."""
 
 import time
-from typing import Any, Callable, Dict, Iterator, List, Optional
+from typing import Any, Callable, Dict, Generator, Iterator, List, Optional
 
 from ._http import JobNotFound
 from .errors import AppNotReachable, Cancelled, JobFailed, RateLimited, SignInRequired, TurboDLError
@@ -55,17 +55,30 @@ class Job:
 
         `timeout` (seconds) raises TimeoutError and leaves the job running; Ctrl+C cancels the job and is re-raised."""
         deadline = None if timeout is None else time.monotonic() + timeout
+        events = self._follow(deadline)
         try:
-            for event in self._follow(deadline):
-                if on_event is not None:
-                    on_event(event)
-        except KeyboardInterrupt:
             try:
-                self.cancel()
-            except TurboDLError:
-                pass
+                for event in events:
+                    if on_event is not None:
+                        on_event(event)
+            finally:
+                events.close()  # no stream is left open, whatever on_event raised
+        except KeyboardInterrupt:
+            self._cancel_interrupted()
             raise
         return self._finish()
+
+    def _cancel_interrupted(self) -> None:
+        """Ctrl+C: cancels the job. When the app can't be reached (the stream was cut, it may be starting again on
+        another port), the cancel is sent again once api.json names a port that answers, as the command does."""
+        try:
+            try:
+                self.cancel()
+            except AppNotReachable:
+                if self._client._reconnect():
+                    self.cancel()
+        except TurboDLError:
+            pass
 
     def _message(self, sign_in: bool) -> Optional[str]:
         """The job's own words: its error; for a limited job the sign-in warning comes first."""
@@ -87,11 +100,12 @@ class Job:
             raise Cancelled(self._message(False) or "Cancelled.", None if here else "stopped", self)
         raise JobFailed(self._message(False) or "The download failed.", self.reason or "error", self)
 
-    def _follow(self, deadline: Optional[float]) -> Iterator[Dict[str, Any]]:
+    def _follow(self, deadline: Optional[float]) -> Generator[Dict[str, Any], None, None]:
         seen = []  # type: List[str]
         for attempt in (1, 2):
+            stream = self._client._stream(self.id, deadline)
             try:
-                for event in self._client._stream(self.id, deadline):
+                for event in stream:
                     if not self._apply(event, seen):
                         yield event
                     if event.get("type") == "end":
@@ -100,6 +114,8 @@ class Job:
                 if attempt == 1:
                     raise
                 break  # the app restarted: jobs live in its memory
+            finally:
+                stream.close()
             if attempt == 1 and self._client._reconnect(deadline):
                 continue
             break

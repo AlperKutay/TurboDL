@@ -2,9 +2,11 @@
 
 import http.client
 import json
+import queue
 import socket
+import threading
 import time
-from typing import Any, Dict, Iterator, Optional, Tuple
+from typing import Any, Dict, Generator, Optional, Tuple
 
 from .errors import AppNotReachable, TurboDLError
 
@@ -17,6 +19,9 @@ class JobNotFound(TurboDLError):
 
 LOST = "Lost the connection to TurboDL."
 REFUSED = "TurboDL refused the key in api.json."
+# How long a wait for the next event lasts before it looks again at the deadline and a pending Ctrl+C.
+POLL = 0.5
+_END = object()  # the reader's last item: the stream closed or broke
 
 
 def raw_request(port: int, token: str, method: str, path: str, body: Optional[Dict[str, Any]] = None,
@@ -44,13 +49,15 @@ def raw_request(port: int, token: str, method: str, path: str, body: Optional[Di
 
 
 def stream_lines(port: int, token: str, path: str, deadline: Optional[float] = None,
-                 not_found: Optional[str] = None) -> Iterator[Dict[str, Any]]:
+                 not_found: Optional[str] = None) -> Generator[Dict[str, Any], None, None]:
     """The JSON objects of an NDJSON response, as they arrive.
 
     Returns when the server closes the stream (or the connection breaks); raises the builtin TimeoutError at
-    `deadline` (a time.monotonic() value) and TurboDLError for a refused or failed call."""
+    `deadline` (a time.monotonic() value) and TurboDLError for a refused or failed call. A thread reads the
+    stream, so a Ctrl+C is seen within POLL seconds even when nothing arrives (Windows doesn't interrupt a read)."""
     conn = http.client.HTTPConnection("127.0.0.1", port, timeout=_remaining(deadline))
     res = None
+    reader = None
     try:
         try:
             conn.request("GET", path, headers={"Authorization": "Bearer " + token})
@@ -67,27 +74,69 @@ def stream_lines(port: int, token: str, path: str, deadline: Optional[float] = N
             if res.status == 403:
                 raise TurboDLError(REFUSED)
             raise TurboDLError("TurboDL answered %d." % res.status)
+        sock.settimeout(None)  # the reader waits as long as the app is silent; the deadline is kept below
+        events = queue.Queue()  # type: queue.Queue
+        reader = threading.Thread(target=_read, args=(conn, res, events), name="turbodl-events", daemon=True)
+        reader.start()
         while True:
+            left = _remaining(deadline)
             try:
-                if deadline is not None and sock is not None:
-                    sock.settimeout(_remaining(deadline))
-                line = res.readline()
-            except _TIMEOUTS:  # before Python 3.10 the builtin TimeoutError is not socket.timeout
-                raise TimeoutError() from None
-            except (OSError, http.client.HTTPException):
+                event = events.get(timeout=POLL if left is None else min(POLL, left))
+            except queue.Empty:
+                continue
+            if event is _END:
                 return
+            yield event
+    finally:
+        if reader is None:
+            if res is not None:
+                res.close()
+            conn.close()
+        else:
+            _stop(sock)
+            reader.join(1.0)
+
+
+def _read(conn: http.client.HTTPConnection, res: http.client.HTTPResponse, events: "queue.Queue") -> None:
+    """The reader thread: each JSON object of the stream onto `events`, then _END; it alone closes the response."""
+    try:
+        while True:
+            line = res.readline()
             if not line:
-                return
+                break
             try:
                 value = json.loads(line.decode("utf-8", "replace"))
             except ValueError:
                 continue
             if isinstance(value, dict):
-                yield value
+                events.put(value)
+    except (OSError, ValueError, http.client.HTTPException):
+        pass  # a cut, or _stop() closed the socket under it
     finally:
-        if res is not None:
+        try:
             res.close()
-        conn.close()
+            conn.close()
+        except OSError:
+            pass
+        finally:
+            events.put(_END)
+
+
+def _stop(sock: socket.socket) -> None:
+    """Ends a read blocked on `sock` at once: shutdown wakes it on POSIX, the close on Windows.
+
+    The handle is detached and closed as such: sock.close() waits for the response's file to let go of it, and
+    the file's own close would block behind the read."""
+    try:
+        sock.shutdown(socket.SHUT_RDWR)
+    except OSError:
+        pass
+    fd = sock.detach()  # -1 once the reader closed it: only one side ever closes the handle
+    if fd != -1:
+        try:
+            socket.close(fd)
+        except OSError:
+            pass
 
 
 def _remaining(deadline: Optional[float]) -> Optional[float]:
