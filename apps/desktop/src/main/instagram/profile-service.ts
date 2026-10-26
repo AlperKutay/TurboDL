@@ -87,7 +87,8 @@ export class ProfileService {
     const key = username.toLowerCase();
     const source = this.sourceFor(key);
     try {
-      const profile = await source.profile();
+      // a slow-down on the page holds the whole account
+      const profile = await this.deps.pacer.ask(() => source.profile());
       this.profiles.set(key, profile);
       this.trays.set(key, source.highlights);
       return { type: "profile", profile, highlights: source.highlights, ...(source.limited ? { limited: true } : {}) };
@@ -363,7 +364,8 @@ export class ProfileService {
     if (!this.deps.session.signedIn()) return { ok: false, error: SIGN_IN_TO_BACK_UP, reason: "signInRequired" };
     const source = this.deps.open(key, this.deps.session.cookies());
     try {
-      const profile = await source.profile();
+      // a slow-down on the page holds the whole account
+      const profile = await this.deps.pacer.ask(() => source.profile());
       this.profiles.set(key, profile);
       this.trays.set(key, source.highlights);
       return { profile, source };

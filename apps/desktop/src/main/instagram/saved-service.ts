@@ -180,7 +180,8 @@ export class SavedService {
   private async username(): Promise<string> {
     const session = this.deps.session.cookies().find((c) => c.name === "sessionid")?.value ?? "";
     if (this.account?.session === session) return this.account.username;
-    const username = await this.client.username();
+    // a slow-down on it holds the whole account, though its callers answer with what they already have
+    const username = await this.deps.pacer.ask(() => this.client.username());
     this.account = { session, username };
     return username;
   }

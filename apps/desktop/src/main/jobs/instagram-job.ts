@@ -127,6 +127,8 @@ async function savedJob(job: JobRecord, deps: InstagramJobDeps): Promise<void> {
   const list = await paced(job, deps, () => deps.saved.collections(true));
   if (list === null) return;
   if (list === "signedOut") return fail(job, deps, "signInRequired", SIGN_IN_TO_SAVED);
+  // a slow-down while it was read is answered with the list the app already had: nothing is backed up from that
+  if (deps.pacer.held()) return fail(job, deps, "rateLimited", SLOW_DOWN);
   const own = list.filter((c) => !c.isAll);
   if (own.length === 0) return fail(job, deps, "notFound", "There are no collections of your own to back up.");
   const { collections: names = [], allCollections } = job.request.options ?? {};
@@ -182,8 +184,9 @@ async function backup(job: JobRecord, deps: InstagramJobDeps, start: () => Promi
       return null;
     }
     if (!result.ok) return result;
-    follower.claim();
+    // running before anything the backup reported is told
     job.start();
+    follower.claim();
     await started?.();
     return finished(job, deps, await follower.settled());
   } finally {

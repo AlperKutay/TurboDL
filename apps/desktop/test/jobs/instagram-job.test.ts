@@ -224,12 +224,12 @@ describe("Instagram link jobs", () => {
     let loading = 0;
     let most = 0;
     const find = so.deps.find;
-    // each page takes 2 s to load
+    // each page takes 7 s to load (under the finder's 12 s), longer than any gap: gaps counted from a read's start fail
     so.deps.find = async (link, cookies, signal) => {
       const read = { start: clock.now(), end: 0 };
       reads.push(read);
       most = Math.max(most, ++loading);
-      await clock.wait(2000);
+      await clock.wait(7000);
       loading--;
       read.end = clock.now();
       return find(link, cookies, signal);
@@ -295,6 +295,19 @@ describe("Instagram profile jobs", () => {
     expect(readdirSync(dl("sample.user", "Highlights")).sort()).toEqual(["s1.jpg", "s2.jpg"]);
     const kinds = ui.events.flatMap((e) => (e.type === "instagramBackup" && e.backup ? [e.backup.kind] : []));
     expect([...new Set(kinds)]).toEqual(["profile", "highlights"]);
+  });
+
+  it("reports nothing of its backup before it is running", async () => {
+    const ig = fakeProfiles({ "sample.user": SAMPLE() });
+    const c = await signedIn(ig.deps);
+    const { id } = c.jobs.create({ url: PROFILE_URL });
+    const events: JobEvent[] = [];
+    c.jobs.subscribe(id, (e) => events.push(e));
+    expect(await c.jobs.ended(id)).toMatchObject({ state: "done" });
+    const running = events.findIndex((e) => e.type === "state" && e.state === "running");
+    expect(running).toBeGreaterThanOrEqual(0);
+    expect(events.some((e) => e.type === "progress")).toBe(true);
+    expect(events.slice(0, running).filter((e) => e.type === "file" || e.type === "progress")).toEqual([]);
   });
 
   it("ends failed, its saved files listed, when a backup couldn't save every post", async () => {
@@ -449,10 +462,10 @@ describe("Instagram profile jobs", () => {
     expect(ig.opened).toEqual(["sample.user"]);
   });
 
-  it("ends the jobs waiting in the lane at once when one ends rateLimited, even when nothing holds", async () => {
+  it("ends the jobs waiting in the lane at once when one ends rateLimited, and holds the account from then on", async () => {
     const ig = fakeProfiles({ "sample.user": SAMPLE(), "other.user": OTHER(), "third.user": THIRD() });
     const open = ig.deps.openProfile!;
-    // the first profile's page answers "slow down" without the account's pacer seeing it
+    // the first profile's page, a backup's start, answers "slow down"
     ig.deps.openProfile = (username, cookies) => {
       const source = open(username, cookies);
       return username === "sample.user" ? { ...source, profile: () => Promise.reject(new SavedError("rateLimited")) } : source;
@@ -466,6 +479,17 @@ describe("Instagram profile jobs", () => {
       ["failed", "rateLimited"],
     ]);
     expect(ig.opened).toEqual(["sample.user"]);
+    // the next job waits out Instagram's slow-down instead of asking again
+    expect(c["pacer"].held()).toBe(true);
+  });
+
+  it("holds the account when the screen's profile page answers slow down", async () => {
+    const ig = fakeProfiles({ "sample.user": SAMPLE() });
+    const open = ig.deps.openProfile!;
+    ig.deps.openProfile = (username, cookies) => ({ ...open(username, cookies), profile: () => Promise.reject(new SavedError("rateLimited")) });
+    const c = await signedIn(ig.deps);
+    expect(await c.profileLoad("sample.user")).toEqual({ type: "rateLimited" });
+    expect(c["pacer"].held()).toBe(true);
   });
 
   it("never closes the profile open on the screen", async () => {
@@ -527,6 +551,33 @@ describe("Instagram Saved jobs", () => {
     expect(await run(c, { url: SAVED, options: { allCollections: true } })).toMatchObject({ state: "done" });
     expect(saved.feeds.map((u) => new URL(u).pathname)).toEqual(["/api/v1/feed/collection/102/posts/", "/api/v1/feed/collection/103/posts/"]);
     expect(readdirSync(dl("Saved")).sort()).toEqual(["Food", "Trips"]);
+  });
+
+  /** Saved whose account-name request Instagram answers "slow down". */
+  function slowedName() {
+    const saved = fakeSaved();
+    const get = saved.deps.get!;
+    saved.deps.get = (url, headers, signal) => (url.endsWith("/web_form_data/") ? Promise.resolve({ status: 429, body: "" }) : get(url, headers, signal));
+    return saved;
+  }
+
+  it("ends rateLimited and holds the account when Instagram asks to slow down on the account's name", async () => {
+    const saved = slowedName();
+    const c = await signedIn(saved.deps);
+    expect(await run(c, { url: SAVED, options: { allCollections: true } })).toMatchObject({ state: "failed", reason: "rateLimited", error: SLOW_DOWN });
+    expect(c["pacer"].held()).toBe(true);
+    expect(saved.feeds).toEqual([]);
+    expect(c.snapshot().instagramBackup).toBeNull();
+  });
+
+  it("still shows the screen the collections it had when Instagram asks to slow down on the account's name, holding the account", async () => {
+    const saved = slowedName();
+    const userData = path.join(root, "user");
+    mkdirSync(userData, { recursive: true });
+    writeFileSync(path.join(userData, "instagram-collections.json"), JSON.stringify({ username: "sample.user", list: COLLECTIONS }));
+    const c = await signedIn(saved.deps);
+    expect(await c.savedCollections(true)).toEqual(COLLECTIONS);
+    expect(c["pacer"].held()).toBe(true);
   });
 
   it("fails notFound for an unknown collection name, before starting any", async () => {
