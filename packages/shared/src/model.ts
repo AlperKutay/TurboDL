@@ -358,6 +358,9 @@ export interface TurboApi {
   startHighlightsBackup(username: string): Promise<Result>;
   cancelCountdown(): Promise<void>;
   installExtension(): Promise<InstallResult>;
+  cliStatus(): Promise<CliStatus>;
+  installCli(): Promise<Result>;
+  removeCli(): Promise<Result>;
   copyText(text: string): Promise<void>;
   openReleasesPage(): Promise<void>;
   readClipboardText(): Promise<string>;
