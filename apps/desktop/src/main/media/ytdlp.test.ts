@@ -117,7 +117,7 @@ describe("formatOptionsFromInfo", () => {
     const { title, options } = formatOptionsFromInfo(info);
     expect(title).toBe("Clip");
     expect(options.map((o) => o.label)).toEqual(["2160p (4K)", "1080p", "720p", "360p", "Audio only (MP3)"]);
-    expect(options[1]).toEqual({ id: "h1080", label: "1080p", formatSelector: heightSelector(1080), audioOnly: false });
+    expect(options[1]).toEqual({ id: "h1080", label: "1080p", formatSelector: heightSelector(1080), audioOnly: false, height: 1080 });
     expect(options.at(-1)).toMatchObject({ id: "audio", formatSelector: "ba/b", audioOnly: true });
   });
 

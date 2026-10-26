@@ -246,6 +246,8 @@ export interface MediaFormatOption {
   label: string;
   formatSelector: string;
   audioOnly: boolean;
+  /** Pixel height of a video quality, when known. */
+  height?: number;
 }
 
 export type MediaChoice = { kind: "item"; index: number; option?: MediaFormatOption } | { kind: "format"; option: MediaFormatOption };

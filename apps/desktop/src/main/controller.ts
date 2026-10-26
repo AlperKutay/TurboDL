@@ -39,7 +39,6 @@ import {
   type PendingItem,
   type Result,
   type Settings,
-  type StreamOrigin,
   type BrowserCookie,
   SavedError,
   parseInstagramLink,
@@ -48,7 +47,7 @@ import { createBridgeServer, type BridgeServer } from "./bridge-server";
 import { HttpDownloadTask } from "./engine/download-task";
 import { delay } from "./engine/http";
 import { fetchMedia } from "./instagram/fetch-media";
-import { itemFolder } from "./instagram/folders";
+import { itemDownload } from "./instagram/item-download";
 import { Backups } from "./instagram/backups";
 import { LedgerStore } from "./instagram/ledger";
 import { InstagramPacer } from "./instagram/pacer";
@@ -57,11 +56,11 @@ import { ProfileService, type ProfileSource } from "./instagram/profile-service"
 import { httpGet, type HttpGet } from "./instagram/saved-client";
 import { SavedService } from "./instagram/saved-service";
 import type { FindOutcome } from "./instagram/finder";
-import { instagramExtension } from "./instagram/files";
 import { InstagramSession, type Crypt } from "./instagram/session";
 import { probe } from "./engine/probe";
 import { DownloadManager, type StateFile } from "./manager";
 import { cookiesFromHeader, withCookieFile } from "./media/cookies";
+import { pageDownload, streamDownload } from "./media/new-download";
 import { createResolver, streamOptions, type Resolved } from "./media/resolve";
 import { StreamTask } from "./media/stream-task";
 import { ToolManager, type ToolPaths } from "./media/tools";
@@ -475,31 +474,20 @@ export class AppController {
     if (chosen.length === 0) return { ok: false, error: "Nothing was picked." };
     const fallback = p.link.kind === "post" ? p.link.code : p.link.kind === "story" ? p.link.item : p.link.kind === "highlight" ? p.link.id : "instagram";
     // each item into its account's folder when downloads are kept per account
-    const where = { baseDir: this.settings.baseDir, byAccount: this.settings.instagramByAccount, highlight: p.link.kind === "highlight" };
-    const named = chosen.map((item, k) => ({
-      item,
-      dir: itemFolder(p.defaultDir, item, where),
-      filename: sanitizeFilename(`${item.mediaId ?? `${fallback}-${k + 1}`}.${instagramExtension(item)}`),
-    }));
+    const target = {
+      defaultDir: p.defaultDir,
+      baseDir: this.settings.baseDir,
+      byAccount: this.settings.instagramByAccount,
+      highlight: p.link.kind === "highlight",
+      fallback,
+      pageUrl: p.pageUrl,
+      agent: this.instagram.agent,
+    };
+    const named = chosen.map((item, k) => itemDownload(item, k, target));
     // a profile's or its highlights' picks go where their backups go: what is there already isn't downloaded again
     const fresh = p.keepsFolder ? named.filter(({ dir, filename }) => !existsSync(path.join(dir, filename))) : named;
     if (fresh.length === 0) return { ok: false, error: `These are already in ${p.keepsFolder}.` };
-    fresh.forEach(({ item, dir, filename }) => {
-      this.manager.add(
-        {
-          kind: "http",
-          url: item.url,
-          pageUrl: p.pageUrl,
-          filename,
-          dir,
-          category: item.kind === "video" ? "video" : "images",
-          size: null,
-          resumable: true,
-          headers: { Referer: "https://www.instagram.com/", ...(this.instagram.agent ? { "User-Agent": this.instagram.agent } : {}) },
-        },
-        mode,
-      );
-    });
+    fresh.forEach((download) => this.manager.add(download, mode));
     this.forgetInstagram(pendingId);
     this.finishPending(pendingId);
     return { ok: true };
@@ -733,23 +721,14 @@ export class AppController {
     const base = sanitizeFilename(p.title || "video");
     let item: NewDownload;
     if (choice.kind === "format") {
-      const audio = choice.option.audioOnly;
-      item = {
-        kind: "stream",
-        url: p.pageUrl,
+      item = pageDownload({
         pageUrl: p.pageUrl,
-        filename: `${base}.${audio ? "mp3" : "mp4"}`,
+        title: p.title,
+        option: choice.option,
         dir,
-        category: audio ? "music" : "video",
-        size: null,
-        resumable: true,
         headers: withoutCookie(p.headers),
-        stream: {
-          origin: { type: "ytdlp", pageUrl: p.pageUrl, formatSelector: choice.option.formatSelector, ...(p.useLogin ? { cookies: p.cookieJar } : {}) },
-          output: audio ? "mp3" : "mp4",
-          tracks: [],
-        },
-      };
+        ...(p.useLogin && p.cookieJar ? { cookies: p.cookieJar } : {}),
+      });
     } else {
       const media = p.items[choice.index];
       if (!media) return { ok: false, error: "The selected media was not found." };
@@ -775,23 +754,7 @@ export class AppController {
           headers,
         };
       } else if (choice.option) {
-        const audio = choice.option.audioOnly;
-        const origin: StreamOrigin =
-          media.kind === "hls"
-            ? { type: "hls", url: media.url, variant: choice.option.id === "media" ? null : choice.option.formatSelector }
-            : { type: "dash", url: media.url, video: audio ? null : choice.option.formatSelector, audio: null };
-        item = {
-          kind: "stream",
-          url: media.url,
-          pageUrl: p.pageUrl,
-          filename: `${base}.${audio ? "mp3" : "mp4"}`,
-          dir,
-          category: audio ? "music" : "video",
-          size: null,
-          resumable: true,
-          headers,
-          stream: { origin, output: audio ? "mp3" : "mp4", tracks: [] },
-        };
+        item = streamDownload({ url: media.url, pageUrl: p.pageUrl, kind: media.kind, title: p.title, option: choice.option, dir, headers });
       } else {
         const cookies = cookiesFromHeader(media.cookies, media.url);
         item = {

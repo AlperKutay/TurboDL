@@ -55,7 +55,7 @@ describe("parseHls master", () => {
   it("prefers AAC variants and keeps one entry per height", () => {
     const options = hlsOptions(master());
     expect(options.map((o) => o.label)).toEqual(["1080p60 · 8.0 Mbps", "540p60 · 2.2 Mbps", "270p · 0.5 Mbps", "Audio only (MP3)"]);
-    expect(options[0]).toEqual({ id: "1920x1080@8001098", label: "1080p60 · 8.0 Mbps", formatSelector: "1920x1080@8001098", audioOnly: false });
+    expect(options[0]).toEqual({ id: "1920x1080@8001098", label: "1080p60 · 8.0 Mbps", formatSelector: "1920x1080@8001098", audioOnly: false, height: 1080 });
     expect(options[3]).toMatchObject({ id: "audio", audioOnly: true });
   });
 

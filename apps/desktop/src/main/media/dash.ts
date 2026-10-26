@@ -195,7 +195,7 @@ export function dashOptions(m: DashManifest): MediaFormatOption[] {
   }
   const options: MediaFormatOption[] = [...best.values()]
     .sort((a, b) => (b.height ?? 0) - (a.height ?? 0) || b.bandwidth - a.bandwidth)
-    .map((r) => ({ id: r.id, label: qualityLabel(r.height, r.frameRate, r.bandwidth), formatSelector: r.id, audioOnly: false }));
+    .map((r) => ({ id: r.id, label: qualityLabel(r.height, r.frameRate, r.bandwidth), formatSelector: r.id, audioOnly: false, ...(r.height !== null ? { height: r.height } : {}) }));
   if (m.representations.some((r) => r.kind === "audio")) options.push(AUDIO_ONLY);
   return options;
 }
