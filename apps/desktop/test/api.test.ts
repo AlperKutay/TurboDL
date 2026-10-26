@@ -26,7 +26,10 @@ function freePort(): Promise<number> {
 }
 
 class FakeUi implements ControllerUi {
-  broadcast(_e: AppEvent) {}
+  events: AppEvent[] = [];
+  broadcast(e: AppEvent) {
+    this.events.push(e);
+  }
   openPending(_item: PendingItem) {}
   closePending() {}
   showMain() {}
@@ -54,7 +57,7 @@ afterEach(async () => {
 const userData = () => path.join(root, "user");
 const apiFile = () => JSON.parse(readFileSync(path.join(userData(), "api.json"), "utf8")) as ApiFile;
 
-async function start(bridgePort?: number, instagram?: InstagramDeps): Promise<AppController> {
+async function start(bridgePort?: number, instagram?: InstagramDeps, ui: ControllerUi = new FakeUi()): Promise<AppController> {
   mkdirSync(userData(), { recursive: true });
   port = bridgePort ?? (await freePort());
   writeFileSync(path.join(userData(), "settings.json"), JSON.stringify({ baseDir: path.join(root, "dl"), bridgePort: port }));
@@ -68,7 +71,7 @@ async function start(bridgePort?: number, instagram?: InstagramDeps): Promise<Ap
     documentsDir: path.join(root, "Documents"),
     extensionSourceDir: extensionDir,
     ffmpegPath: null,
-    ui: new FakeUi(),
+    ui,
     launch: LAUNCH,
     mediaTools: { ensure: async () => ({ ytdlp: "unused", deno: null, ffmpeg: null }), updateIfStale: async () => undefined },
     ytdlpCommand: () => ({ file: process.execPath, args: [FAKE_YTDLP] }),
@@ -139,6 +142,31 @@ describe("api.json", () => {
   });
 });
 
+describe("api.json failures", () => {
+  it("answers with the token from api.json right after init", async () => {
+    await start();
+    const res = await call("GET", "/v1/info");
+    expect(res.status).toBe(200);
+    const bad = await new Promise<number>((resolve, reject) => {
+      const req = http.request({ host: "127.0.0.1", port, path: "/v1/info", headers: { Authorization: "Bearer " } }, (r) => {
+        r.resume();
+        resolve(r.statusCode ?? 0);
+      });
+      req.on("error", reject);
+      req.end();
+    });
+    expect(bad).toBe(403);
+  });
+
+  it("starts and broadcasts the bridge status when api.json can't be written", async () => {
+    mkdirSync(path.join(userData(), "api.json"), { recursive: true });
+    const ui = new FakeUi();
+    const c = await start(undefined, undefined, ui);
+    expect(c.snapshot().bridge).toMatchObject({ ok: true, port });
+    expect(ui.events.some((e) => e.type === "bridge")).toBe(true);
+  });
+});
+
 describe("jobs API", () => {
   it("runs a file link sent with the token and streams it to its end", async () => {
     const data = Buffer.alloc(2000, 7);
@@ -194,5 +222,7 @@ describe("jobs API", () => {
     await c.shutdown();
     const all = await Promise.race([stream.done, new Promise<null>((r) => setTimeout(() => r(null), 5000))]);
     expect(all).not.toBeNull();
+    // the stream was closed by the bridge, not ended by the job
+    expect(all?.some((e) => e.type === "end")).toBe(false);
   });
 });

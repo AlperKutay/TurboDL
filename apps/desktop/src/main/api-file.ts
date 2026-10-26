@@ -14,12 +14,18 @@ function existingToken(file: string): string | null {
   }
 }
 
-/** Writes api.json (keeping an existing token) so command-line and script clients can find and start the app. */
+/** The token api.json holds, or a new one when it has none; the file is not written. */
+export function apiToken(userDataDir: string): string {
+  return existingToken(path.join(userDataDir, API_FILE)) ?? randomBytes(32).toString("hex");
+}
+
+/** Writes api.json (keeping an existing token, or using `token`) so command-line and script clients can find and start the app. */
 export function writeApiFile(o: {
   userDataDir: string;
   version: string;
   port: number | null;
   launch: ApiLaunch;
+  token?: string;
   platform?: NodeJS.Platform;
 }): ApiFile {
   const file = path.join(o.userDataDir, API_FILE);
@@ -27,7 +33,7 @@ export function writeApiFile(o: {
     api: API_VERSION,
     version: o.version,
     port: o.port,
-    token: existingToken(file) ?? randomBytes(32).toString("hex"),
+    token: o.token ?? apiToken(o.userDataDir),
     launch: o.launch
   };
   // clients poll the file while the app starts, so they must never see it half-written

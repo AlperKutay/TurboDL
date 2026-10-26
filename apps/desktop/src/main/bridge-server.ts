@@ -35,6 +35,7 @@ const KINDS: MediaKind[] = ["file", "hls", "dash"];
 
 /** True when the Authorization header is `Bearer <token>`; compared in constant time. */
 function hasToken(header: string | undefined, token: string): boolean {
+  if (token === "") return false;
   const given = Buffer.from(header ?? "");
   const wanted = Buffer.from(`Bearer ${token}`);
   return given.length === wanted.length && crypto.timingSafeEqual(given, wanted);

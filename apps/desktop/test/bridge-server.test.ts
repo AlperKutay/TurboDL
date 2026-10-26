@@ -32,6 +32,33 @@ afterEach(async () => {
   await server.close();
 });
 
+describe("API token", () => {
+  it("refuses an empty bearer token even when the handlers' token is empty", async () => {
+    const api = createBridgeServer({
+      version: "1",
+      allowedOrigin: ORIGIN,
+      getConfig: () => ({ captureEnabled: true, captureExtensions: [], minCaptureSize: 0 }),
+      onDownload: async () => ({ accepted: true }),
+      onMedia: async () => undefined,
+      api: { token: () => "" } as unknown as import("../src/main/api-routes").ApiHandlers,
+    });
+    const p = await api.listen(0);
+    try {
+      const status = await new Promise<number>((resolve, reject) => {
+        const req = http.request({ host: "127.0.0.1", port: p, path: "/v1/info", headers: { Authorization: "Bearer " } }, (res) => {
+          res.resume();
+          resolve(res.statusCode ?? 0);
+        });
+        req.on("error", reject);
+        req.end();
+      });
+      expect(status).toBe(403);
+    } finally {
+      await api.close();
+    }
+  });
+});
+
 interface CallOptions {
   method?: string;
   origin?: string | null;

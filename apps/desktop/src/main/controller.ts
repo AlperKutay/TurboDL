@@ -47,7 +47,7 @@ import {
   SavedError,
   parseInstagramLink,
 } from "@turbodl/shared";
-import { writeApiFile } from "./api-file";
+import { apiToken, writeApiFile } from "./api-file";
 import type { ApiHandlers } from "./api-routes";
 import { createBridgeServer, type BridgeServer } from "./bridge-server";
 import { HttpDownloadTask } from "./engine/download-task";
@@ -938,6 +938,8 @@ export class AppController {
   }
 
   private async startBridge(): Promise<void> {
+    // the API has its token before the bridge listens
+    if (!this.apiToken) this.apiToken = apiToken(this.o.userDataDir);
     const port = this.settings.bridgePort;
     const server = createBridgeServer({
       version: this.o.version,
@@ -963,12 +965,18 @@ export class AppController {
             : `Could not start the browser bridge: ${message(err)}`,
       };
     }
-    this.apiToken = writeApiFile({
-      userDataDir: this.o.userDataDir,
-      version: this.o.version,
-      port: this.bridgeStatus.ok ? port : null,
-      launch: this.o.launch ?? { file: process.execPath, args: ["--hidden"] },
-    }).token;
+    try {
+      writeApiFile({
+        userDataDir: this.o.userDataDir,
+        version: this.o.version,
+        port: this.bridgeStatus.ok ? port : null,
+        launch: this.o.launch ?? { file: process.execPath, args: ["--hidden"] },
+        token: this.apiToken,
+      });
+    } catch (err) {
+      // clients can't find the app without api.json, but the app itself still works
+      console.error(`Could not write api.json: ${message(err)}`);
+    }
     this.o.ui.broadcast({ type: "bridge", status: this.bridgeStatus });
   }
 
