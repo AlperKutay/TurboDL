@@ -4,7 +4,7 @@ import profilePage from "../../../../packages/shared/src/instagram/fixtures/inst
 import loggedOutPage from "../../../../packages/shared/src/instagram/fixtures/instagram-profile-loggedout.json?raw";
 import { SIGNED_OUT_POSTS_QUERY, SIGNED_OUT_TRAY_QUERY, SavedError } from "@turbodl/shared";
 import { ProfileFeed, type ProfileDriver } from "../../src/main/instagram/profile-feed";
-import { STALE_SIGNED_OUT, operationIds } from "../../src/main/instagram/signed-out";
+import { NO_ANSWER, STALE_SIGNED_OUT, STALE_SIGNED_OUT_TRAY, operationIds } from "../../src/main/instagram/signed-out";
 
 const DOCUMENTS = JSON.parse(profilePage) as string[];
 const WITHOUT_TRAY = DOCUMENTS.filter((d) => !d.includes('"highlights"'));
@@ -36,7 +36,7 @@ class FakeProfilePage implements ProfileDriver {
   async resend() {
     return this.resends.length > 1 ? (this.resends.shift() ?? null) : (this.resends[0] ?? null);
   }
-  async signedOutQuery(_name: string, _variables: Record<string, unknown>): Promise<{ status: number; text: string } | null> {
+  async signedOutQuery(_name: string, _variables: Record<string, unknown>, _signal?: AbortSignal): Promise<{ status: number; text: string } | null> {
     return null;
   }
   async rescanScripts() {}
@@ -180,34 +180,44 @@ type Query = { name: string; docId: string; variables: Record<string, unknown> }
 
 /**
  * The profile as signed-out visitors see it; its signed-out queries go out only with a known id (as the real page's
- * do) and answer through `answer`; `rescan` is what fetching the page's scripts again finds.
+ * do) and answer through `answer` (which throws as the page does when nothing comes back); `rescan` is what fetching
+ * the page's scripts again finds.
  */
 class SignedOutPage extends FakeProfilePage {
   queries: Query[] = [];
+  signals: (AbortSignal | undefined)[] = [];
   rescans = 0;
   /** the posts query's id when the page was told to stop collecting */
   idAtStop: string | undefined;
+  /** the tray query's id then */
+  trayIdAtStop: string | undefined;
   constructor(
     steps: string[][],
     private readonly answer: (q: Query) => { status: number; text: string } | null,
-    private readonly rescan: () => void = () => undefined,
+    private readonly rescan: () => void | Promise<void> = () => undefined,
   ) {
     super(steps);
   }
-  override async signedOutQuery(name: string, variables: Record<string, unknown>) {
+  override async signedOutQuery(name: string, variables: Record<string, unknown>, signal?: AbortSignal) {
     const docId = operationIds.get(name);
     if (!docId) return null;
     this.queries.push({ name, docId, variables });
+    this.signals.push(signal);
     return this.answer({ name, docId, variables });
   }
   override async rescanScripts() {
     this.rescans++;
-    this.rescan();
+    await this.rescan();
   }
   override stopCollecting() {
     this.idAtStop = operationIds.get(SIGNED_OUT_POSTS_QUERY);
+    this.trayIdAtStop = operationIds.get(SIGNED_OUT_TRAY_QUERY);
     super.stopCollecting();
   }
+}
+
+async function until(done: () => boolean): Promise<void> {
+  while (!done()) await new Promise((r) => setTimeout(r, 5));
 }
 
 describe("ProfileFeed seen signed out", () => {
@@ -309,6 +319,71 @@ describe("ProfileFeed seen signed out", () => {
     expect([page.rescans, operationIds.get(SIGNED_OUT_POSTS_QUERY)]).toEqual([0, "111"]);
   });
 
+  it("keeps the id and says Instagram didn't answer when a query fails on the way or takes too long", async () => {
+    operationIds.note(defines(SIGNED_OUT_POSTS_QUERY, "111"));
+    const page = new SignedOutPage([LOGGED_OUT], () => {
+      throw new Error(NO_ANSWER);
+    });
+    const f = feed(page);
+    await f.profile();
+    await expect(f.page("c1")).rejects.toThrow(NO_ANSWER);
+    expect([page.rescans, page.queries.length, operationIds.get(SIGNED_OUT_POSTS_QUERY)]).toEqual([0, 1, "111"]);
+  });
+
+  it("tries a newer id another page noted meanwhile at once, keeping it", async () => {
+    operationIds.note(defines(SIGNED_OUT_POSTS_QUERY, "111"));
+    const page = new SignedOutPage([LOGGED_OUT], (q) => {
+      if (q.docId === "222") return byCursor(q);
+      // another profile's page notes a fresh id while this stale one is on its way
+      operationIds.note(defines(SIGNED_OUT_POSTS_QUERY, "222"));
+      return STALE;
+    });
+    const f = feed(page);
+    await f.profile();
+    expect((await f.page("c1")).next).toBe("c2");
+    expect([page.rescans, page.queries.map((q) => q.docId), operationIds.get(SIGNED_OUT_POSTS_QUERY)]).toEqual([0, ["111", "222"], "222"]);
+  });
+
+  it("lets two pages that meet a stale id share one look through the page's scripts", async () => {
+    operationIds.note(defines(SIGNED_OUT_POSTS_QUERY, "111"));
+    const page = new SignedOutPage(
+      [LOGGED_OUT],
+      (q) => (q.docId === "222" ? byCursor(q) : STALE),
+      async () => {
+        await new Promise((r) => setTimeout(r, 20));
+        operationIds.note(defines(SIGNED_OUT_POSTS_QUERY, "222"));
+      },
+    );
+    const f = feed(page);
+    await f.profile();
+    const [a, b] = await Promise.all([f.page("c1"), f.page("c2")]);
+    expect([a.next, b.next]).toEqual(["c2", "c3"]);
+    expect(page.rescans).toBe(1);
+  });
+
+  it("stops a called-off read: nothing is sent, and no retry follows the look through the scripts", async () => {
+    operationIds.note(defines(SIGNED_OUT_POSTS_QUERY, "111"));
+    const before = new SignedOutPage([LOGGED_OUT], byCursor);
+    const f = feed(before);
+    await f.profile();
+    const off = new AbortController();
+    off.abort();
+    await expect(f.page("c1", off.signal)).rejects.toThrow("Cancelled.");
+    expect(before.queries).toEqual([]);
+
+    let release = () => undefined as void;
+    const during = new SignedOutPage([LOGGED_OUT], () => STALE, () => new Promise<void>((r) => (release = r)));
+    const g = feed(during);
+    await g.profile();
+    const stop = new AbortController();
+    const read = g.page("c1", stop.signal);
+    await until(() => during.rescans === 1);
+    stop.abort();
+    await expect(read).rejects.toThrow("Cancelled.");
+    expect([during.queries.length, during.signals[0]]).toEqual([1, stop.signal]);
+    release();
+  });
+
   it("pages the highlights tray with Instagram's signed-out tray query", async () => {
     operationIds.note(defines(SIGNED_OUT_TRAY_QUERY, "333"));
     const trays: Record<string, { status: number; text: string }> = { t1: trayAnswer(["17900000000000010", "17900000000000011"], "t2"), t2: trayAnswer(["17900000000000012"]) };
@@ -327,6 +402,34 @@ describe("ProfileFeed seen signed out", () => {
       [SIGNED_OUT_TRAY_QUERY, "333"],
     ]);
     expect(page.queries[0].variables).toEqual({ after: "t1", first: 12, id: "5100000000000000001" });
+  });
+
+  it("waits a little for the tray query's id too when the tray has more", async () => {
+    operationIds.note(defines(SIGNED_OUT_POSTS_QUERY, "111"));
+    const page = new SignedOutPage([LONG_TRAY], () => null);
+    const loaded = feed(page, { opWait: 2000 }).profile();
+    setTimeout(() => operationIds.note(defines(SIGNED_OUT_TRAY_QUERY, "333")), 50);
+    await loaded;
+    expect([page.idAtStop, page.trayIdAtStop]).toEqual(["111", "333"]);
+  });
+
+  it("learns a stale or unknown tray id again once, and says so when it stays stale", async () => {
+    const trays: Record<string, { status: number; text: string }> = { t1: trayAnswer(["17900000000000010"]) };
+    operationIds.note(defines(SIGNED_OUT_TRAY_QUERY, "333"));
+    const learns = new SignedOutPage([LONG_TRAY], (q) => (q.docId === "444" ? (trays[q.variables.after as string] ?? null) : STALE), () =>
+      operationIds.note(defines(SIGNED_OUT_TRAY_QUERY, "444")),
+    );
+    const f = feed(learns);
+    await f.profile();
+    expect((await f.moreHighlights())?.map((h) => h.id)).toEqual(["17900000000000010"]);
+    expect([learns.rescans, learns.queries.map((q) => q.docId)]).toEqual([1, ["333", "444"]]);
+
+    operationIds.forget(SIGNED_OUT_TRAY_QUERY);
+    const stale = new SignedOutPage([LONG_TRAY], () => STALE, () => operationIds.note(defines(SIGNED_OUT_TRAY_QUERY, "333")));
+    const g = feed(stale);
+    await g.profile();
+    await expect(g.moreHighlights()).rejects.toThrow(STALE_SIGNED_OUT_TRAY);
+    expect([stale.rescans, g.trayCursor]).toEqual([1, "t1"]);
   });
 
   it("has no more highlights when the tray ends on the page, nor signed in", async () => {

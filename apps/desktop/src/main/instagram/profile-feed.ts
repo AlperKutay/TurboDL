@@ -17,7 +17,7 @@ import {
   type SavedPage,
 } from "@turbodl/shared";
 import { within, type PageDriver } from "./finder";
-import { STALE_SIGNED_OUT, operationIds } from "./signed-out";
+import { STALE_SIGNED_OUT, STALE_SIGNED_OUT_TRAY, operationIds } from "./signed-out";
 
 /**
  * The profile page as the feed needs it: also its own posts request sent again, Instagram's signed-out queries, and
@@ -26,8 +26,11 @@ import { STALE_SIGNED_OUT, operationIds } from "./signed-out";
 export interface ProfileDriver extends PageDriver {
   /** the page's own posts request from after `cursor`; null until the page has made one */
   resend(cursor: string): Promise<{ status: number; text: string } | null>;
-  /** a signed-out query sent from inside the page; null while its id or the page's lsd is unknown */
-  signedOutQuery(name: string, variables: Record<string, unknown>): Promise<{ status: number; text: string } | null>;
+  /**
+   * a signed-out query sent from inside the page with the id known as the call starts; null while that id is unknown.
+   * Throws (never SavedError("badAnswer")) when the page can't send it or nothing comes back in time.
+   */
+  signedOutQuery(name: string, variables: Record<string, unknown>, signal?: AbortSignal): Promise<{ status: number; text: string } | null>;
   /** once per app run: fetch the scripts the page lists (performance resources) and scan them for ids */
   rescanScripts(): Promise<void>;
   /** the first load is read: forget its answers and keep no more (each posts answer is over a megabyte) */
@@ -67,8 +70,8 @@ export class ProfileFeed {
   private first: ProfilePosts | null = null;
   /** the profile's number, for the signed-out tray query */
   private profileId: string | null = null;
-  /** the page's scripts were fetched again for a stale query id: not again for this feed */
-  private rescanned = false;
+  /** the page's scripts fetched again for a stale query id: once for this feed, shared by every read that meets one */
+  private rescan: Promise<void> | null = null;
   /** the profile's highlights, once it is loaded; empty when it has none or the page didn't send them in time */
   highlights: Highlight[] = [];
   /** seen as signed-out visitors see it: its posts by their covers, the next pages through the signed-out query */
@@ -97,7 +100,10 @@ export class ProfileFeed {
     const first = this.first;
     if (!first) throw new SavedError("badAnswer");
     if (cursor === undefined) return toPage(first);
-    if (this.limited) return toPage(await this.signedOutPage(cursor));
+    if (this.limited) {
+      const variables = { after: cursor, first: SIGNED_OUT_PAGE, username: this.username, __relay_internal__pv__PolarisSEOIsCrawlerrelayprovider: false };
+      return toPage(await this.signedOut(SIGNED_OUT_POSTS_QUERY, variables, signedOutPostsAnswer, STALE_SIGNED_OUT, signal));
+    }
     let answer = await this.driver.resend(cursor);
     if (!answer) {
       // the page asks for more only when it is scrolled
@@ -114,14 +120,13 @@ export class ProfileFeed {
 
   /**
    * The tray's next page, seen signed out (Instagram's signed-out tray query); null when there is none, and always
-   * signed in. Throws SavedError.
+   * signed in. Throws as a signed-out page of posts does.
    */
-  async moreHighlights(_signal?: AbortSignal): Promise<Highlight[] | null> {
+  async moreHighlights(signal?: AbortSignal): Promise<Highlight[] | null> {
     const after = this.trayCursor;
     if (!this.limited || !after || !this.profileId) return null;
-    const answer = await this.driver.signedOutQuery(SIGNED_OUT_TRAY_QUERY, { after, first: SIGNED_OUT_PAGE, id: this.profileId });
-    if (!answer) throw new SavedError("badAnswer");
-    const tray = signedOutTrayAnswer(answer.text, answer.status);
+    const variables = { after, first: SIGNED_OUT_PAGE, id: this.profileId };
+    const tray = await this.signedOut(SIGNED_OUT_TRAY_QUERY, variables, signedOutTrayAnswer, STALE_SIGNED_OUT_TRAY, signal);
     this.trayCursor = tray.hasNext && tray.cursor ? tray.cursor : undefined;
     return tray.highlights;
   }
@@ -167,11 +172,10 @@ export class ProfileFeed {
         if (open.trayHasNext && open.trayCursor) this.trayCursor = open.trayCursor;
         this.profileId = open.profile.id;
         this.limited = true;
-        // the posts query's id comes in the scripts the page is still loading; its next pages need it
-        if (open.hasNext && open.cursor) {
-          const opDeadline = Date.now() + (this.o.opWait ?? 3000);
-          while (!operationIds.get(SIGNED_OUT_POSTS_QUERY) && Date.now() < opDeadline) await sleep(poll);
-        }
+        // the queries' ids come in the scripts the page is still loading; the next pages of posts and of the tray need them
+        const needed = [...(open.hasNext && open.cursor ? [SIGNED_OUT_POSTS_QUERY] : []), ...(this.trayCursor ? [SIGNED_OUT_TRAY_QUERY] : [])];
+        const opDeadline = Date.now() + (this.o.opWait ?? 3000);
+        while (needed.some((name) => !operationIds.get(name)) && Date.now() < opDeadline) await sleep(poll);
         this.driver.stopCollecting();
         return open.profile;
       }
@@ -182,23 +186,39 @@ export class ProfileFeed {
   }
 
   /**
-   * The posts after `cursor` as signed-out visitors get them. No answer, or one without the posts (a stale or unknown
-   * query id), forgets the id and, once for this feed, looks for it again in the page's scripts and tries once more;
-   * after that the profile stays at the pages it has. Instagram's push-back throws as SavedError.
+   * One of Instagram's signed-out queries, its answer read by `read`. An unknown id, or an answer without what was
+   * asked for (`read` throws badAnswer: a stale id), is tried once more: at once with a newer id another page noted
+   * meanwhile, otherwise after the feed's one look through the page's scripts again (a read that meets a stale id while
+   * that look runs waits for it). Still nothing: throws `stale`. Anything else (Instagram's push-back, no answer at all)
+   * throws as it is and keeps the id. Called off: "Cancelled.".
    */
-  private async signedOutPage(cursor: string): Promise<ProfilePosts> {
-    const variables = { after: cursor, first: SIGNED_OUT_PAGE, username: this.username, __relay_internal__pv__PolarisSEOIsCrawlerrelayprovider: false };
+  private async signedOut<T>(
+    name: string,
+    variables: Record<string, unknown>,
+    read: (body: string, status: number) => T,
+    stale: string,
+    signal?: AbortSignal,
+  ): Promise<T> {
+    let retried = false;
     for (;;) {
-      try {
-        const answer = await this.driver.signedOutQuery(SIGNED_OUT_POSTS_QUERY, variables);
-        if (answer) return signedOutPostsAnswer(answer.text, answer.status);
-      } catch (err) {
-        if (!(err instanceof SavedError && err.kind === "badAnswer")) throw err;
+      if (signal?.aborted) throw new Error("Cancelled.");
+      // the id the page sends with: it takes the one known as the call starts
+      const docId = operationIds.get(name);
+      const answer = await this.driver.signedOutQuery(name, variables, signal);
+      if (answer) {
+        try {
+          return read(answer.text, answer.status);
+        } catch (err) {
+          if (!(err instanceof SavedError && err.kind === "badAnswer")) throw err;
+        }
+        if (docId) operationIds.forget(name, docId);
       }
-      operationIds.forget(SIGNED_OUT_POSTS_QUERY);
-      if (this.rescanned) throw new Error(STALE_SIGNED_OUT);
-      this.rescanned = true;
-      await this.driver.rescanScripts();
+      if (retried) throw new Error(stale);
+      retried = true;
+      if (!operationIds.get(name)) {
+        this.rescan ??= this.driver.rescanScripts().catch(() => undefined);
+        await within(this.rescan, Infinity, signal);
+      }
     }
   }
 }

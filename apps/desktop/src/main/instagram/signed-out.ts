@@ -1,4 +1,5 @@
 import { SIGNED_OUT_POSTS_QUERY, SIGNED_OUT_TRAY_QUERY, relayOperationId } from "@turbodl/shared";
+import { isInstagramScriptHost } from "./partition";
 
 /** The queries a signed-out profile page is read on with. */
 const QUERIES = [SIGNED_OUT_POSTS_QUERY, SIGNED_OUT_TRAY_QUERY];
@@ -23,9 +24,19 @@ export class OperationIds {
     return this.ids.get(name);
   }
 
-  /** An id Instagram no longer answers to. */
-  forget(name: string): void {
-    this.ids.delete(name);
+  /** An id Instagram no longer answers to; given `docId`, only while that is still the one known (no newer one noted since). */
+  forget(name: string, docId?: string): void {
+    if (docId === undefined || this.ids.get(name) === docId) this.ids.delete(name);
+  }
+
+  /** Some signed-out query's id is still unknown. */
+  missing(): boolean {
+    return QUERIES.some((name) => !this.ids.has(name));
+  }
+
+  /** An answer worth scanning for the ids: a script from Instagram's CDN, while an id is still unknown. */
+  wants(address: string, mimeType: string): boolean {
+    return this.missing() && /javascript/i.test(mimeType) && isInstagramScriptHost(address);
   }
 }
 
@@ -34,6 +45,12 @@ export const operationIds = new OperationIds();
 
 /** Why a profile seen signed out stays at the pages it has: its query is no longer answered. */
 export const STALE_SIGNED_OUT = "Instagram changed its signed-out profile page; TurboDL couldn't read further posts.";
+/** Why a signed-out highlights tray stays at the highlights it has: its query is no longer answered. */
+export const STALE_SIGNED_OUT_TRAY = "Instagram changed its signed-out profile page; TurboDL couldn't read further highlights.";
+/** A signed-out query that failed on the way or took too long: the query's id is kept. */
+export const NO_ANSWER = "Instagram didn't answer.";
+/** A signed-out page without the lsd token its queries are sent with. */
+export const NO_LSD = "Instagram's signed-out profile page didn't give TurboDL the token its queries need.";
 
 /**
  * The page-side script that sends a signed-out query (`POST /api/graphql`, a Relay form, the page's lsd and CSRF

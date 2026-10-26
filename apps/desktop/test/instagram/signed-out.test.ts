@@ -1,7 +1,7 @@
 import vm from "node:vm";
 import { describe, expect, it } from "vitest";
 import { SIGNED_OUT_POSTS_QUERY, SIGNED_OUT_TRAY_QUERY } from "@turbodl/shared";
-import { OperationIds, STALE_SIGNED_OUT, operationIds, signedOutQueryScript } from "../../src/main/instagram/signed-out";
+import { NO_ANSWER, OperationIds, STALE_SIGNED_OUT, STALE_SIGNED_OUT_TRAY, operationIds, signedOutQueryScript } from "../../src/main/instagram/signed-out";
 
 /** A script that defines `name`'s operation id the way Instagram's bundles do. */
 const defines = (name: string, id: string) => `__d("${name}_instagramRelayOperation",[],(function(t,n,r,o,a,i){a.exports="${id}"}),null);`;
@@ -42,6 +42,32 @@ describe("the signed-out queries' ids", () => {
     ids.note(defines(SIGNED_OUT_POSTS_QUERY, "111") + defines(SIGNED_OUT_TRAY_QUERY, "222"));
     ids.forget(SIGNED_OUT_POSTS_QUERY);
     expect([ids.get(SIGNED_OUT_POSTS_QUERY), ids.get(SIGNED_OUT_TRAY_QUERY)]).toEqual([undefined, "222"]);
+  });
+
+  it("forget a failed id only while it is still the one known, not one noted since", () => {
+    const ids = new OperationIds();
+    ids.note(defines(SIGNED_OUT_POSTS_QUERY, "222"));
+    ids.forget(SIGNED_OUT_POSTS_QUERY, "111");
+    expect(ids.get(SIGNED_OUT_POSTS_QUERY)).toBe("222");
+    ids.forget(SIGNED_OUT_POSTS_QUERY, "222");
+    expect(ids.get(SIGNED_OUT_POSTS_QUERY)).toBeUndefined();
+  });
+
+  it("want Instagram's CDN scripts scanned only while an id is missing", () => {
+    const ids = new OperationIds();
+    const cdn = "https://static.cdninstagram.com/rsrc.php/v4/yX/r/abc.js";
+    expect(ids.missing()).toBe(true);
+    expect(ids.wants(cdn, "application/javascript")).toBe(true);
+    expect(ids.wants(cdn, "text/css")).toBe(false);
+    expect(ids.wants("https://www.instagram.com/api/graphql", "text/javascript")).toBe(false);
+    expect(ids.wants("https://cdn.example/x.js", "text/javascript")).toBe(false);
+    ids.note(defines(SIGNED_OUT_POSTS_QUERY, "111"));
+    expect(ids.wants(cdn, "text/javascript")).toBe(true);
+    ids.note(defines(SIGNED_OUT_TRAY_QUERY, "222"));
+    expect([ids.missing(), ids.wants(cdn, "text/javascript")]).toEqual([false, false]);
+    // a stale id opens the scripts again
+    ids.forget(SIGNED_OUT_TRAY_QUERY, "222");
+    expect([ids.missing(), ids.wants(cdn, "text/javascript")]).toEqual([true, true]);
   });
 
   it("are kept once for the app's run", () => {
@@ -90,8 +116,10 @@ describe("a signed-out query sent from the page", () => {
   });
 });
 
-describe("a stale signed-out query", () => {
-  it("says Instagram changed its page", () => {
+describe("a failed signed-out query", () => {
+  it("says Instagram changed its page when the query is stale, and that Instagram didn't answer when it got nothing", () => {
     expect(STALE_SIGNED_OUT).toBe("Instagram changed its signed-out profile page; TurboDL couldn't read further posts.");
+    expect(STALE_SIGNED_OUT_TRAY).toBe("Instagram changed its signed-out profile page; TurboDL couldn't read further highlights.");
+    expect(NO_ANSWER).toBe("Instagram didn't answer.");
   });
 });
