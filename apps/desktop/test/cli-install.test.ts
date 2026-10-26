@@ -127,7 +127,7 @@ function fake(over: Partial<CliInstallDeps> & { path?: { type: string; value: st
   };
   return { deps, calls, events, admin, value: () => current };
 }
-const BIN = path.join("C:\\Users\\x\\AppData\\Roaming\\TurboDL", "bin");
+const BIN = path.win32.join("C:\\Users\\x\\AppData\\Roaming\\TurboDL", "bin");
 
 describe("Windows PATH", () => {
   it("adds the folder to the user PATH once, keeping its type and unexpanded entries, then tells running programs", async () => {
