@@ -282,7 +282,7 @@ export class AppController {
       index: new ProfileIndex(path.join(o.userDataDir, "instagram-profiles.json"), ledgers),
       baseDir: () => this.settings.baseDir,
       now: () => (ig.now ? ig.now() : Date.now()),
-      // the jobs' read slot, built below: the screens' signed-out reads take it too
+      // the jobs' read slot, built below: signed-out reads of the screens (posts, highlights, a tray's next pages) take it too; signed-in reads keep the account's pace only
       read: (fn, signal) => this.lane.read(signal, fn),
     });
     this.lane = new InstagramLane({

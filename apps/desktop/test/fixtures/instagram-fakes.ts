@@ -93,7 +93,10 @@ export function fakeSignedOut(pages: Record<string, InstagramItem[]>, o: { listi
       let shown = 0;
       return {
         profile: async () => o.profile ?? PUBLIC_PROFILE,
-        highlights: tray[0],
+        // the tray read so far, as the real feed keeps it
+        get highlights() {
+          return tray.slice(0, shown + 1).flat();
+        },
         limited: true,
         get trayCursor() {
           return shown + 1 < tray.length ? String(shown + 1) : undefined;

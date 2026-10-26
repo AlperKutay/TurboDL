@@ -1117,6 +1117,8 @@ describe("Instagram highlights", () => {
     await c.loadHighlight("sample.user", "17900000000000002");
     await c.loadHighlight("sample.user", "17900000000000003");
     expect(hl.read[1].at - hl.read[0].at).toBeGreaterThanOrEqual(1500);
+    // signed in, no read slot's 3–6 s
+    expect(hl.read[1].at - hl.read[0].at).toBeLessThan(3000);
   });
 
   it("backs every highlight up into its folder, by story, counting highlights", async () => {
@@ -1439,26 +1441,16 @@ describe("Instagram signed out, and a folder per account", () => {
     expect(found.type === "items" && found.items.map((i) => i.mediaId)).toEqual(["c", "a", "b"]);
   });
 
-  it("pages a long highlights tray when the profile opens, one page at a time, 3–6 s apart", async () => {
+  it("shows a long tray's first page when the profile opens, reading no more pages of it", async () => {
     const so = fakeSignedOut({}, { tray: [[H2], [H3], [H4]] });
     const c = await start({}, null, so.deps);
     const loaded = await c.profileLoad("sample.user");
-    expect(loaded.type === "profile" && loaded.highlights.map((h) => h.id)).toEqual([H2.id, H3.id, H4.id]);
-    expect(so.trayAsked).toHaveLength(2);
-    expect(so.trayAsked[1] - so.trayAsked[0]).toBeGreaterThanOrEqual(3000);
+    expect(loaded.type === "profile" && loaded.highlights.map((h) => h.id)).toEqual([H2.id]);
+    expect(so.trayAsked).toHaveLength(0);
   });
 
-  it("pages at most 20 further pages of a tray", async () => {
-    const tray = Array.from({ length: 30 }, (_, k) => [{ id: `1790000000000${String(k).padStart(4, "0")}`, title: `h${k}` }]);
-    const so = fakeSignedOut({}, { tray });
-    const c = await start({}, null, so.deps);
-    const loaded = await c.profileLoad("sample.user");
-    expect(loaded.type === "profile" && loaded.highlights).toHaveLength(21);
-    expect(so.trayAsked).toHaveLength(20);
-  });
-
-  it("backs a profile's highlights up without a session, paging its tray, one highlight's page at a time, into the highlights folder", async () => {
-    const so = fakeSignedOut({ [H2.id]: [item("a"), item("b")], [H3.id]: [item("c")] }, { tray: [[H2], [H3]] });
+  it("backs a profile's highlights up without a session, paging its tray as it goes, every read 3–6 s apart, into the highlights folder", async () => {
+    const so = fakeSignedOut({ [H2.id]: [item("a"), item("b")], [H3.id]: [item("c")], [H4.id]: [item("d")] }, { tray: [[H2], [H3], [H4]] });
     const reads: number[] = [];
     const find = so.deps.find;
     so.deps.find = async (link, cookies, signal) => {
@@ -1467,13 +1459,56 @@ describe("Instagram signed out, and a folder per account", () => {
     };
     const c = await start({}, null, so.deps);
     expect(await c.startHighlightsBackup("sample.user")).toEqual({ ok: true });
-    expect(await backupEnds(c)).toMatchObject({ state: "finished", kind: "highlights", done: 2, failed: 0, saved: 3 });
-    expect(readdirSync(path.join(root, "dl", "Instagram", "sample.user", "Highlights")).sort()).toEqual(["a.jpg", "b.jpg", "c.jpg"]);
-    expect(so.read).toEqual([H2.id, H3.id]);
+    expect(await backupEnds(c)).toMatchObject({ state: "finished", kind: "highlights", done: 3, failed: 0, saved: 4 });
+    expect(readdirSync(path.join(root, "dl", "Instagram", "sample.user", "Highlights")).sort()).toEqual(["a.jpg", "b.jpg", "c.jpg", "d.jpg"]);
+    expect(so.read).toEqual([H2.id, H3.id, H4.id]);
     expect(so.opened).toEqual([{ username: "sample.user", cookies: [] }]);
     const pages = [...reads, ...so.trayAsked].sort((x, y) => x - y);
-    expect(pages).toHaveLength(3);
+    expect(pages).toHaveLength(5);
     for (let k = 1; k < pages.length; k++) expect(pages[k] - pages[k - 1]).toBeGreaterThanOrEqual(3000);
+    // the page it opened goes with the backup
+    expect(so.closed).toEqual(["sample.user"]);
+  });
+
+  it("pages a tray from a job's read slot without deadlocking", async () => {
+    const so = fakeSignedOut({ [H2.id]: [item("a")], [H3.id]: [item("c")] }, { tray: [[H2], [H3]] });
+    const c = await start({}, null, so.deps);
+    const started = await c["lane"].read(undefined, () => c["profiles"].startHighlightsBackup("sample.user"));
+    expect(started).toEqual({ ok: true });
+    expect(await backupEnds(c)).toMatchObject({ state: "finished", done: 2, saved: 2 });
+    expect(so.trayAsked).toHaveLength(1);
+  });
+
+  it("pages at most 20 further pages of a tray", async () => {
+    const tray = Array.from({ length: 30 }, (_, k) => [{ id: `1790000000000${String(k).padStart(4, "0")}`, title: `h${k}` }]);
+    const so = fakeSignedOut({}, { tray });
+    const c = await start({}, null, so.deps);
+    expect(await c.startHighlightsBackup("sample.user")).toEqual({ ok: true });
+    expect(await backupEnds(c)).toMatchObject({ state: "finished", done: 0, failed: 21 });
+    expect(so.trayAsked).toHaveLength(20);
+  });
+
+  it("keeps a tray whole when its profile is opened again, and a later highlights backup goes through all of it", async () => {
+    const so = fakeSignedOut({ [H2.id]: [item("a")], [H3.id]: [item("c")] }, { tray: [[H2], [H3]] });
+    const c = await start({}, null, so.deps);
+    await c.profileLoad("sample.user");
+    expect(await c.startHighlightsBackup("sample.user")).toEqual({ ok: true });
+    expect(await backupEnds(c)).toMatchObject({ state: "finished", done: 2 });
+    const again = await c.profileLoad("sample.user");
+    expect(again.type === "profile" && again.highlights.map((h) => h.id)).toEqual([H2.id, H3.id]);
+    const readBefore = so.read.length;
+    expect(await c.startHighlightsBackup("sample.user")).toEqual({ ok: true });
+    expect(await backupEnds(c)).toMatchObject({ state: "finished", done: 2 });
+    expect(so.read.slice(readBefore)).toEqual([H2.id, H3.id]);
+    expect(so.trayAsked).toHaveLength(1);
+  });
+
+  it("pages no tray for a posts backup", async () => {
+    const so = fakeSignedOut(OWN(), { listing: LISTING(), tray: [[H2], [H3]] });
+    const c = await start({}, null, so.deps);
+    expect(await c.startProfileBackup("sample.user")).toEqual({ ok: true });
+    expect(await backupEnds(c)).toMatchObject({ state: "finished", done: 3 });
+    expect(so.trayAsked).toHaveLength(0);
   });
 
   it("holds the account when a highlight's page lands on the login wall, stopping a signed-out highlights backup and keeping what it saved", async () => {

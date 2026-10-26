@@ -92,11 +92,10 @@ export class ProfileService {
     try {
       // a slow-down on the page holds the whole account
       const profile = await this.deps.pacer.ask(() => source.profile());
-      // a long tray's further pages are page reads: the read slot, in the account's pace
-      const highlights = await this.fullTray(source, (fn) => this.deps.read(fn));
       this.profiles.set(key, profile);
-      this.trays.set(key, highlights);
-      return { type: "profile", profile, highlights, ...(source.limited ? { limited: true } : {}) };
+      // signed out, the screen shows the tray as far as it was read (the page's first page); a highlights backup reads the rest
+      this.trays.set(key, source.highlights);
+      return { type: "profile", profile, highlights: source.highlights, ...(source.limited ? { limited: true } : {}) };
     } catch (err) {
       // a page that failed is not tried again: the next load opens a fresh one
       if (this.current?.source === source) this.release();
@@ -161,15 +160,14 @@ export class ProfileService {
    * Backs up a profile into its username's folder, its ledger keyed by the account's number: through the open
    * profile's page, or a page of its own when the profile isn't open (Continue after leaving it). Seen signed out
    * (with or without a session), each post's items are read from its own page, and every page it reads (its listing's
-   * next pages too) takes the shared read slot. `inSlot`: the caller already holds the read slot (a job starting it),
-   * so the page it opens reads a long tray's further pages as they are.
+   * next pages too) takes the shared read slot.
    */
-  async startBackup(username: string, inSlot = false): Promise<StartResult> {
+  async startBackup(username: string): Promise<StartResult> {
     if (this.deps.backups.isRunning()) return { ok: false, error: "A backup is already running.", reason: "busy" };
     // no page is opened for a backup that wouldn't start
     if (this.deps.pacer.held()) return SLOWED_DOWN;
     const key = username.toLowerCase();
-    const opened = await this.pageFor(key, inSlot);
+    const opened = await this.pageFor(key);
     if ("error" in opened) return opened;
     const { profile, source } = opened;
     const refused = refusal(profile);
@@ -198,6 +196,12 @@ export class ProfileService {
       return result;
     }
     this.deps.index.record(profile, this.deps.now());
+    this.keepUntilSettled(source, key);
+    return result;
+  }
+
+  /** A running backup's page stays open until the backup ends. */
+  private keepUntilSettled(source: ProfileSource, key: string): void {
     this.backupSource = source;
     this.backupKey = key;
     void this.deps.backups.settled().then(() => {
@@ -205,7 +209,6 @@ export class ProfileService {
       this.backupSource = null;
       if (this.current?.source !== source) source.close();
     });
-    return result;
   }
 
   /** One highlight's stories, from its own page, in the account's pace; remembered for picks. */
@@ -241,18 +244,24 @@ export class ProfileService {
    * Backs up every story of every highlight, one highlight per page (its own page load, 3–6 s apart), into its own
    * folder. New stories land in old highlights, so every run goes through all of them: no early stop.
    */
-  async startHighlightsBackup(username: string, inSlot = false): Promise<StartResult> {
+  async startHighlightsBackup(username: string): Promise<StartResult> {
     if (this.deps.backups.isRunning()) return { ok: false, error: "A backup is already running.", reason: "busy" };
     if (this.deps.pacer.held()) return SLOWED_DOWN;
     const key = username.toLowerCase();
-    const opened = await this.pageFor(key, inSlot);
+    const opened = await this.pageFor(key);
     if ("error" in opened) return opened;
     const { profile, source } = opened;
-    // the tray came with the page; a page opened only for this is no longer needed
-    this.letGo(source);
     const refused = refusal(profile);
-    if (refused) return refused;
-    const tray = this.trays.get(key) ?? [];
+    if (refused) {
+      this.letGo(source);
+      return refused;
+    }
+    // the tray as the page listed it; a signed-out tray with more pages is read on, page by page, while the backup runs
+    const tray = [...(this.trays.get(key) ?? [])];
+    let trayPages = 0;
+    const moreTray = () => source.limited && source.trayCursor !== undefined && trayPages < TRAY_PAGES;
+    // the page stays open for the tray's next pages only
+    if (!moreTray() || tray.length === 0) this.letGo(source);
     if (tray.length === 0) return { ok: false, error: "This profile has no highlights.", reason: "empty" };
     const result = await this.deps.backups.start(
       {
@@ -266,16 +275,28 @@ export class ProfileService {
       },
       async (cursor, signal) => {
         const index = cursor ? Number(cursor) : 0;
+        while (!tray[index] && moreTray()) {
+          trayPages++;
+          const more = await this.readTrayPage(source, signal);
+          if (!more || more.length === 0) break;
+          tray.push(...more);
+        }
         const highlight = tray[index];
         if (!highlight) return { posts: [] };
         const found = (await this.readHighlight(highlight.id, signal)) ?? [];
         // a story is remembered by its pk, or its file name when the page gives none (as the iPhone does)
         const items = found.map((item) => ({ ...item, mediaId: item.mediaId ?? lastSegment(item.url) }));
-        return { posts: [{ id: highlight.id, ...(highlight.cover ? { cover: highlight.cover } : {}), items }], ...(index + 1 < tray.length ? { next: String(index + 1) } : {}) };
+        return { posts: [{ id: highlight.id, ...(highlight.cover ? { cover: highlight.cover } : {}), items }], ...(index + 1 < tray.length || moreTray() ? { next: String(index + 1) } : {}) };
       },
       () => this.startHighlightsBackup(key),
     );
-    if (result.ok) this.deps.index.record(profile, this.deps.now());
+    if (!result.ok) {
+      this.letGo(source);
+      return result;
+    }
+    this.deps.index.record(profile, this.deps.now());
+    if (moreTray()) this.keepUntilSettled(source, key);
+    else this.letGo(source);
     return result;
   }
 
@@ -299,7 +320,7 @@ export class ProfileService {
   }
 
   /** The open profile's page and profile, a running backup's, or a page of its own for a backup (without a session too). */
-  private async pageFor(key: string, inSlot: boolean): Promise<{ profile: InstagramProfile; source: ProfileSource } | Refusal> {
+  private async pageFor(key: string): Promise<{ profile: InstagramProfile; source: ProfileSource } | Refusal> {
     const known = this.profiles.get(key);
     if (this.current?.key === key && known) return { profile: known, source: this.current.source };
     if (this.backupKey === key && this.backupSource && known) return { profile: known, source: this.backupSource };
@@ -312,10 +333,8 @@ export class ProfileService {
     try {
       // a slow-down on the page holds the whole account
       const profile = await this.deps.pacer.ask(() => this.walled(() => source.profile()));
-      // a long tray's further pages in the account's pace (a job starting a backup holds the read slot already: `inSlot`)
-      const highlights = await this.fullTray(source, (fn) => (inSlot ? fn() : this.deps.read(fn)));
       this.profiles.set(key, profile);
-      this.trays.set(key, highlights);
+      this.trays.set(key, source.highlights);
       return { profile, source };
     } catch (err) {
       source.close();
@@ -382,38 +401,30 @@ export class ProfileService {
   }
 
   /**
-   * One highlight's stories from its own page, in the shared read slot and the account's pace. Throws
-   * SavedError("rateLimited") while Instagram's slow-down holds, and when its page lands on the login wall.
+   * One highlight's stories from its own page, in the account's pace; signed out also in the shared read slot (signed
+   * in, as before, the pace only). Throws SavedError("rateLimited") while Instagram's slow-down holds, and when a
+   * signed-out page lands on the login wall.
    */
   private readHighlight(id: string, signal?: AbortSignal): Promise<InstagramItem[] | null> {
+    return this.paced(() => this.deps.findHighlight(id, signal), signal);
+  }
+
+  /** The tray's next page (signed out), in the read slot and the account's pace; null when there is none. */
+  private readTrayPage(source: ProfileSource, signal?: AbortSignal): Promise<Highlight[] | null> {
+    return this.paced(() => this.walled(() => source.moreHighlights(signal)), signal, true);
+  }
+
+  /** `request` after the hold check and the account's pace; signed out (or `slotted`) in the read slot. */
+  private paced<T>(request: () => Promise<T>, signal?: AbortSignal, slotted = false): Promise<T> {
     const { pacer } = this.deps;
-    return this.deps.read(async () => {
+    const run = async () => {
       if (pacer.held()) throw new SavedError("rateLimited");
       await pacer.pace(signal);
       if (pacer.held()) throw new SavedError("rateLimited");
       if (signal?.aborted) throw new Error("Cancelled.");
-      return pacer.ask(() => this.deps.findHighlight(id, signal));
-    }, signal);
-  }
-
-  /**
-   * The tray as the page listed it, and a limited profile's further pages (at most `TRAY_PAGES`) when it has more,
-   * each a page read in the account's pace; `slot` runs it in the read slot, or as it is where the slot is held already.
-   */
-  private async fullTray(source: ProfileSource, slot: (fn: () => Promise<Highlight[] | null>) => Promise<Highlight[] | null>): Promise<Highlight[]> {
-    const tray = [...source.highlights];
-    const { pacer } = this.deps;
-    for (let n = 0; n < TRAY_PAGES && source.limited && source.trayCursor; n++) {
-      const more = await slot(async () => {
-        if (pacer.held()) throw new SavedError("rateLimited");
-        await pacer.pace();
-        if (pacer.held()) throw new SavedError("rateLimited");
-        return pacer.ask(() => this.walled(() => source.moreHighlights()));
-      });
-      if (!more || more.length === 0) break;
-      tray.push(...more);
-    }
-    return tray;
+      return pacer.ask(request);
+    };
+    return slotted || !this.deps.session.signedIn() ? this.deps.read(run, signal) : run();
   }
 
   /** Without a session, a page that asks to sign in is Instagram's login wall for this computer: a slow-down. */

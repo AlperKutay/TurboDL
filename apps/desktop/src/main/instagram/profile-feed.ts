@@ -128,6 +128,8 @@ export class ProfileFeed {
     const variables = { after, first: SIGNED_OUT_PAGE, id: this.profileId };
     const tray = await this.signedOut(SIGNED_OUT_TRAY_QUERY, variables, signedOutTrayAnswer, STALE_SIGNED_OUT_TRAY, signal);
     this.trayCursor = tray.hasNext && tray.cursor ? tray.cursor : undefined;
+    // the tray read so far stays on the feed: a profile opened again keeps all of it
+    this.highlights = [...this.highlights, ...tray.highlights];
     return tray.highlights;
   }
 
