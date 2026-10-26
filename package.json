@@ -5,6 +5,7 @@
   "scripts": {
     "test": "pnpm -r --workspace-concurrency=1 test",
     "typecheck": "pnpm -r typecheck",
+    "test:python": "node scripts/test-python.mjs",
     "icons": "node scripts/generate-icons.mjs",
     "build": "pnpm --filter @turbodl/extension build && pnpm --filter @turbodl/desktop build",
     "dev": "pnpm --filter @turbodl/extension build && pnpm --filter @turbodl/desktop dev",

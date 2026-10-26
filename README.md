@@ -55,6 +55,44 @@ Other options for `get` and `add`: `--name <file>` (one link only), `--audio`, `
 
 Other programs can use the same engine. While TurboDL runs it writes `api.json` in its user data folder (`%APPDATA%\TurboDL` on Windows, `~/Library/Application Support/TurboDL` on macOS) with the port and an access token. Send requests to `127.0.0.1` on that port with the header `Authorization: Bearer <token>`: `POST /v1/jobs` starts a job, and `GET /v1/jobs/<id>/events` streams its progress as newline-delimited JSON. The API listens on this computer only; keep the token private.
 
+## Python
+
+`turbodl-client` is a small Python package (3.9 or newer, standard library only) for the same local API. TurboDL must be installed and opened once on this computer; after that the package starts it by itself when it is closed.
+
+```bash
+pip install "git+https://github.com/AlperKutay/TurboDL#subdirectory=clients/python"
+```
+
+```python
+from turbodl_client import TurboDL, SignInRequired
+
+tdl = TurboDL()                      # TurboDL(user_data=None, start=True, timeout=30)
+job = tdl.get("https://www.instagram.com/nasa/", highlights=True)    # waits; returns a Job
+print(job.files)
+
+job = tdl.add("https://x.com/someone/status/123", dir=r"D:\Video")   # returns at once
+for event in job.events():           # dicts, as the API sends them
+    print(event)
+job.wait()
+
+tdl.jobs(); tdl.job(job.id); tdl.cancel(job.id)
+tdl.instagram_login(); tdl.instagram_logout(); tdl.info()
+```
+
+- Options are the command's, in snake_case: `dir`, `name`, `audio`, `max_height`, `highlights`, `highlights_only`, `collections`, `all_collections`. A relative `dir` is resolved against the script's current folder.
+- `get()` and `Job.wait()` raise when the job does not end done. Every exception carries the `job`, with the files already saved. All derive from `TurboDLError`.
+
+| Exception | Raised when |
+| --- | --- |
+| `SignInRequired` | Instagram needs a sign-in to save everything (also when a profile gave only its first posts) |
+| `RateLimited` | The site asked TurboDL to slow down |
+| `JobFailed` | The download failed (`reason` says why) |
+| `Cancelled` | The job was stopped in TurboDL or by another client (`reason` is `"stopped"`), or by this process (`reason` is `None`) |
+| `AppNotReachable` | TurboDL is not installed or opened yet, did not start in time, or quit while a job was running |
+
+- Ctrl+C (`KeyboardInterrupt`) inside `get()` or `wait()` cancels the job, then raises again.
+- The package finds TurboDL through `api.json` in its user data folder. Pass `TurboDL(user_data="...")` or set the `TURBODL_USER_DATA` environment variable to use another folder.
+
 ## Download
 
 Installers for Windows and macOS and the Firefox add-on are on the [Releases](https://github.com/AlperKutay/TurboDL/releases) page.
