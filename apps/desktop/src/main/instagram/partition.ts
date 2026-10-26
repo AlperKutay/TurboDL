@@ -18,6 +18,16 @@ export function isInstagramAddress(address: string): boolean {
   }
 }
 
+/** Instagram's script hosts (static.cdninstagram.com and the other *.cdninstagram.com hosts). */
+export function isInstagramScriptHost(address: string): boolean {
+  try {
+    const u = new URL(address);
+    return u.protocol === "https:" && u.hostname.toLowerCase().endsWith(".cdninstagram.com");
+  } catch {
+    return false;
+  }
+}
+
 /** Pages and frames come from Instagram only, also after a redirect; pictures, scripts and the rest from anywhere. */
 export function blockedFrame(resourceType: string, url: string): boolean {
   return (resourceType === "mainFrame" || resourceType === "subFrame") && !isInstagramAddress(url);

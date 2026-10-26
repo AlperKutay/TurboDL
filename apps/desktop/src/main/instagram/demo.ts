@@ -88,6 +88,7 @@ export function demoInstagram(base: string): InstagramDeps {
           const k = cursor ? Number(cursor) : 0;
           return { posts: found?.pages[k] ?? [], ...(found && k + 1 < found.pages.length ? { next: String(k + 1) } : {}) };
         },
+        moreHighlights: async () => null,
         close: () => undefined,
       };
     },

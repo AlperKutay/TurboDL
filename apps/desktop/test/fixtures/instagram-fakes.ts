@@ -44,6 +44,7 @@ export function fakeProfiles(profiles: Record<string, { profile: InstagramProfil
           const k = cursor ? Number(cursor) : 0;
           return { posts: found?.pages[k] ?? [], ...(found && k + 1 < found.pages.length ? { next: String(k + 1) } : {}) };
         },
+        moreHighlights: async () => null,
         close: () => closed.push(username),
       };
     },
@@ -81,6 +82,7 @@ export function fakeSignedOut(pages: Record<string, InstagramItem[]>) {
         highlights: [{ id: "17900000000000002", title: "Summer" }],
         limited: true,
         page: async () => ({ posts: [cover("p1", "C1"), cover("p2", "C2")] }),
+        moreHighlights: async () => null,
         close: () => closed.push(username),
       };
     },

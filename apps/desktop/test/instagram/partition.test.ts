@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { BrowserCookie } from "@turbodl/shared";
-import { INSTAGRAM_PARTITION, blockedFrame, electronCookie, fromElectronCookie, signedInNow } from "../../src/main/instagram/partition";
+import { INSTAGRAM_PARTITION, blockedFrame, electronCookie, fromElectronCookie, isInstagramScriptHost, signedInNow } from "../../src/main/instagram/partition";
 
 const session: BrowserCookie = {
   domain: ".instagram.com",
@@ -26,6 +26,16 @@ describe("the Instagram partition", () => {
     expect(blockedFrame("subFrame", "https://evil.example/frame")).toBe(true);
     expect(blockedFrame("mainFrame", "http://www.instagram.com/")).toBe(true);
     expect(blockedFrame("image", "https://scontent.cdninstagram.com/a.jpg")).toBe(false);
+  });
+
+  it("knows Instagram's script hosts: its CDN's, over https", () => {
+    expect(isInstagramScriptHost("https://static.cdninstagram.com/rsrc.php/v4/yX/r/abc.js")).toBe(true);
+    expect(isInstagramScriptHost("https://scontent-ams2-1.cdninstagram.com/a.js")).toBe(true);
+    expect(isInstagramScriptHost("http://static.cdninstagram.com/a.js")).toBe(false);
+    expect(isInstagramScriptHost("https://www.instagram.com/a.js")).toBe(false);
+    expect(isInstagramScriptHost("https://evilcdninstagram.com/a.js")).toBe(false);
+    expect(isInstagramScriptHost("https://static.cdninstagram.com.evil.example/a.js")).toBe(false);
+    expect(isInstagramScriptHost("not an address")).toBe(false);
   });
 
   it("keeps a cookie's HttpOnly and SameSite both ways", () => {

@@ -1089,6 +1089,7 @@ describe("Instagram highlights", () => {
         highlights: TRAY,
         limited: false,
         page: async () => ({ posts: [] }),
+        moreHighlights: async () => null,
         close: () => undefined,
       }),
     };

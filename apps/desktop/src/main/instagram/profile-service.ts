@@ -24,10 +24,14 @@ export interface ProfileSource {
   /** loads the page once; throws SavedError */
   profile(): Promise<InstagramProfile>;
   readonly highlights: Highlight[];
-  /** seen as signed-out visitors see it: posts known by their covers, no next pages */
+  /** seen as signed-out visitors see it: posts known by their covers */
   readonly limited: boolean;
+  /** the tray's next page when it has more (signed out) */
+  readonly trayCursor?: string;
   /** no cursor: the posts its page loaded */
   page(cursor?: string, signal?: AbortSignal): Promise<SavedPage>;
+  /** the tray's next page; null when there is none */
+  moreHighlights(signal?: AbortSignal): Promise<Highlight[] | null>;
   close(): void;
 }
 

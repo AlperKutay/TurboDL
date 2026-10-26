@@ -145,6 +145,7 @@ const NO_PROFILE: ProfileSource = {
   highlights: [],
   limited: false,
   page: () => Promise.reject(new SavedError("badAnswer")),
+  moreHighlights: async () => null,
   close: () => undefined,
 };
 

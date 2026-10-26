@@ -1,21 +1,28 @@
-import { BrowserWindow, session, type Session } from "electron";
-import { SavedError, type BrowserCookie } from "@turbodl/shared";
+import { BrowserWindow, session, type Session, type WebContents } from "electron";
+import { SIGNED_OUT_POSTS_QUERY, SIGNED_OUT_TRAY_QUERY, SavedError, pageLsd, type BrowserCookie } from "@turbodl/shared";
 import { chromeAgent } from "./agent";
 import { within } from "./finder";
 import type { ProfileDriver } from "./profile-feed";
-import { INSTAGRAM_PARTITION, blockedFrame, electronCookie, isInstagramAddress } from "./partition";
+import { INSTAGRAM_PARTITION, blockedFrame, electronCookie, isInstagramAddress, isInstagramScriptHost } from "./partition";
 import { postsRequest, resendScript, type PostsRequest } from "./posts-request";
+import { operationIds, signedOutQueryScript } from "./signed-out";
 
 const MAX_DOCUMENT = 4 * 1024 * 1024;
 const MAX_PAGE = 32 * 1024 * 1024;
 /** ms a re-sent posts request may take */
 const RESEND_TIMEOUT = 30_000;
+/** ms a look into the page (its lsd, the scripts it lists) may take */
+const LOOK_TIMEOUT = 3000;
+/** ms fetching the page's scripts again may take, all of them */
+const RESCAN_TIMEOUT = 30_000;
 
 /** The hidden pages' contents; the sign-in window may show frames from elsewhere (Instagram's captcha). */
 const hiddenPages = new Set<number>();
 let configured: Session | null = null;
 /** End-to-end tests only: the origin of a stand-in for Instagram the hidden pages may load too. */
 let testSite: string | null = null;
+/** A page's scripts were fetched again for the signed-out queries' ids: once per app run. */
+let rescanned = false;
 
 export function allowTestSite(address: string): void {
   testSite = new URL(address).origin;
@@ -61,20 +68,29 @@ export async function applyCookies(s: Session, cookies: BrowserCookie[]): Promis
 
 /**
  * An Instagram page in a window that is never shown: sandboxed, no preload, only Instagram addresses. Its JSON
- * answers are read from the DevTools protocol in the main process, so nothing is injected into the page.
+ * answers are read from the DevTools protocol in the main process, so nothing is injected into the page. Without a
+ * session, the scripts it loads from Instagram's CDN are read too, only for the signed-out queries' ids.
  */
 export class ElectronInstagramPage implements ProfileDriver {
   private win: BrowserWindow | null = null;
   private readonly answers: string[] = [];
   private readonly waiting = new Set<string>();
+  /** scripts from Instagram's CDN on their way, to scan for the signed-out queries' ids; never kept */
+  private readonly scripts = new Set<string>();
   /** graphql POSTs in flight, one of which may be the page's own posts request */
   private readonly sent = new Map<string, { url: string; method: string; headers: Record<string, string>; body?: string; hasPostData?: boolean }>();
   private request: PostsRequest | null = null;
   private collecting = true;
   private bytes = 0;
   private closed = false;
+  /** loaded without a session: only such a page reads scripts for query ids, so signed-in pages do no extra work */
+  private readonly signedOut: boolean;
+  /** the page's lsd token, once a signed-out query needed it */
+  private lsd: string | undefined;
 
-  constructor(private readonly cookies: BrowserCookie[]) {}
+  constructor(private readonly cookies: BrowserCookie[]) {
+    this.signedOut = !cookies.some((c) => c.name === "sessionid" && c.value);
+  }
 
   async load(url: string): Promise<void> {
     const s = instagramSession();
@@ -106,12 +122,16 @@ export class ElectronInstagramPage implements ProfileDriver {
         if (r.method === "POST" && allowed(r.url) && r.url.includes("graphql")) this.sent.set(id, { url: r.url, method: r.method, headers: r.headers, body: r.postData, hasPostData: r.hasPostData });
       } else if (method === "Network.responseReceived") {
         const response = params.response as { url: string; mimeType?: string };
-        if (allowed(response.url) && /json|javascript/i.test(response.mimeType ?? "")) this.waiting.add(id);
+        const mimeType = response.mimeType ?? "";
+        if (allowed(response.url) && /json|javascript/i.test(mimeType)) this.waiting.add(id);
+        else if (this.signedOut && isInstagramScriptHost(response.url) && /javascript/i.test(mimeType)) this.scripts.add(id);
       } else if (method === "Network.loadingFinished") {
-        if (this.waiting.delete(id)) void this.keep(id);
+        if (this.scripts.delete(id)) void this.scan(id);
+        else if (this.waiting.delete(id)) void this.keep(id);
         else this.sent.delete(id);
       } else if (method === "Network.loadingFailed") {
         this.waiting.delete(id);
+        this.scripts.delete(id);
         this.sent.delete(id);
       }
     });
@@ -168,6 +188,45 @@ export class ElectronInstagramPage implements ProfileDriver {
     return { status: answer.status, text: answer.text };
   }
 
+  /**
+   * One of Instagram's signed-out queries, sent from inside the page with its lsd and credentials; null while the
+   * query's id or the page's lsd is unknown. Throws badAnswer when it fails or takes longer than 30 s.
+   */
+  async signedOutQuery(name: string, variables: Record<string, unknown>): Promise<{ status: number; text: string } | null> {
+    const contents = this.win?.webContents;
+    const docId = operationIds.get(name);
+    if (!docId || !contents || contents.isDestroyed()) return null;
+    const lsd = (this.lsd ??= await this.readLsd(contents));
+    if (!lsd) return null;
+    const answer = (await within(contents.executeJavaScript(signedOutQueryScript({ docId, lsd, name, variables })).catch(() => undefined), Date.now() + RESEND_TIMEOUT)) as
+      | { status?: unknown; text?: unknown }
+      | undefined;
+    if (typeof answer?.status !== "number" || typeof answer.text !== "string") throw new SavedError("badAnswer");
+    return { status: answer.status, text: answer.text };
+  }
+
+  /**
+   * Once per app run, when a signed-out query's id wasn't among the scripts as they arrived: the scripts the page lists
+   * as loaded are fetched again with its session (from the cache, mostly, as a browser would) and scanned for the ids.
+   */
+  async rescanScripts(): Promise<void> {
+    const contents = this.win?.webContents;
+    if (rescanned || !contents || contents.isDestroyed()) return;
+    rescanned = true;
+    const listed: unknown = await within(contents.executeJavaScript('performance.getEntriesByType("resource").map((e) => e.name)').catch(() => undefined), Date.now() + LOOK_TIMEOUT);
+    const addresses = new Set(Array.isArray(listed) ? listed.filter((a): a is string => typeof a === "string" && scriptAddress(a)) : []);
+    const s = instagramSession();
+    const deadline = Date.now() + RESCAN_TIMEOUT;
+    for (const address of addresses) {
+      if (Date.now() >= deadline || (operationIds.get(SIGNED_OUT_POSTS_QUERY) && operationIds.get(SIGNED_OUT_TRAY_QUERY))) break;
+      const script = await within(
+        s.fetch(address).then((r) => (r.ok && /javascript/i.test(r.headers.get("content-type") ?? "") ? r.text() : "")),
+        deadline,
+      );
+      if (script) operationIds.note(script);
+    }
+  }
+
   /** The first load is read: its answers are forgotten and no more are kept (each posts answer is over a megabyte). */
   stopCollecting(): void {
     this.collecting = false;
@@ -197,6 +256,8 @@ export class ElectronInstagramPage implements ProfileDriver {
     try {
       const { body, base64Encoded } = (await dbg.sendCommand("Network.getResponseBody", { requestId })) as { body: string; base64Encoded: boolean };
       const text = base64Encoded ? Buffer.from(body, "base64").toString("utf8") : body;
+      // Instagram's own pages may send scripts too
+      if (this.signedOut) operationIds.note(text);
       if (sent && !this.request) {
         const form = sent.body ?? (sent.hasPostData ? ((await dbg.sendCommand("Network.getRequestPostData", { requestId })) as { postData: string }).postData : undefined);
         this.request = postsRequest({ ...sent, body: form }, text) ?? this.request;
@@ -207,5 +268,35 @@ export class ElectronInstagramPage implements ProfileDriver {
     } catch {
       // the answer is gone (the page moved on)
     }
+  }
+
+  /** A script from Instagram's CDN, read only for the signed-out queries' ids: whatever its size, and never kept. */
+  private async scan(requestId: string): Promise<void> {
+    const dbg = this.win?.webContents.debugger;
+    if (!dbg) return;
+    try {
+      const { body, base64Encoded } = (await dbg.sendCommand("Network.getResponseBody", { requestId })) as { body: string; base64Encoded: boolean };
+      operationIds.note(base64Encoded ? Buffer.from(body, "base64").toString("utf8") : body);
+    } catch {
+      // the script is gone (the page moved on)
+    }
+  }
+
+  /** The page's lsd token, from the scripts in its HTML. */
+  private async readLsd(contents: WebContents): Promise<string | undefined> {
+    const found: unknown = await within(
+      contents.executeJavaScript('Array.from(document.scripts, (s) => s.textContent || "").filter((t) => t.includes(\'"LSD"\')).join("\\n")').catch(() => undefined),
+      Date.now() + LOOK_TIMEOUT,
+    );
+    return typeof found === "string" ? pageLsd(found) : undefined;
+  }
+}
+
+/** A script the page loaded from Instagram's CDN (or the test stand-in), worth fetching again for query ids. */
+function scriptAddress(address: string): boolean {
+  try {
+    return (isInstagramScriptHost(address) || allowed(address)) && new URL(address).pathname.endsWith(".js");
+  } catch {
+    return false;
   }
 }
