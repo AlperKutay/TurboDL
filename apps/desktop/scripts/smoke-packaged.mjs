@@ -1,6 +1,6 @@
 // Starts the unpacked build with a throw-away profile, checks resources and the bridge, then stops it.
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
@@ -40,6 +40,8 @@ const checks = [
   ["extension", path.join(resources, "extension", "manifest.json")],
   ["tray icon", path.join(resources, "icons", process.platform === "darwin" ? "trayTemplate.png" : "tray.png")],
   ["browser launcher", path.join(resources, "native-host", "host.cjs")],
+  ["turbodl command", path.join(resources, "cli", "turbodl.cjs")],
+  ...(process.platform === "win32" ? [["turbodl command launcher", path.join(resources, "cli", "turbodl.exe")]] : []),
 ];
 let failed = false;
 for (const [label, file] of checks) {
@@ -62,6 +64,20 @@ for (const [label, file] of checks) {
   const reply = out.length > 4 ? out.subarray(4, 4 + out.readUInt32LE(0)).toString("utf8") : "";
   const ok = reply === JSON.stringify({ ok: true });
   console.log(`${ok ? "✓" : "✗"} browser launcher answers in Node mode: ${reply || res.error || "no answer"}`);
+  failed ||= !ok;
+}
+
+// the packaged executable must run the turbodl command in Node mode, and report this build's version
+{
+  const version = JSON.parse(readFileSync(path.join(root, "package.json"), "utf8")).version;
+  const res = spawnSync(exe, [path.join(resources, "cli", "turbodl.cjs"), "--version"], {
+    env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" },
+    encoding: "utf8",
+    timeout: 20000,
+  });
+  const out = (res.stdout ?? "").trim();
+  const ok = out === `turbodl ${version}`;
+  console.log(`${ok ? "✓" : "✗"} turbodl --version in Node mode: ${out || res.error || "no answer"}`);
   failed ||= !ok;
 }
 
