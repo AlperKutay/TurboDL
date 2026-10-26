@@ -20,6 +20,7 @@ module.exports = {
     { from: "resources/icons", to: "icons" },
     { from: "../extension/dist", to: "extension" },
     { from: "resources/native-host", to: "native-host" },
+    { from: "out/cli", to: "cli" },
     { from: ffmpegDir, to: "ffmpeg", filter: ["ffmpeg", "ffmpeg.exe"] },
   ],
   win: {
