@@ -121,6 +121,8 @@ class Follower {
       const c = await this.reconnect();
       if (c) {
         this.ctx.client = new ApiClient(c);
+        // a Ctrl+C while the stream was cut sent its cancel to the old port
+        if (f.cancelledHere) this.cancel(f);
         end = await this.stream(f.id);
       }
     }

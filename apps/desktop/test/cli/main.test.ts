@@ -248,6 +248,27 @@ describe("turbodl get", () => {
     expect(c.stderr.text).toBe("job1: done, 2 files\n");
   });
 
+  it("sends a Ctrl+C's cancel again when TurboDL comes back on another port", async () => {
+    let moved = false;
+    const c = cli(["get", "https://example.com/1"], {
+      onSleep: async () => {
+        if (moved) return;
+        moved = true;
+        // Ctrl+C while the stream is cut: its cancel goes to the old, closed port
+        c.interrupt();
+        await fake.restart();
+      },
+    });
+    await fake.subscribed("job1");
+    await fake.stop();
+    await fake.subscribed("job1", 2);
+    await fake.until(() => fake.cancelled.length === 1);
+    expect(fake.cancelled).toEqual(["job1"]);
+    fake.end("job1", { state: "cancelled" });
+    expect(await c.done).toBe(130);
+    expect(moved).toBe(true);
+  }, 5000);
+
   it("answers a usage error with code 2 and a bad request from the API with code 2", async () => {
     const usage = cli(["get"]);
     expect(await usage.done).toBe(2);
