@@ -61,6 +61,8 @@ type Refusal = Extract<StartResult, { ok: false }>;
 
 /** posts kept per profile for estimates */
 const SAMPLE = 500;
+/** a backup Instagram's slow-down keeps from starting (as `Backups.start` answers it) */
+const SLOWED_DOWN: Refusal = { ok: false, error: SLOW_DOWN, reason: "rateLimited" };
 
 /**
  * Profiles in the main process: one hidden page per open profile (it holds the request its posts are paged with),
@@ -159,6 +161,8 @@ export class ProfileService {
    */
   async startBackup(username: string): Promise<StartResult> {
     if (this.deps.backups.isRunning()) return { ok: false, error: "A backup is already running.", reason: "busy" };
+    // no page is opened for a backup that wouldn't start
+    if (this.deps.pacer.held()) return SLOWED_DOWN;
     const key = username.toLowerCase();
     const opened = await this.pageFor(key);
     if ("error" in opened) return opened;
@@ -238,6 +242,7 @@ export class ProfileService {
    */
   async startHighlightsBackup(username: string): Promise<StartResult> {
     if (this.deps.backups.isRunning()) return { ok: false, error: "A backup is already running.", reason: "busy" };
+    if (this.deps.pacer.held()) return SLOWED_DOWN;
     const key = username.toLowerCase();
     const opened = await this.pageFor(key);
     if ("error" in opened) return opened;
@@ -301,6 +306,11 @@ export class ProfileService {
     const known = this.profiles.get(key);
     if (this.current?.key === key && known) return { profile: known, source: this.current.source };
     if (this.backupKey === key && this.backupSource && known) return { profile: known, source: this.backupSource };
+    if (!this.deps.session.signedIn()) {
+      // a signed-out page load in the account's pace (not the read slot: a job starting a backup already holds it)
+      await this.deps.pacer.pace();
+      if (this.deps.pacer.held()) return SLOWED_DOWN;
+    }
     const source = this.deps.open(key, this.deps.session.cookies());
     try {
       // a slow-down on the page holds the whole account
@@ -313,7 +323,7 @@ export class ProfileService {
       const failed = failedPage(err);
       if (failed.type === "failed") return { ok: false, error: failed.message, reason: "error" };
       if (failed.type === "signedOut") return { ok: false, error: "Sign in to Instagram again.", reason: "signInRequired" };
-      return { ok: false, error: SLOW_DOWN, reason: "rateLimited" };
+      return SLOWED_DOWN;
     }
   }
 

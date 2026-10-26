@@ -1336,6 +1336,67 @@ describe("Instagram signed out, and a folder per account", () => {
     expect(so.closed).toEqual(["sample.user", "sample.user"]);
   });
 
+  it("opens no profile page for a backup while Instagram's slow-down holds, Continue included, and paces the page it opens signed out", async () => {
+    const so = fakeSignedOut(OWN(), { listing: LISTING() });
+    const find = so.deps.find;
+    so.deps.find = async (link, cookies, signal) => {
+      const found = await find(link, cookies, signal);
+      return link.kind === "post" && link.code === "C2" ? { type: "signedOut" } : found;
+    };
+    /** when each profile page was opened, on the fake clock */
+    const openedAt: number[] = [];
+    const open = so.deps.openProfile!;
+    so.deps.openProfile = (username, cookies) => {
+      openedAt.push(so.deps.now!());
+      return open(username, cookies);
+    };
+    const c = await start({}, null, so.deps);
+    expect(await c.startProfileBackup("sample.user")).toEqual({ ok: true });
+    expect(await backupEnds(c)).toMatchObject({ state: "rateLimited" });
+    const held = { ok: false, error: "Instagram asked TurboDL to slow down. Try again in a few minutes.", reason: "rateLimited" };
+    expect(await c.continueBackup()).toEqual(held);
+    expect(await c.startProfileBackup("sample.user")).toEqual(held);
+    expect(await c.startHighlightsBackup("sample.user")).toEqual(held);
+    expect(so.opened).toHaveLength(1);
+    // once the hold is over, the page it opens takes its slot in the account's pace
+    await so.deps.wait!(2 * 60_000);
+    so.deps.find = find;
+    await c["pacer"].pace();
+    const before = so.deps.now!();
+    expect(await c.continueBackup()).toEqual({ ok: true });
+    expect(await backupEnds(c)).toMatchObject({ state: "finished", done: 3 });
+    expect(openedAt).toHaveLength(2);
+    expect(openedAt[1] - before).toBeGreaterThanOrEqual(1500);
+  });
+
+  /** A signed-out backup whose first read waits for the read slot, held meanwhile by another read during which Instagram asks to slow down. */
+  async function slowedWhileWaiting(listing: SavedPost[][]) {
+    const so = fakeSignedOut(OWN(), { listing });
+    const c = await start({}, null, so.deps);
+    let release!: () => void;
+    const other = c["lane"].read(undefined, () => new Promise<void>((resolve) => (release = resolve)));
+    expect(await c.startProfileBackup("sample.user")).toEqual({ ok: true });
+    for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r));
+    await c["pacer"].ask(() => Promise.reject(new SavedError("rateLimited"))).catch(() => undefined);
+    release();
+    await other;
+    return { so, view: await backupEnds(c) };
+  }
+
+  it("reads no post's page once a slow-down begins while a signed-out backup waits for the read slot", async () => {
+    const { so, view } = await slowedWhileWaiting(LISTING());
+    expect(view).toMatchObject({ state: "rateLimited", done: 0, failed: 0 });
+    expect(so.read).toEqual([]);
+    expect(so.asked.map((a) => a.cursor)).toEqual([undefined]);
+  });
+
+  it("asks for no listing page once a slow-down begins while a signed-out backup waits for the read slot", async () => {
+    const { so, view } = await slowedWhileWaiting([[], [signedOutCover("p3", "C3")]]);
+    expect(view).toMatchObject({ state: "rateLimited", done: 0 });
+    expect(so.read).toEqual([]);
+    expect(so.asked.map((a) => a.cursor)).toEqual([undefined]);
+  });
+
   it("answers signed out, holding nothing, when a post's or highlight's page lands on sign-in with a session", async () => {
     const so = fakeSignedOut({});
     so.deps.find = async () => ({ type: "signedOut" });

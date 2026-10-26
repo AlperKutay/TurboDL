@@ -279,8 +279,9 @@ export class BackupRun {
         const short = target.checkCount === true && target.count !== undefined && listed < target.count * LISTED_ENOUGH;
         if (short) this.warning = `Instagram listed ${listed} of ${target.count} posts.`;
         reachedEnd = !short;
-        // a whole pass met every post still there: the others left for a sign-in are gone, or were saved
-        for (const id of signInPosts) if (!met.has(id)) signInPosts.delete(id);
+        // a whole listing met every post still there: the others left for a sign-in are gone, or were saved
+        if (!short) for (const id of signInPosts) if (!met.has(id)) signInPosts.delete(id);
+        this.signInOnly = signInPosts.size;
         record();
         this.state = "finished";
         return;

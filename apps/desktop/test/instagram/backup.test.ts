@@ -352,6 +352,28 @@ describe("BackupRun over a profile seen signed out", () => {
     expect(again.reads).toEqual(["9"]);
   });
 
+  it("reads no other post of the page once the login wall answers", async () => {
+    const { run, reads, fetched, asked, ledgers } = setup({ pages: COVERS, read: reader({ wall: ["1"] }) });
+    await run.start();
+    expect(run.view()).toMatchObject({ state: "rateLimited", done: 0, failed: 0 });
+    expect(reads).toEqual(["1"]);
+    expect(fetched).toEqual([]);
+    expect(asked).toEqual([undefined]);
+    expect(ledgers.load("102")).toMatchObject({ failedPosts: [], donePosts: [], reachedEnd: false });
+  });
+
+  it("forgets posts left for a sign-in that a whole listing no longer shows, but not after a listing that ended short", async () => {
+    const listing = (n: number) => [Array.from({ length: n }, (_, k) => post(`${k + 1}`, item(`${k + 1}`)))];
+    const short = setup({ id: "short", pages: listing(40), count: 100, checkCount: true, ledger: { signInPosts: ["77"] } });
+    await short.run.start();
+    expect(short.ledgers.load("short").signInPosts).toEqual(["77"]);
+    expect(short.run.view()).toMatchObject({ state: "finished", signInOnly: 1, warning: "Instagram listed 40 of 100 posts." });
+    const whole = setup({ id: "whole", pages: listing(95), count: 100, checkCount: true, ledger: { signInPosts: ["777"] } });
+    await whole.run.start();
+    expect(whole.ledgers.load("whole").signInPosts).toEqual([]);
+    expect(whole.run.view().signInOnly).toBeUndefined();
+  });
+
   it("trusts the listing's end only when it listed nearly every post Instagram counts", async () => {
     const listing = (n: number) => [Array.from({ length: n }, (_, k) => post(`${k + 1}`, item(`${k + 1}`)))];
     const short = setup({ id: "short", pages: listing(40), count: 100, checkCount: true });
