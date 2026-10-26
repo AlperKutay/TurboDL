@@ -1346,6 +1346,32 @@ describe("Instagram signed out, and a folder per account", () => {
     expect(so.closed).toEqual(["sample.user", "sample.user"]);
   });
 
+  it("holds the account when a signed-out post page lands on Instagram's login wall, and answers signed out when a session expired", async () => {
+    const so = fakeSignedOut({});
+    so.deps.find = async () => ({ type: "signedOut" });
+    const c = await start({}, null, so.deps);
+    const slot = <T>(fn: () => Promise<T>) => fn();
+    // no session: the wall holds the pacer
+    expect(await c["profiles"].readFirstPosts("sample.user", { read: slot })).toEqual({ type: "rateLimited" });
+    expect(c["pacer"].held()).toBe(true);
+    // a session that no longer works: signed out, no hold
+    const expired = await start({}, null, { ...so.deps });
+    expired.instagramSession.take(sessionJar);
+    await expect(expired["profiles"]["deps"].findPost("C1")).rejects.toMatchObject({ kind: "signedOut" });
+    await expect(expired["profiles"]["deps"].findHighlight("17900000000000002")).rejects.toMatchObject({ kind: "signedOut" });
+    expect(expired["pacer"].held()).toBe(false);
+  });
+
+  it("passes a post shown only to signed-in visitors through, and shows it to the picker as signed out", async () => {
+    const so = fakeSignedOut({});
+    so.deps.find = async () => ({ type: "signInOnly" });
+    const c = await start({}, null, so.deps);
+    expect(await c["profiles"]["deps"].findPost("C1")).toBe("signInOnly");
+    expect(c["pacer"].held()).toBe(false);
+    await c.handleDownloadRequest({ url: "https://www.instagram.com/p/C1abcDEF/", source: "manual" });
+    expect(await c.findInstagram(ui.opened[0].pendingId)).toEqual({ type: "signedOut" });
+  });
+
   it("opens no page for a read already called off", async () => {
     const so = fakeSignedOut({ C1: [item("a")] });
     const c = await start({}, null, so.deps);

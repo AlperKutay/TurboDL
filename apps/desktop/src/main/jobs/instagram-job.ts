@@ -62,7 +62,7 @@ async function linkJob(job: JobRecord, link: Exclude<InstagramLink, { kind: "pro
   if (link.kind !== "post" && !deps.session.signedIn()) return fail(job, deps, "signInRequired", SIGN_IN_TO_READ);
   const outcome = await paced(job, deps, () => deps.find(link, job.signal));
   if (!outcome) return;
-  if (outcome.type === "signedOut") return fail(job, deps, "signInRequired", SIGN_IN_TO_READ);
+  if (outcome.type === "signedOut" || outcome.type === "signInOnly") return fail(job, deps, "signInRequired", SIGN_IN_TO_READ);
   if (outcome.type === "nothing") return fail(job, deps, "notFound", "Instagram showed nothing at this link.");
   const fallback = link.kind === "post" ? link.code : link.kind === "story" ? link.item : link.id;
   const where = { defaultDir: instagramFolder(deps.settings().baseDir), highlight: link.kind === "highlight", fallback };

@@ -93,7 +93,12 @@ async function start(): Promise<void> {
     instagram: instagramDemoBase
       ? demoInstagram(instagramDemoBase)
       : {
-          find: (link, cookies, signal) => new InstagramFinder(() => new ElectronInstagramPage(cookies), { report: instagramReport(), site: instagramTestSite }).find(link, signal),
+          find: (link, cookies, signal) =>
+            new InstagramFinder(() => new ElectronInstagramPage(cookies), {
+              report: instagramReport(),
+              site: instagramTestSite,
+              signedIn: cookies.some((c) => c.name === "sessionid" && c.value),
+            }).find(link, signal),
           signIn: (at) => signInToInstagram(at),
           collections: (username, cookies) => loadCollections(() => new ElectronInstagramPage(cookies), username, { site: instagramTestSite }),
           signOut: () => instagramSession().clearStorageData(),

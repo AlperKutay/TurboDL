@@ -38,10 +38,10 @@ export interface ProfileSource {
 export interface ProfileServiceDeps {
   session: InstagramSession;
   open(username: string, cookies: BrowserCookie[]): ProfileSource;
-  /** one highlight's stories from its own page; null when it showed none; throws SavedError("signedOut") */
+  /** one highlight's stories from its own page; null when it showed none; throws SavedError("signedOut"), or "rateLimited" when a signed-out read lands on the login wall */
   findHighlight(id: string, signal?: AbortSignal): Promise<InstagramItem[] | null>;
-  /** one post's items from its own page (it works signed out for public posts); null when it showed none */
-  findPost(code: string, signal?: AbortSignal): Promise<InstagramItem[] | null>;
+  /** one post's items from its own page (it works signed out for public posts); null when it showed none; "signInOnly" when Instagram shows it only to signed-in visitors */
+  findPost(code: string, signal?: AbortSignal): Promise<InstagramItem[] | null | "signInOnly">;
   /** downloads kept in a folder per account */
   byAccount(): boolean;
   pacer: InstagramPacer;
@@ -142,7 +142,7 @@ export class ProfileService {
       if (pacer.held()) break;
       await pacer.pace();
       const found = await pacer.ask(() => this.deps.findPost(code)).catch(() => null);
-      items.push(...(found ?? []));
+      if (Array.isArray(found)) items.push(...found);
     }
     return items;
   }
@@ -204,7 +204,7 @@ export class ProfileService {
       const code = post.code;
       const found = await paced(() => this.deps.findPost(code, o.signal)).catch(() => null);
       if (pacer.held()) return { type: "rateLimited" };
-      if (found && found.length > 0) items.push(...found);
+      if (Array.isArray(found) && found.length > 0) items.push(...found);
       else if (!o.signal?.aborted) failed++;
     }
     return { type: "items", profile, items, limited, posts: posts.length, failed };

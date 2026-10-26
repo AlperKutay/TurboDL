@@ -267,12 +267,13 @@ export class AppController {
       open: (username, cookies) => (ig.openProfile ? ig.openProfile(username, cookies) : NO_PROFILE),
       findHighlight: async (id, signal) => {
         const outcome = await ig.find({ kind: "highlight", id }, this.instagramSession.cookies(), signal);
-        if (outcome.type === "signedOut") throw new SavedError("signedOut");
+        if (outcome.type === "signedOut") throw this.wallOrExpired();
         return outcome.type === "items" ? outcome.items : null;
       },
       findPost: async (code, signal) => {
         const outcome = await ig.find({ kind: "post", code }, this.instagramSession.cookies(), signal);
-        if (outcome.type === "signedOut") throw new SavedError("signedOut");
+        if (outcome.type === "signedOut") throw this.wallOrExpired();
+        if (outcome.type === "signInOnly") return "signInOnly";
         return outcome.type === "items" ? outcome.items : null;
       },
       byAccount: () => this.settings.instagramByAccount,
@@ -496,7 +497,13 @@ export class AppController {
     if (outcome.type === "items") this.instagramItems.set(pendingId, outcome.items);
     if (outcome.type === "signedOut" && outcome.at) this.instagramChecks.set(pendingId, outcome.at);
     else this.instagramChecks.delete(pendingId);
-    return outcome;
+    // a post shown only to signed-in visitors asks the picker to sign in, like a hidden one always did
+    return outcome.type === "signInOnly" ? { type: "signedOut" } : outcome;
+  }
+
+  /** A sign-in landing: with a session it expired; without one it is Instagram's login wall, which holds the account's pacer. */
+  private wallOrExpired(): SavedError {
+    return new SavedError(this.instagramSession.signedIn() ? "signedOut" : "rateLimited");
   }
 
   /** Queues the picked items (none picked: all of them), one download each, named by Instagram's id. */
