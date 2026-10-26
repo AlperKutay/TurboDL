@@ -100,10 +100,10 @@ export class ApiClient {
     return this.orNull("POST", `/v1/jobs/${encodeURIComponent(id)}/cancel`);
   }
 
-  /** The job's events; the iteration simply ends when the stream closes, `end` or not. */
-  async *events(id: string): AsyncIterable<JobEvent> {
+  /** The job's events; the iteration simply ends when the stream closes, `end` or not, or when `signal` aborts. */
+  async *events(id: string, signal?: AbortSignal): AsyncIterable<JobEvent> {
     const res = await new Promise<http.IncomingMessage>((resolve, reject) => {
-      const req = http.request(this.options("GET", `/v1/jobs/${encodeURIComponent(id)}/events`), resolve);
+      const req = http.request({ ...this.options("GET", `/v1/jobs/${encodeURIComponent(id)}/events`), signal }, resolve);
       req.on("error", () => reject(new ApiError(0, LOST)));
       req.end();
     });
@@ -127,6 +127,7 @@ export class ApiClient {
         while ((nl = buffer.indexOf("\n")) >= 0) {
           const line = buffer.slice(0, nl).trim();
           buffer = buffer.slice(nl + 1);
+          if (signal?.aborted) return;
           if (line) yield JSON.parse(line) as JobEvent;
         }
       }

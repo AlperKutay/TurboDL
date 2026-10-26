@@ -115,6 +115,17 @@ describe("ApiClient", () => {
     expect(types).toEqual(["job"]);
   });
 
+  it("ends the events and lets go of the stream when the signal aborts", async () => {
+    jobs.set("j", makeJob("j"));
+    const abort = new AbortController();
+    const types: string[] = [];
+    for await (const e of client.events("j", abort.signal)) {
+      types.push(e.type);
+      abort.abort();
+    }
+    expect(types).toEqual(["job"]);
+  }, 5000);
+
   it("reports a wrong token as 403", async () => {
     const bad = new ApiClient({ port, token: "wrong" });
     await expect(bad.info()).rejects.toMatchObject({ status: 403, message: "TurboDL refused the key in api.json." });
