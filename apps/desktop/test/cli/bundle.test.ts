@@ -36,8 +36,10 @@ describe("the bundled turbodl command", () => {
   });
 });
 
+const hasPwsh = windows && spawnSync("pwsh", ["-NoProfile", "-Command", "exit 0"]).status === 0;
+
 describe("the Windows launcher", () => {
-  const args = ["https://x.com/?a=1&b=2", "100%25", "a^b", "ç"];
+  const args = ["https://x.com/?a=1&b=2", "100%25", "a^b", "ç", "a b"];
 
   function setup(): { exe: string } {
     const exe = path.join(workDir, "turbodl.exe");
@@ -52,24 +54,53 @@ describe("the Windows launcher", () => {
     return { exe };
   }
 
-  function expectEchoed(stdout: string, status: number | null): void {
+  function expectEchoed(stdout: string, status: number | null, argv: string[] = args): void {
     expect(status).toBe(7);
-    expect(JSON.parse(stdout.trim())).toEqual({ argv: args, node: "1" });
+    expect(JSON.parse(stdout.trim())).toEqual({ argv, node: "1" });
   }
 
-  it.runIf(windows)("passes links with & and % through PowerShell untouched, with the exit code", () => {
+  function runPowerShell(shell: string, exe: string, argv: string[]) {
+    const quoted = argv.map((a) => `'${a}'`).join(" ");
+    return spawnSync(shell, ["-NoProfile", "-Command", `& '${exe}' ${quoted}; exit $LASTEXITCODE`], { encoding: "utf8" });
+  }
+
+  function runBat(exe: string, separator: string, argLine: string) {
+    const bat = path.join(workDir, "run.bat");
+    // chcp first: cmd reads a batch file in the console's code page, which is not UTF-8 on most machines
+    writeFileSync(bat, `@echo off\r\nchcp 65001 >nul\r\n"${exe}"${separator}${argLine}\r\nexit /b %ERRORLEVEL%\r\n`);
+    return spawnSync("cmd", ["/d", "/c", bat], { encoding: "utf8" });
+  }
+
+  const batArgs = '"https://x.com/?a=1&b=2" "100%%25" "a^b" "ç" "a b"';
+
+  it.runIf(windows)("passes links with & and % through Windows PowerShell untouched, with the exit code", () => {
     const { exe } = setup();
-    const quoted = args.map((a) => `'${a}'`).join(" ");
-    const r = spawnSync("powershell", ["-NoProfile", "-Command", `& '${exe}' ${quoted}; exit $LASTEXITCODE`], { encoding: "utf8" });
+    const r = runPowerShell("powershell", exe, args);
+    expectEchoed(r.stdout, r.status);
+  });
+
+  it.runIf(hasPwsh)("passes links with & and % through PowerShell 7 untouched, with the exit code", () => {
+    const { exe } = setup();
+    const r = runPowerShell("pwsh", exe, args);
     expectEchoed(r.stdout, r.status);
   });
 
   it.runIf(windows)("passes links with & and % through cmd untouched, with the exit code", () => {
     const { exe } = setup();
-    const bat = path.join(workDir, "run.bat");
-    writeFileSync(bat, `@echo off\r\n"${exe}" "https://x.com/?a=1&b=2" "100%%25" "a^b" "ç"\r\nexit /b %ERRORLEVEL%\r\n`);
-    const r = spawnSync("cmd", ["/d", "/c", bat], { encoding: "utf8" });
+    const r = runBat(exe, " ", batArgs);
     expectEchoed(r.stdout, r.status);
+  });
+
+  it.runIf(windows)("keeps arguments after a tab between the program and the first argument", () => {
+    const { exe } = setup();
+    const r = runBat(exe, "\t", batArgs);
+    expectEchoed(r.stdout, r.status);
+  });
+
+  it.runIf(windows)("passes no arguments when there are none", () => {
+    const { exe } = setup();
+    const r = spawnSync(exe, [], { encoding: "utf8" });
+    expectEchoed(r.stdout, r.status, []);
   });
 
   it.runIf(windows)("says TurboDL is not installed any more when the executable is gone", () => {
@@ -78,5 +109,17 @@ describe("the Windows launcher", () => {
     const r = spawnSync(exe, ["get"], { encoding: "utf8" });
     expect(r.status).toBe(5);
     expect(r.stderr).toContain("TurboDL is not installed any more.");
+  });
+
+  it.runIf(windows)("treats a missing, empty or one-line turbodl.cfg like a missing executable", () => {
+    const { exe } = setup();
+    const cfg = path.join(workDir, "turbodl.cfg");
+    for (const content of [null, "", `${process.execPath}\n`]) {
+      rmSync(cfg, { force: true });
+      if (content !== null) writeFileSync(cfg, content, "utf8");
+      const r = spawnSync(exe, ["get"], { encoding: "utf8" });
+      expect(r.status).toBe(5);
+      expect(r.stderr).toContain("TurboDL is not installed any more.");
+    }
   });
 });

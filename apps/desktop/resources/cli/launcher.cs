@@ -11,10 +11,22 @@ static class Launcher
     static int Main()
     {
         string dir = AppDomain.CurrentDomain.BaseDirectory;
-        string[] lines = File.ReadAllLines(Path.Combine(dir, "turbodl.cfg"), Encoding.UTF8);
-        string electron = lines[0];
-        string script = lines[1];
-        if (!File.Exists(electron))
+        string electron = null;
+        string script = null;
+        try
+        {
+            string[] lines = File.ReadAllLines(Path.Combine(dir, "turbodl.cfg"), Encoding.UTF8);
+            if (lines.Length >= 2)
+            {
+                electron = lines[0];
+                script = lines[1];
+            }
+        }
+        catch (Exception)
+        {
+            // a missing or unreadable setup is handled like a missing TurboDL
+        }
+        if (electron == null || !File.Exists(electron))
         {
             Console.Error.WriteLine("TurboDL is not installed any more.");
             return 5;
