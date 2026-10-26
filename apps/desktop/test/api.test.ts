@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import http from "node:http";
 import net from "node:net";
 import os from "node:os";
@@ -134,8 +134,10 @@ describe("api.json", () => {
     const blocker = net.createServer();
     await new Promise<void>((r) => blocker.listen(0, "127.0.0.1", r));
     try {
-      await start((blocker.address() as net.AddressInfo).port);
-      expect(apiFile().port).toBeNull();
+      const taken = (blocker.address() as net.AddressInfo).port;
+      await start(taken);
+      // clients say so with the app's own message
+      expect(apiFile()).toMatchObject({ port: null, error: `Port ${taken} is used by another program. Choose another port in Settings.` });
     } finally {
       blocker.close();
     }
@@ -164,6 +166,8 @@ describe("api.json failures", () => {
     const c = await start(undefined, undefined, ui);
     expect(c.snapshot().bridge).toMatchObject({ ok: true, port });
     expect(ui.events.some((e) => e.type === "bridge")).toBe(true);
+    // the file it couldn't put in place is not left behind
+    expect(readdirSync(userData()).filter((name) => name.endsWith(".tmp"))).toEqual([]);
   });
 });
 

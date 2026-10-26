@@ -83,6 +83,8 @@ export interface ApiFile {
   api: number;
   version: string;
   port: number | null;
+  /** the app's own message while `port` is null (the port is taken); absent while the port is open */
+  error?: string;
   token: string;
   launch: ApiLaunch;
 }

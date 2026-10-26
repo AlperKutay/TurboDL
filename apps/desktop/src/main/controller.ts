@@ -989,10 +989,11 @@ export class AppController {
       };
     }
     try {
-      writeApiFile({
+      await writeApiFile({
         userDataDir: this.o.userDataDir,
         version: this.o.version,
         port: this.bridgeStatus.ok ? port : null,
+        error: this.bridgeStatus.error,
         launch: this.o.launch ?? { file: process.execPath, args: ["--hidden"] },
         token: this.apiToken,
       });
