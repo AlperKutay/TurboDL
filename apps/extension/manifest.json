@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "TurboDL",
-  "version": "0.5.1",
+  "version": "0.6.0",
   "description": "Sends downloads and videos to the TurboDL desktop app.",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA6TKvcBq9Zvmco2LzllZUv+ZQPiiiXR7iIGPi8Sd5kDCc48oJC8WcTcGlzqAp/gt5bj2ham5E3iT0YZKw8KhxoywnA21V0CxlbjdbeBZgjWuG2vjLFIYgjcUOWsW7CoymXnWiKL6IGkCIMfGI5fmDoTHXUCbOXB1A2aSfiOFbxarhokcATtHIyHGENcS7jyBb7j5fk5z4t8rt3RfyuN5HOBnWcCoJopsEvyZONpTNUiQUjprnkriaddi+4rzN7F1InSJdn9CuirDMzA1DlYWVLEufFNzEsOrv6bgbS8M40H/GdCAoYLvChcgOZAFMLudBKkIHioQOjQWWPzqnuYHIfwIDAQAB",
   "minimum_chrome_version": "120",
