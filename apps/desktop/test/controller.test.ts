@@ -4,9 +4,10 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { SavedError, type AppEvent, type BackupView, type BrowserCookie, type Highlight, type InstagramItem, type InstagramProfile, type PendingItem, type SavedPost } from "@turbodl/shared";
+import { SavedError, type AppEvent, type BackupView, type BrowserCookie, type InstagramItem, type InstagramProfile, type PendingItem, type SavedPost } from "@turbodl/shared";
 import { AppController, type ControllerUi, type InstagramDeps } from "../src/main/controller";
 import type { FindOutcome } from "../src/main/instagram/finder";
+import { PUBLIC_PROFILE, fakeProfiles, fakeSignedOut, savedGet } from "./fixtures/instagram-fakes";
 import { FFMPEG, makeClips, serveFolder, type Clips } from "./fixtures/media";
 import { startTestServer, type TestServer } from "./fixtures/test-server";
 
@@ -590,7 +591,6 @@ describe("Instagram Saved", () => {
     const asked: string[] = [];
     /** each request with the fake clock's time when it was sent */
     const times: { url: string; at: number }[] = [];
-    let feeds = 0;
     const waits: number[] = [];
     let now = 0;
     let signOuts = 0;
@@ -600,13 +600,13 @@ describe("Instagram Saved", () => {
       signIn: async () => null,
       crypt: { available: () => false, encrypt: (t: string) => Buffer.from(t), decrypt: (b: Buffer) => b.toString() },
       agent: "TestAgent/1",
-      get: async (url) => {
-        asked.push(url);
-        times.push({ url, at: now });
-        if (url.endsWith("/web_form_data/")) return { status: 200, body: JSON.stringify({ form_data: { username: "sample.user" }, status: "ok" }) };
-        if (o.limitFirst && feeds++ === 0) return { status: 429, body: "" };
-        return { status: 200, body: JSON.stringify({ items: posts.map((media) => ({ media })), more_available: false, status: "ok" }) };
-      },
+      get: savedGet(posts, {
+        limitFirst: o.limitFirst,
+        sent: (url) => {
+          asked.push(url);
+          times.push({ url, at: now });
+        },
+      }),
       collections: async () => o.collections ?? [{ id: "100", name: "All posts", count: 40, isAll: true }, { id: "102", name: "Trips", count: 2, isAll: false }],
       wait: async (ms) => {
         waits.push(ms);
@@ -806,54 +806,6 @@ describe("Instagram profiles", () => {
     ...o,
   });
   const photo = (id: string): SavedPost => ({ id, cover: server.url(`/ig/${id}.jpg`), items: [{ kind: "image", url: server.url(`/ig/${id}.jpg`), mediaId: id }] });
-
-  /** Profile pages stood in for: each username's profile, its pages of posts, its highlights (one, unless given). */
-  function fakeProfiles(profiles: Record<string, { profile: InstagramProfile; pages: SavedPost[][]; highlights?: Highlight[] }>, o: { hangFetch?: boolean } = {}) {
-    let now = 0;
-    const opened: string[] = [];
-    const closed: string[] = [];
-    /** each page asked of a profile, with the fake clock's time */
-    const asked: { username: string; cursor?: string; at: number }[] = [];
-    const fetched: string[] = [];
-    const deps: InstagramDeps = {
-      find: async () => ({ type: "nothing" }),
-      signIn: async () => null,
-      crypt: { available: () => false, encrypt: (t: string) => Buffer.from(t), decrypt: (b: Buffer) => b.toString() },
-      agent: "TestAgent/1",
-      get: async (url) => {
-        asked.push({ username: "saved", cursor: url, at: now });
-        return { status: 200, body: JSON.stringify({ items: [], more_available: false, status: "ok" }) };
-      },
-      wait: async (ms) => {
-        now += ms;
-      },
-      now: () => now,
-      fetch: async (url, file, { signal }) => {
-        fetched.push(url);
-        if (o.hangFetch) await new Promise((_, reject) => signal?.addEventListener("abort", () => reject(new Error("Cancelled."))));
-        writeFileSync(file, "x");
-      },
-      openProfile: (username) => {
-        opened.push(username);
-        const found = profiles[username];
-        return {
-          profile: async () => {
-            if (!found) throw new SavedError("badAnswer");
-            return found.profile;
-          },
-          highlights: found?.highlights ?? [{ id: "17900000000000002", title: "Summer" }],
-          limited: false,
-          page: async (cursor) => {
-            asked.push({ username, cursor, at: now });
-            const k = cursor ? Number(cursor) : 0;
-            return { posts: found?.pages[k] ?? [], ...(found && k + 1 < found.pages.length ? { next: String(k + 1) } : {}) };
-          },
-          close: () => closed.push(username),
-        };
-      },
-    };
-    return { deps, opened, closed, asked, fetched };
-  }
 
   /** sample.user: posts 1 and 2 on the first page, 3 on the second */
   let SAMPLE: { profile: InstagramProfile; pages: SavedPost[][] };
@@ -1274,40 +1226,7 @@ describe("Instagram signed out, and a folder per account", () => {
   const sessionJar: BrowserCookie[] = [
     { domain: ".instagram.com", hostOnly: false, path: "/", secure: true, expires: 0, name: "sessionid", value: "s" },
   ];
-  const PROFILE: InstagramProfile = { id: "5100000000000000001", username: "sample.user", fullName: "Sample User", isPrivate: false, following: false };
-  const cover = (id: string, code: string): SavedPost => ({ id, code, cover: `https://cdn.example/${id}.jpg`, items: [], unread: true, mediaType: 8 });
   const item = (id: string, owner = "sample.user"): InstagramItem => ({ kind: "image", url: server.url(`/ig/${id}.jpg`), mediaId: id, owner });
-
-  /** A public profile seen signed out (covers only), and post or highlight pages that show `pages[code or id]`. */
-  function fakeSignedOut(pages: Record<string, InstagramItem[]>) {
-    const opened: { username: string; cookies: string[] }[] = [];
-    const closed: string[] = [];
-    const read: string[] = [];
-    const deps: InstagramDeps = {
-      find: async (link) => {
-        const key = link.kind === "post" ? link.code : link.kind === "highlight" ? link.id : link.kind;
-        read.push(key);
-        const found = pages[key];
-        return found ? { type: "items", items: found } : { type: "nothing" };
-      },
-      signIn: async () => null,
-      crypt: { available: () => false, encrypt: (t: string) => Buffer.from(t), decrypt: (b: Buffer) => b.toString() },
-      agent: "TestAgent/1",
-      wait: async () => undefined,
-      fetch: async (_url, file) => writeFileSync(file, "x"),
-      openProfile: (username, cookies) => {
-        opened.push({ username, cookies: cookies.map((c) => c.name) });
-        return {
-          profile: async () => PROFILE,
-          highlights: [{ id: "17900000000000002", title: "Summer" }],
-          limited: true,
-          page: async () => ({ posts: [cover("p1", "C1"), cover("p2", "C2")] }),
-          close: () => closed.push(username),
-        };
-      },
-    };
-    return { deps, opened, closed, read };
-  }
 
   beforeEach(() => {
     for (const id of ["a", "b", "c"]) server.setFile(`/ig/${id}.jpg`, { data: Buffer.alloc(300, 1), contentType: "image/jpeg" });
@@ -1316,7 +1235,7 @@ describe("Instagram signed out, and a folder per account", () => {
   it("opens a public profile without a session, as Instagram shows it to signed-out visitors", async () => {
     const so = fakeSignedOut({});
     const c = await start({}, null, so.deps);
-    expect(await c.profileLoad("sample.user")).toEqual({ type: "profile", profile: PROFILE, highlights: [{ id: "17900000000000002", title: "Summer" }], limited: true });
+    expect(await c.profileLoad("sample.user")).toEqual({ type: "profile", profile: PUBLIC_PROFILE, highlights: [{ id: "17900000000000002", title: "Summer" }], limited: true });
     expect(so.opened).toEqual([{ username: "sample.user", cookies: [] }]);
   });
 
@@ -1368,7 +1287,7 @@ describe("Instagram signed out, and a folder per account", () => {
     const gap = async () => {
       gaps.push({ opened: so.opened.length, read: so.read.length });
     };
-    expect(await c["profiles"].readFirstPosts("sample.user", { gap })).toEqual({ type: "items", profile: PROFILE, items: [item("a"), item("b")], limited: true });
+    expect(await c["profiles"].readFirstPosts("sample.user", { gap })).toEqual({ type: "items", profile: PUBLIC_PROFILE, items: [item("a"), item("b")], limited: true });
     // a gap before the profile's page and before each post's own page, and the account's 1.5 s between the three
     expect(gaps).toEqual([
       { opened: 0, read: 0 },
