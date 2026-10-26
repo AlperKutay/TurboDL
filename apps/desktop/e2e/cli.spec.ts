@@ -63,7 +63,11 @@ async function withApp(
     await appReady(launched);
     await body({ ...launched, server });
   } finally {
-    onFinally?.(launched);
+    try {
+      onFinally?.(launched);
+    } catch {
+      // cleanup below must still run
+    }
     await launched.app.close().catch(() => undefined);
     await server.close();
     rmSync(launched.userData, { recursive: true, force: true, maxRetries: 5, retryDelay: 300 });
@@ -88,6 +92,20 @@ test("gets a file and prints its path", async () => {
     expect(printed).toHaveLength(1);
     expect(existsSync(printed[0])).toBe(true);
     expect(readFileSync(printed[0]).equals(data)).toBe(true);
+  });
+});
+
+test("passes a link with &, %, ^, spaces and non-ASCII characters through intact", async () => {
+  await withApp({}, async ({ server, userData }) => {
+    const data = randomBytes(30_000);
+    server.setFile("/files/a%20b%26c%2541.bin", { data, contentType: "application/octet-stream" });
+    const link = server.url("/files/a%20b%26c%2541.bin") + "?q=a&b=%41^é";
+    const r = await turbodl(userData, ["get", link]);
+    expect(r.code, r.stderr).toBe(0);
+    const printed = lines(r.stdout);
+    expect(printed).toHaveLength(1);
+    expect(readFileSync(printed[0]).equals(data)).toBe(true);
+    expect(server.requests.some((q) => q.url.includes("b=%41") && q.url.includes("%C3%A9"))).toBe(true);
   });
 });
 
