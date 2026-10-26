@@ -67,7 +67,10 @@ pip install "git+https://github.com/AlperKutay/TurboDL#subdirectory=clients/pyth
 from turbodl_client import TurboDL, SignInRequired
 
 tdl = TurboDL()                      # TurboDL(user_data=None, start=True, timeout=30)
-job = tdl.get("https://www.instagram.com/nasa/", highlights=True)    # waits; returns a Job
+try:
+    job = tdl.get("https://www.instagram.com/nasa/", highlights=True)    # waits; returns a Job
+except SignInRequired as e:          # signed out: only the posts Instagram shows visitors
+    job = e.job
 print(job.files)
 
 job = tdl.add("https://x.com/someone/status/123", dir=r"D:\Video")   # returns at once
@@ -79,8 +82,9 @@ tdl.jobs(); tdl.job(job.id); tdl.cancel(job.id)
 tdl.instagram_login(); tdl.instagram_logout(); tdl.info()
 ```
 
-- Options are the command's, in snake_case: `dir`, `name`, `audio`, `max_height`, `highlights`, `highlights_only`, `collections`, `all_collections`. A relative `dir` is resolved against the script's current folder.
-- `get()` and `Job.wait()` raise when the job does not end done. Every exception carries the `job`, with the files already saved. All derive from `TurboDLError`.
+- Options are the command's, in snake_case: `dir`, `name`, `audio`, `max_height`, `highlights`, `highlights_only`, `collections`, `all_collections`. A relative `dir` is resolved against the process's current working directory.
+- `get()` and `Job.wait()` return the `Job` when it ends `done` and raise otherwise; a `limited` job (signed out, a profile gave only the posts Instagram shows visitors) ends `done` but still raises `SignInRequired`. The exceptions for how a job ended, and `AppNotReachable` when TurboDL quits during `get()`, `wait()` or `events()`, carry the job as `e.job`, with the files already saved. All derive from `TurboDLError`.
+- `wait(timeout=...)` raises the built-in `TimeoutError` when the time is up and leaves the job running; `get()` waits as long as the job runs.
 
 | Exception | Raised when |
 | --- | --- |
