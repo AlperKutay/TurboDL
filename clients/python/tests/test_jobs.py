@@ -155,6 +155,17 @@ class FollowTests(JobCase):
             list(job.events())
         self.assertEqual(str(cm.exception), "No job j1.")
 
+    def test_a_refused_stream_gives_the_apps_message(self) -> None:
+        t = self.serve()
+        job = t.add(URL)
+        for reply, message in (((503, {"error": "TurboDL is closing."}), "TurboDL is closing."),
+                               ((500, {}), "TurboDL answered 500."),
+                               ((403, {"error": "Forbidden"}), "TurboDL refused the key in api.json.")):
+            self.stub.events_error = reply
+            with self.assertRaises(TurboDLError) as cm:
+                list(job.events())
+            self.assertEqual(str(cm.exception), message)
+
     def test_leaving_events_early_closes_the_stream(self) -> None:
         t = self.serve()
         job = t.add(URL)

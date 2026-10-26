@@ -68,12 +68,11 @@ def stream_lines(port: int, token: str, path: str, deadline: Optional[float] = N
         except (OSError, http.client.HTTPException):
             return
         if res.status != 200:
-            res.read()
-            if res.status == 404 and not_found:
-                raise JobNotFound(not_found)
-            if res.status == 403:
-                raise TurboDLError(REFUSED)
-            raise TurboDLError("TurboDL answered %d." % res.status)
+            try:
+                body = res.read()
+            except (OSError, http.client.HTTPException):
+                body = b""
+            raise _refusal(res.status, body, not_found)
         sock.settimeout(None)  # the reader waits as long as the app is silent; the deadline is kept below
         events = queue.Queue()  # type: queue.Queue
         reader = threading.Thread(target=_read, args=(conn, res, events), name="turbodl-events", daemon=True)
@@ -137,6 +136,20 @@ def _stop(sock: socket.socket) -> None:
             socket.close(fd)
         except OSError:
             pass
+
+
+def _refusal(status: int, body: bytes, not_found: Optional[str]) -> TurboDLError:
+    """The error for a stream the app wouldn't open: as request(), with the body's `error` when there is one."""
+    if status == 404 and not_found:
+        return JobNotFound(not_found)
+    if status == 403:
+        return TurboDLError(REFUSED)
+    try:
+        parsed = json.loads(body.decode("utf-8", "replace")) if body else None
+    except ValueError:
+        parsed = None
+    message = parsed.get("error") if isinstance(parsed, dict) else None
+    return TurboDLError(message if isinstance(message, str) and message else "TurboDL answered %d." % status)
 
 
 def _remaining(deadline: Optional[float]) -> Optional[float]:

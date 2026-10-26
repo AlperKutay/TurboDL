@@ -7,7 +7,7 @@ import socket
 import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 
 def free_port() -> int:
@@ -57,6 +57,8 @@ class StubApi:
         self.events = {}  # type: Dict[str, queue.Queue]
         self.instagram = {"signedIn": True, "username": "alper"}
         self.fail_add = None  # type: Optional[str]
+        # (status, body) for /events instead of the stream
+        self.events_error = None  # type: Optional[Tuple[int, Dict[str, Any]]]
         # set: the app is on its way out; every request calls it, then is dropped unanswered
         self.gone = None  # type: Optional[Callable[[], None]]
         stub = self
@@ -115,6 +117,8 @@ class StubApi:
                         job["state"] = "cancelled"
                         return self.send(200, {"job": job})
                     if len(parts) == 5 and parts[4] == "events" and not post:
+                        if stub.events_error is not None:
+                            return self.send(*stub.events_error)
                         q = stub.events.setdefault(job["id"], queue.Queue())
                         self.send_response(200)
                         self.send_header("Content-Type", "application/x-ndjson")
