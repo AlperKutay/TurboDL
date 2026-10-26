@@ -88,7 +88,7 @@ export function registerIpc(c: AppController): void {
     if (result.ok) await shell.openPath(result.path);
     return result;
   });
-  const cliDeps = () => realCliDeps({ platform: process.platform, userDataDir: app.getPath("userData"), supported: app.isPackaged });
+  const cliDeps = () => realCliDeps({ platform: process.platform, userDataDir: app.getPath("userData"), supported: app.isPackaged && !process.env.TURBODL_USER_DATA });
   handle("cliStatus", () => cliStatus(cliDeps()));
   handle("installCli", () => installCli(cliDeps()));
   handle("removeCli", () => removeCli(cliDeps()));

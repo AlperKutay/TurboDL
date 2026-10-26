@@ -17,7 +17,8 @@ function shQuote(value: string): string {
 
 /** The macOS `turbodl` script: runs the command in Node mode of this TurboDL. */
 export function shellLauncher(execPath: string, script: string): string {
-  return `#!/bin/sh\nELECTRON_RUN_AS_NODE=1 exec ${shQuote(execPath)} ${shQuote(script)} "$@"\n`;
+  const exe = shQuote(execPath);
+  return `#!/bin/sh\n[ -x ${exe} ] || { echo "TurboDL is not installed any more." >&2; exit 5; }\nELECTRON_RUN_AS_NODE=1 exec ${exe} ${shQuote(script)} "$@"\n`;
 }
 
 /** <userData>/bin with turbodl.exe + turbodl.cfg (Windows) or the turbodl script (macOS), pointing at this TurboDL. */
@@ -67,11 +68,20 @@ export interface CliInstallDeps {
   runAdmin(command: string): Promise<void>;
   /** readlink; null when not a link */
   linkTarget(file: string): string | null;
+  /** whether anything (file, link, folder) is at this path */
+  exists(file: string): boolean;
 }
 
-function run(file: string, args: string[]): Promise<string> {
+const TIMEOUT_MS = 30_000;
+/** osascript waits for a person typing a password */
+const ADMIN_TIMEOUT_MS = 5 * 60_000;
+
+/** Runs a command; a failure carries the command's real stderr (Node leaves it off the error) and `timedOut`. */
+export function run(file: string, args: string[], timeout = TIMEOUT_MS): Promise<string> {
   return new Promise((resolve, reject) => {
-    execFile(file, args, { windowsHide: true }, (err, stdout) => (err ? reject(err) : resolve(String(stdout))));
+    execFile(file, args, { windowsHide: true, timeout }, (err, stdout, stderr) =>
+      err ? reject(Object.assign(err, { stderr: String(stderr ?? ""), timedOut: err.killed === true })) : resolve(String(stdout)),
+    );
   });
 }
 
@@ -92,7 +102,7 @@ export function realCliDeps(o: { platform: NodeJS.Platform; userDataDir: string;
     broadcast: async () => void (await run("powershell", ["-NoProfile", "-NonInteractive", "-Command", BROADCAST_SCRIPT])),
     runAdmin: async (command) => {
       const quoted = command.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
-      await run("osascript", ["-e", `do shell script "${quoted}" with administrator privileges`]);
+      await run("osascript", ["-e", `do shell script "${quoted}" with administrator privileges`], ADMIN_TIMEOUT_MS);
     },
     linkTarget: (file) => {
       try {
@@ -101,6 +111,7 @@ export function realCliDeps(o: { platform: NodeJS.Platform; userDataDir: string;
         return null;
       }
     },
+    exists: (file) => existsSync(file),
   };
 }
 
@@ -174,7 +185,12 @@ async function editPath(d: CliInstallDeps, edit: (value: string, binDir: string)
   const after = edit(before, binDir);
   if (after === before) return { ok: true };
   await d.runReg(["add", ENV_KEY, "/v", "Path", "/t", found === "none" ? "REG_EXPAND_SZ" : found.type, "/d", after, "/f"]);
-  await d.broadcast();
+  try {
+    await d.broadcast();
+  } catch (err) {
+    // the PATH did change; running programs just pick it up later
+    console.warn("Couldn't tell running programs about the PATH change:", err instanceof Error ? err.message : err);
+  }
   return { ok: true };
 }
 
@@ -183,6 +199,7 @@ function hasEntry(value: string, entry: string): boolean {
 }
 
 function failure(err: unknown, platform: NodeJS.Platform): Result {
+  if ((err as { timedOut?: boolean }).timedOut) return { ok: false, error: "Timed out." };
   const stderr = String((err as { stderr?: string }).stderr ?? "");
   if (platform === "darwin") {
     if (/-128|User cancel/i.test(stderr + String((err as Error)?.message ?? ""))) return { ok: false, error: "Cancelled." };
@@ -207,6 +224,8 @@ export async function installCli(d: CliInstallDeps): Promise<Result> {
   if (!d.supported) return UNAVAILABLE;
   try {
     if (d.platform === "win32") return await editPath(d, withEntry);
+    const existing = d.linkTarget(LINK);
+    if (existing !== ourLauncher(d) && (existing !== null || d.exists(LINK))) return { ok: false, error: `${LINK} belongs to another program.` };
     await d.runAdmin(`mkdir -p /usr/local/bin && ln -sf ${shQuote(ourLauncher(d))} ${LINK}`);
     return { ok: true };
   } catch (err) {

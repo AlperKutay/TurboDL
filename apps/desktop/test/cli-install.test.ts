@@ -1,8 +1,9 @@
+import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { cliStatus, installCli, parseUserPath, removeCli, shellLauncher, withEntry, withoutEntry, writeCliLauncher, type CliInstallDeps } from "../src/main/cli-install";
+import { cliStatus, installCli, parseUserPath, removeCli, run, shellLauncher, withEntry, withoutEntry, writeCliLauncher, type CliInstallDeps } from "../src/main/cli-install";
 
 let dir: string;
 beforeEach(() => {
@@ -49,8 +50,15 @@ describe("writeCliLauncher", () => {
     expect(r.command).toBe(path.join(r.binDir, "turbodl"));
     const text = readFileSync(r.command, "utf8");
     expect(text).toBe(shellLauncher(execPath, "/Applications/x/turbodl.cjs"));
-    expect(text).toBe(`#!/bin/sh\nELECTRON_RUN_AS_NODE=1 exec '/Applications/Turbo'\\''DL.app/Contents/MacOS/TurboDL' '/Applications/x/turbodl.cjs' "$@"\n`);
+    expect(text).toBe(`#!/bin/sh\n[ -x '/Applications/Turbo'\\''DL.app/Contents/MacOS/TurboDL' ] || { echo "TurboDL is not installed any more." >&2; exit 5; }\nELECTRON_RUN_AS_NODE=1 exec '/Applications/Turbo'\\''DL.app/Contents/MacOS/TurboDL' '/Applications/x/turbodl.cjs' "$@"\n`);
     if (process.platform !== "win32") expect(statSync(r.command).mode & 0o777).toBe(0o755);
+  });
+
+  it.skipIf(process.platform === "win32")("exits 5 with a message when TurboDL is gone", () => {
+    const r = writeCliLauncher({ platform: "darwin", userDataDir: path.join(dir, "data"), execPath: path.join(dir, "gone", "TurboDL"), script: path.join(dir, "x.cjs"), launcherExe: "" });
+    const res = spawnSync("/bin/sh", [r.command, "--version"], { encoding: "utf8" });
+    expect(res.status).toBe(5);
+    expect(res.stderr).toBe("TurboDL is not installed any more.\n");
   });
 
   it("reports a launcher that cannot be copied when there is no old one", () => {
@@ -123,6 +131,7 @@ function fake(over: Partial<CliInstallDeps> & { path?: { type: string; value: st
     broadcast: async () => void events.push("broadcast"),
     runAdmin: async (c) => void admin.push(c),
     linkTarget: () => null,
+    exists: () => false,
     ...over,
   };
   return { deps, calls, events, admin, value: () => current };
@@ -195,12 +204,23 @@ describe("an unreadable PATH", () => {
     expect(f.events).toEqual([]);
   });
 
-  it("shows the first stderr line, not the PATH, when reg fails", async () => {
+  it("answers ok when only the broadcast fails: the PATH did change", async () => {
+    const f = fake({ broadcast: async () => Promise.reject(new Error("no powershell")) });
+    expect(await installCli(f.deps)).toEqual({ ok: true });
+    expect(f.calls).toHaveLength(1);
+  });
+
+  it("shows the first stderr line of a command that really fails, not the PATH", async () => {
     const f = fake();
-    f.deps.runReg = async () => {
-      throw Object.assign(new Error("Command failed: reg add ... /d C:\\very;long;PATH"), { stderr: "ERROR: Access is denied.\r\nmore" });
-    };
+    // the real run(), with a harmless failing command in place of reg
+    f.deps.runReg = () => run(process.execPath, ["-e", "process.stderr.write('ERROR: Access is denied.\\r\\nmore'); process.exit(1)"]);
     expect(await installCli(f.deps)).toEqual({ ok: false, error: "ERROR: Access is denied." });
+  });
+
+  it("answers a command that takes too long", async () => {
+    const f = fake();
+    f.deps.runReg = () => run(process.execPath, ["-e", "setTimeout(() => {}, 10000)"], 200);
+    expect(await installCli(f.deps)).toEqual({ ok: false, error: "Timed out." });
   });
 });
 
@@ -217,6 +237,18 @@ describe("macOS link", () => {
     const g = mac(ours);
     expect(await removeCli(g.deps)).toEqual({ ok: true });
     expect(g.admin).toEqual(["rm -f /usr/local/bin/turbodl"]);
+  });
+
+  it("refuses to install over a turbodl that is not ours", async () => {
+    const other = mac("/opt/homebrew/bin/turbodl");
+    expect(await installCli(other.deps)).toEqual({ ok: false, error: "/usr/local/bin/turbodl belongs to another program." });
+    const file = fake({ platform: "darwin", userDataDir: "/Users/x/Library/Application Support/TurboDL", linkTarget: () => null, exists: () => true });
+    expect(await installCli(file.deps)).toEqual({ ok: false, error: "/usr/local/bin/turbodl belongs to another program." });
+    expect(other.admin).toEqual([]);
+    expect(file.admin).toEqual([]);
+    const again = mac(ours); // our own link is simply relinked
+    expect(await installCli(again.deps)).toEqual({ ok: true });
+    expect(again.admin).toHaveLength(1);
   });
 
   it("refuses to remove a turbodl that points elsewhere", async () => {

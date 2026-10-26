@@ -14,6 +14,12 @@ process.on("SIGINT", () => {
   for (const handler of [...interruptHandlers]) handler();
 });
 
+// A reader that closes early (`turbodl get ... | head -1`) is not an error: stop writing quietly,
+// keeping the exit code the command would have had (a closed pipe is the reader's choice, not a failure).
+process.stdout.on("error", (err: NodeJS.ErrnoException) => {
+  if (err.code !== "EPIPE") throw err;
+});
+
 run({
   argv: process.argv.slice(2),
   cwd: process.cwd(),
