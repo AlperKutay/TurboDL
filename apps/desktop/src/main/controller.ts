@@ -64,6 +64,7 @@ import { SavedService } from "./instagram/saved-service";
 import type { FindOutcome } from "./instagram/finder";
 import { InstagramSession, type Crypt } from "./instagram/session";
 import { probe } from "./engine/probe";
+import { Gate } from "./jobs/gate";
 import { runInstagramJob } from "./jobs/instagram-job";
 import { InstagramLane } from "./jobs/instagram-lane";
 import { Jobs } from "./jobs/jobs";
@@ -193,6 +194,8 @@ function newId(): string {
 }
 
 const HTTP_URL = /^https?:\/\//i;
+/** file, page and stream jobs that may probe or ask yt-dlp at once */
+const WEB_JOB_SLOTS = 3;
 
 export class AppController {
   settings: Settings;
@@ -228,6 +231,8 @@ export class AppController {
   readonly jobs: Jobs;
   /** Instagram jobs' backups one at a time, and their page reads 3–6 s apart */
   private readonly lane: InstagramLane;
+  /** file, page and stream jobs probing or asking yt-dlp at once, at most */
+  private readonly webSlots = new Gate(WEB_JOB_SLOTS);
 
   constructor(private readonly o: ControllerOptions) {
     this.instagram = o.instagram ?? NO_INSTAGRAM;
@@ -930,6 +935,7 @@ export class AppController {
       mediaInfo: async (pageUrl) => fetchMediaInfo(await this.tools.ensure(), pageUrl, {}, { command: this.o.ytdlpCommand, cookieFile: null }),
       streamOptions: (kind, u) => streamOptions(kind, u, {}),
       categoryDir: (category) => this.categoryDir(category),
+      slots: this.webSlots,
     });
   }
 

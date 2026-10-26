@@ -148,6 +148,22 @@ describe("Jobs", () => {
     expect(mixed.get("j1")).toBeDefined();
     expect(mixed.get("j2")).toBeUndefined();
   });
+
+  it("never drops the job just created, though it ended at once and every other one is live", async () => {
+    let live = 3;
+    const jobs = make(async (job) => {
+      if (live-- > 0) {
+        job.start();
+        return new Promise<void>(() => {});
+      }
+      job.end({ state: "failed", reason: "rateLimited", error: "Slow down." });
+    }, 3);
+    for (let i = 0; i < 3; i++) jobs.create({ url: URL_A });
+    const { id } = jobs.create({ url: URL_A });
+    expect(jobs.get(id)).toMatchObject({ id: "j4", state: "failed", reason: "rateLimited" });
+    expect(await jobs.ended(id)).toMatchObject({ state: "failed" });
+    expect(jobs.list()).toHaveLength(4);
+  });
 });
 
 describe("jobKindOf", () => {

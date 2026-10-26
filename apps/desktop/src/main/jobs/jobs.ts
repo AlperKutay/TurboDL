@@ -34,7 +34,7 @@ export class Jobs {
     })().catch((err: unknown) => {
       record.end({ state: "failed", reason: "error", error: err instanceof Error ? err.message : String(err) });
     });
-    this.trim();
+    this.trim(record);
     return created;
   }
 
@@ -62,10 +62,11 @@ export class Jobs {
     return this.records.get(id)?.ended;
   }
 
-  private trim(): void {
+  /** Drops the oldest ended jobs past `keep`; never `created`, which its client is about to ask for (it may have ended at once). */
+  private trim(created: JobRecord): void {
     for (const [id, record] of this.records) {
       if (this.records.size <= this.keep) return;
-      if (isJobEnded(record.view().state)) this.records.delete(id);
+      if (record !== created && isJobEnded(record.view().state)) this.records.delete(id);
     }
   }
 }

@@ -6,6 +6,7 @@ import { sanitizeFilename, type DownloadRecord, type JobRequest } from "@turbodl
 import { HttpDownloadTask } from "../../src/main/engine/download-task";
 import { probe } from "../../src/main/engine/probe";
 import { JobRecord } from "../../src/main/jobs/job-record";
+import { Gate } from "../../src/main/jobs/gate";
 import { runWebJob, type WebJobDeps } from "../../src/main/jobs/web-job";
 import { DownloadManager, type StateFile, type StateStore } from "../../src/main/manager";
 import { streamOptions } from "../../src/main/media/resolve";
@@ -45,9 +46,12 @@ class HeldTask implements TaskHandle {
 let server: TestServer;
 let root: string;
 let manager: DownloadManager;
+/** the web jobs' shared places for probing and asking yt-dlp, as the app has them */
+let slots: Gate;
 
 beforeEach(async () => {
   server = await startTestServer();
+  slots = new Gate(3);
   root = mkdtempSync(path.join(os.tmpdir(), "turbodl-webjob-"));
   manager = new DownloadManager({
     store: new MemoryStore(),
@@ -70,11 +74,31 @@ function deps(): WebJobDeps {
     mediaInfo: (pageUrl) => fetchMediaInfo({ ytdlp: "unused", deno: null, ffmpeg: null }, pageUrl, {}, { command: () => ({ file: process.execPath, args: [FAKE_YTDLP] }), cookieFile: null }),
     streamOptions: (kind, url) => streamOptions(kind, url, {}),
     categoryDir: (category) => path.join(root, "cat", category),
+    slots,
   };
 }
 
-function newJob(request: Partial<JobRequest> & { url: string }): JobRecord {
-  return new JobRecord("j1", request, "file", () => Date.now());
+function newJob(request: Partial<JobRequest> & { url: string }, id = "j1"): JobRecord {
+  return new JobRecord(id, request, "file", () => Date.now());
+}
+
+/** Lets everything that is ready run (no timer passes). */
+async function flush(): Promise<void> {
+  for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r));
+}
+
+/** A step every job waits in until `open()`, counting how many are in it at once. */
+function heldStep() {
+  let open!: () => void;
+  const gate = new Promise<void>((resolve) => (open = resolve));
+  const step = { now: 0, most: 0, entered: 0, open: () => open() };
+  const hold = async () => {
+    step.entered++;
+    step.most = Math.max(step.most, ++step.now);
+    await gate;
+    step.now--;
+  };
+  return { step, hold };
 }
 
 async function until(check: () => boolean): Promise<void> {
@@ -215,5 +239,64 @@ describe("runWebJob", () => {
     expect(job.view().kind).toBe("media");
     job.cancel();
     await run;
+  });
+
+  it("lets at most 3 jobs probe at once; one cancelled while it waits for a place ends cancelled", async () => {
+    for (let i = 0; i < 5; i++) server.setFile(`/files/${i}.zip`, { data: Buffer.alloc(2000, i), contentType: "application/zip" });
+    const { step, hold } = heldStep();
+    const probed: string[] = [];
+    const d: WebJobDeps = {
+      ...deps(),
+      probe: async (url) => {
+        probed.push(url);
+        await hold();
+        return probe(url, {}, undefined, 15000);
+      },
+    };
+    const jobs = [0, 1, 2, 3, 4].map((i) => newJob({ url: server.url(`/files/${i}.zip`) }, `j${i}`));
+    const runs = jobs.map((job) => runWebJob(job, d));
+    await flush();
+    expect(step.now).toBe(3);
+    jobs[4].cancel();
+    expect(await jobs[4].ended).toMatchObject({ state: "cancelled" });
+    step.open();
+    await Promise.all(runs);
+    expect(step.most).toBe(3);
+    expect(probed).toEqual([0, 1, 2, 3].map((i) => server.url(`/files/${i}.zip`)));
+    for (const job of jobs.slice(0, 4)) expect(await job.ended).toMatchObject({ state: "done" });
+  });
+
+  it("counts a job asking yt-dlp for a page the same as one probing", async () => {
+    pageInfo();
+    server.setFile("/files/a.zip", { data: Buffer.alloc(2000, 7), contentType: "application/zip" });
+    const { step, hold } = heldStep();
+    const base = deps();
+    const probed: string[] = [];
+    const d: WebJobDeps = {
+      ...base,
+      probe: (url) => {
+        probed.push(url);
+        return base.probe(url);
+      },
+      mediaInfo: async (pageUrl) => {
+        await hold();
+        return base.mediaInfo(pageUrl);
+      },
+    };
+    const pages = [0, 1, 2].map((i) => newJob({ url: server.url("/yt/page"), dir: path.join(root, "v"), name: `v${i}` }, `p${i}`));
+    const pageRuns = pages.map((job) => runWebJob(job, d));
+    await until(() => step.now === 3);
+    const file = newJob({ url: server.url("/files/a.zip") }, "f");
+    const fileRun = runWebJob(file, d);
+    await flush();
+    expect(probed).not.toContain(server.url("/files/a.zip"));
+    step.open();
+    await fileRun;
+    expect(await file.ended).toMatchObject({ state: "done" });
+    expect(step.most).toBe(3);
+    // the pages' downloads hold until they are cancelled
+    await until(() => manager.list().length === 4);
+    for (const job of pages) job.cancel();
+    await Promise.all(pageRuns);
   });
 });
