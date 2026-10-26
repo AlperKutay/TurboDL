@@ -954,14 +954,15 @@ describe("Instagram profiles", () => {
     const ig = fakeProfiles({ "sample.user": SAMPLE, "other.user": { profile: person("53", "other.user"), pages: [[photo("3")]] } });
     const c = await signedIn(ig.deps);
     await c.profileLoad("sample.user");
-    const gap = async () => undefined;
-    expect(await c["profiles"].readFirstPosts("other.user", { gap })).toEqual({ type: "items", profile: person("53", "other.user"), items: photo("3").items, limited: false, posts: 1 });
-    expect(await c["profiles"].readFirstPosts("Sample.User", { gap })).toEqual({
+    const read = <T>(fn: () => Promise<T>) => fn();
+    expect(await c["profiles"].readFirstPosts("other.user", { read })).toEqual({ type: "items", profile: person("53", "other.user"), items: photo("3").items, limited: false, posts: 1, failed: 0 });
+    expect(await c["profiles"].readFirstPosts("Sample.User", { read })).toEqual({
       type: "items",
       profile: SAMPLE.profile,
       items: [...photo("1").items, ...photo("2").items],
       limited: false,
       posts: 2,
+      failed: 0,
     });
     // the reads' own two pages, each closed once read; the screen's page is still the open profile's
     expect(ig.opened).toEqual(["sample.user", "other.user", "sample.user"]);
@@ -972,9 +973,9 @@ describe("Instagram profiles", () => {
   it("reads nothing of a private profile, and closes the page it opened whatever the answer", async () => {
     const ig = fakeProfiles({ "shut.door": { profile: person("52", "shut.door", { isPrivate: true }), pages: [[photo("1")]] } });
     const c = await signedIn(ig.deps);
-    const gap = async () => undefined;
-    expect(await c["profiles"].readFirstPosts("shut.door", { gap })).toEqual({ type: "private" });
-    expect(await c["profiles"].readFirstPosts("nobody", { gap })).toEqual({ type: "failed", message: "Instagram's answer couldn't be read." });
+    const read = <T>(fn: () => Promise<T>) => fn();
+    expect(await c["profiles"].readFirstPosts("shut.door", { read })).toEqual({ type: "private" });
+    expect(await c["profiles"].readFirstPosts("nobody", { read })).toEqual({ type: "failed", message: "Instagram's answer couldn't be read." });
     expect(ig.asked).toEqual([]);
     expect(ig.closed).toEqual(["shut.door", "nobody"]);
   });
@@ -1273,7 +1274,7 @@ describe("Instagram signed out, and a folder per account", () => {
     expect(so.closed).toEqual(["sample.user", "sample.user"]);
   });
 
-  it("spaces the posts it reads by the job's gap and the account's pace", async () => {
+  it("reads its pages one at a time in the job's read slot and the account's pace, and counts the posts that show nothing", async () => {
     const so = fakeSignedOut({ C1: [item("a"), item("b")] });
     let now = 0;
     const waits: number[] = [];
@@ -1283,17 +1284,19 @@ describe("Instagram signed out, and a folder per account", () => {
       now += ms;
     };
     const c = await start({}, null, so.deps);
-    /** the pages opened and posts read before each gap */
-    const gaps: { opened: number; read: number }[] = [];
-    const gap = async () => {
-      gaps.push({ opened: so.opened.length, read: so.read.length });
+    /** the pages opened and closed, and posts read, as each read gets the slot */
+    const slots: { opened: number; closed: number; read: number }[] = [];
+    const read = async <T>(fn: () => Promise<T>): Promise<T> => {
+      slots.push({ opened: so.opened.length, closed: so.closed.length, read: so.read.length });
+      return fn();
     };
-    expect(await c["profiles"].readFirstPosts("sample.user", { gap })).toEqual({ type: "items", profile: PUBLIC_PROFILE, items: [item("a"), item("b")], limited: true, posts: 2 });
-    // a gap before the profile's page and before each post's own page, and the account's 1.5 s between the three
-    expect(gaps).toEqual([
-      { opened: 0, read: 0 },
-      { opened: 1, read: 0 },
-      { opened: 1, read: 1 },
+    // C2's own page shows nothing
+    expect(await c["profiles"].readFirstPosts("sample.user", { read })).toEqual({ type: "items", profile: PUBLIC_PROFILE, items: [item("a"), item("b")], limited: true, posts: 2, failed: 1 });
+    // the profile's page, then each post's own page, the profile's closed first; the account's 1.5 s between the three
+    expect(slots).toEqual([
+      { opened: 0, closed: 0, read: 0 },
+      { opened: 1, closed: 1, read: 0 },
+      { opened: 1, closed: 1, read: 1 },
     ]);
     expect(so.read).toEqual(["C1", "C2"]);
     expect(waits).toEqual([1500, 1500]);
@@ -1310,8 +1313,8 @@ describe("Instagram signed out, and a folder per account", () => {
     const c = await start({}, null, so.deps);
     const pacer = c["pacer"];
     const slowDown = () => pacer.ask(() => Promise.reject(new SavedError("rateLimited"))).catch(() => undefined);
-    const gap = async () => undefined;
-    const read = () => c["profiles"].readFirstPosts("sample.user", { gap });
+    const slot = <T>(fn: () => Promise<T>) => fn();
+    const read = () => c["profiles"].readFirstPosts("sample.user", { read: slot });
     // held: no page opened at all
     await slowDown();
     expect(await read()).toEqual({ type: "rateLimited" });
@@ -1345,14 +1348,15 @@ describe("Instagram signed out, and a folder per account", () => {
   it("opens no page for a read already called off", async () => {
     const so = fakeSignedOut({ C1: [item("a")] });
     const c = await start({}, null, so.deps);
-    let gaps = 0;
-    const gap = async () => {
-      gaps++;
+    let reads = 0;
+    const read = async <T>(fn: () => Promise<T>): Promise<T> => {
+      reads++;
+      return fn();
     };
     const called = new AbortController();
     called.abort();
-    expect(await c["profiles"].readFirstPosts("sample.user", { gap, signal: called.signal })).toEqual({ type: "failed", message: "Cancelled." });
-    expect(gaps).toBe(0);
+    expect(await c["profiles"].readFirstPosts("sample.user", { read, signal: called.signal })).toEqual({ type: "failed", message: "Cancelled." });
+    expect(reads).toBe(0);
     expect(so.opened).toEqual([]);
   });
 

@@ -2,8 +2,10 @@ import type { StartResult } from "../instagram/backups";
 import { SLOW_DOWN } from "../instagram/pacer";
 import type { JobRecord } from "./job-record";
 
-/** ms between the pages jobs read, picked at random in the range (the gap highlight backups leave between pages) */
+/** ms from one page a job read to the next, picked at random in the range (the gap highlight backups leave between pages) */
 const READ_GAP: [number, number] = [3000, 6000];
+/** a read called off before it had the read slot */
+const CALLED_OFF = "Cancelled.";
 /** ms before a lane job looks at the backup slot again after a screen took it first */
 const BUSY_AGAIN = 250;
 
@@ -26,7 +28,7 @@ type Wake = "go" | "cancelled" | "rateLimited";
 
 /**
  * How Instagram jobs share the account: their backups one job at a time in arrival order, after the screens' backups
- * too, and the pages they read 3–6 s apart, whoever reads them.
+ * too, and the pages they read one at a time, 3–6 s apart, whoever reads them.
  */
 export class InstagramLane {
   /** the job whose backups run now; it keeps the turn until it ends */
@@ -35,7 +37,10 @@ export class InstagramLane {
   private readonly queue: { job: JobRecord; go(): void }[] = [];
   /** every wait in the lane, ended at once when Instagram asks a job to slow down */
   private readonly waits = new Set<() => void>();
-  private nextReadAt = 0;
+  /** resolves when the read slot is free: the last read asked for has ended */
+  private reading: Promise<unknown> = Promise.resolve();
+  /** when the next read may start: the last one's end and the gap drawn after it */
+  private readAt = 0;
 
   constructor(private readonly o: InstagramLaneDeps) {}
 
@@ -67,12 +72,30 @@ export class InstagramLane {
     }
   }
 
-  /** Waits so the pages jobs read come 3–6 s apart (uniform random), whoever reads them. */
-  async gap(signal?: AbortSignal): Promise<void> {
-    const now = this.o.now();
-    const at = Math.max(now, this.nextReadAt);
-    this.nextReadAt = at + Math.round(READ_GAP[0] + this.o.random() * (READ_GAP[1] - READ_GAP[0]));
-    if (at > now) await this.o.wait(at - now, signal).catch(() => undefined);
+  /**
+   * A page read in the jobs' one read slot, held until `fn` is done: it starts once no other read holds the slot, and
+   * 3–6 s (uniform random) after the last one ended, whoever read it. Rejects, running nothing, when `signal` aborts
+   * before the slot is its; while Instagram's slow-down holds there is no gap (the read asks nothing then).
+   */
+  async read<T>(signal: AbortSignal | undefined, fn: () => Promise<T>): Promise<T> {
+    const before = this.reading;
+    let done!: () => void;
+    const mine = new Promise<void>((resolve) => (done = resolve));
+    // the next read waits for this one and, should this one be called off early, for the one before it
+    this.reading = Promise.all([before, mine]);
+    try {
+      await settledOrAborted(before, signal);
+      const wait = this.readAt - this.o.now();
+      if (wait > 0 && !signal?.aborted && !this.o.held()) await this.o.wait(wait, signal).catch(() => undefined);
+      if (signal?.aborted) throw new Error(CALLED_OFF);
+      try {
+        return await fn();
+      } finally {
+        this.readAt = this.o.now() + Math.round(READ_GAP[0] + this.o.random() * (READ_GAP[1] - READ_GAP[0]));
+      }
+    } finally {
+      done();
+    }
   }
 
   /** Instagram asked a job to slow down: every job still waiting in the lane gets the same answer, at once. */
@@ -126,4 +149,17 @@ export class InstagramLane {
       );
     });
   }
+}
+
+/** Resolves when `work` settles or `signal` aborts, whichever comes first. */
+function settledOrAborted(work: Promise<unknown>, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    if (signal?.aborted) return resolve();
+    const finish = () => {
+      signal?.removeEventListener("abort", finish);
+      resolve();
+    };
+    signal?.addEventListener("abort", finish);
+    work.then(finish, finish);
+  });
 }

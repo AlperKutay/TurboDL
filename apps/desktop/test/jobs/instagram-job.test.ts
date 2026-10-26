@@ -217,6 +217,42 @@ describe("Instagram link jobs", () => {
     }
   });
 
+  it("loads the pages jobs read one at a time, each 3–6 s after the last one ended", async () => {
+    const clock = steppedClock();
+    const so = fakeSignedOut({ C1: [item("a")], C2: [item("b")], C3: [item("c")] });
+    const reads: { start: number; end: number }[] = [];
+    let loading = 0;
+    let most = 0;
+    const find = so.deps.find;
+    // each page takes 2 s to load
+    so.deps.find = async (link, cookies, signal) => {
+      const read = { start: clock.now(), end: 0 };
+      reads.push(read);
+      most = Math.max(most, ++loading);
+      await clock.wait(2000);
+      loading--;
+      read.end = clock.now();
+      return find(link, cookies, signal);
+    };
+    so.deps.now = clock.now;
+    so.deps.wait = clock.wait;
+    const c = await start(so.deps);
+    const ids = ["C1", "C2", "C3"].map((code) => c.jobs.create({ url: `https://www.instagram.com/p/${code}/` }).id);
+    let ended = false;
+    void Promise.all(ids.map((id) => c.jobs.ended(id))).then(() => (ended = true));
+    for (let i = 0; i < 300 && !ended; i++) {
+      await new Promise((r) => setTimeout(r, 5));
+      clock.step();
+    }
+    expect(ended).toBe(true);
+    expect(reads).toHaveLength(3);
+    expect(most).toBe(1);
+    for (const k of [1, 2]) {
+      expect(reads[k].start - reads[k - 1].end).toBeGreaterThanOrEqual(3000);
+      expect(reads[k].start - reads[k - 1].end).toBeLessThanOrEqual(6000);
+    }
+  });
+
   it("reads a link while a backup runs, without waiting for it", async () => {
     const ig = fakeProfiles({ "sample.user": SAMPLE() }, { hangFetch: true });
     ig.deps.find = async (link) => (link.kind === "post" ? { type: "items", items: [item("a")] } : { type: "nothing" });
@@ -259,6 +295,26 @@ describe("Instagram profile jobs", () => {
     expect(readdirSync(dl("sample.user", "Highlights")).sort()).toEqual(["s1.jpg", "s2.jpg"]);
     const kinds = ui.events.flatMap((e) => (e.type === "instagramBackup" && e.backup ? [e.backup.kind] : []));
     expect([...new Set(kinds)]).toEqual(["profile", "highlights"]);
+  });
+
+  it("ends failed, its saved files listed, when a backup couldn't save every post", async () => {
+    const ig = fakeProfiles({ "sample.user": SAMPLE() });
+    ig.deps.find = async (link) => (link.kind === "highlight" ? { type: "items", items: [story("s1")] } : { type: "nothing" });
+    const fetch = ig.deps.fetch!;
+    ig.deps.fetch = async (url, file, o) => {
+      if (url.endsWith("/2.jpg")) throw new Error("The file is gone.");
+      return fetch(url, file, o);
+    };
+    const c = await signedIn(ig.deps);
+    const job = await run(c, { url: PROFILE_URL, options: { highlights: true } });
+    // the highlights still ran after the posts
+    expect(job).toMatchObject({
+      state: "failed",
+      reason: "error",
+      error: "1 post couldn't be saved; it's tried again on the next run.",
+      failedItems: 1,
+      files: [dl("sample.user", "1.jpg"), dl("sample.user", "3.jpg"), dl("sample.user", "Highlights", "s1.jpg")],
+    });
   });
 
   it("waits its turn while a backup from the app's screens runs, then starts", async () => {
@@ -307,6 +363,21 @@ describe("Instagram profile jobs", () => {
     expect(so.closed).toEqual(["sample.user"]);
     expect(await run(c, { url: PROFILE_URL, options: { highlightsOnly: true } })).toMatchObject({ state: "failed", reason: "signInRequired", error: "Highlights need you signed in to Instagram." });
     expect(so.opened).toHaveLength(1);
+  });
+
+  it("ends failed when the signed-out read couldn't read every post, the rest saved", async () => {
+    // C2's own page shows nothing
+    const so = fakeSignedOut({ C1: [item("a", "sample.user"), item("b", "sample.user")] });
+    const c = await start(so.deps);
+    const job = await run(c, { url: PROFILE_URL });
+    expect(job).toMatchObject({
+      state: "failed",
+      reason: "error",
+      error: "1 post couldn't be read.",
+      failedItems: 1,
+      warnings: ["Signed out: only the first 2 posts Instagram shows visitors. Sign in to Instagram for the rest."],
+    });
+    expect(sorted(job.files)).toEqual([dl("sample.user", "a.jpg"), dl("sample.user", "b.jpg")]);
   });
 
   it("fails private for a private profile it doesn't follow", async () => {

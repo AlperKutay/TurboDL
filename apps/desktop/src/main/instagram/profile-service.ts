@@ -49,8 +49,8 @@ export interface ProfileServiceDeps {
 
 /** A job's read of a profile's first posts: their items, or why there are none. */
 export type FirstPosts =
-  /** `posts`: how many posts the page showed (a carousel's items are more than one) */
-  | { type: "items"; profile: InstagramProfile; items: InstagramItem[]; limited: boolean; posts: number }
+  /** `posts`: how many posts the page showed (a carousel's items are more); `failed`: those whose own page showed nothing */
+  | { type: "items"; profile: InstagramProfile; items: InstagramItem[]; limited: boolean; posts: number; failed: number }
   | { type: "signedOut" }
   | { type: "rateLimited" }
   | { type: "private" }
@@ -144,47 +144,65 @@ export class ProfileService {
 
   /**
    * A job's read of a profile's first posts on a page of its own: the screen's page is never used or closed. The
-   * profile's page, and the own page of each post known only by its cover, load after the job's gap, in the account's
-   * pace; nothing is asked while Instagram's slow-down holds. Called off before its page opens: failed, "Cancelled.".
+   * profile's page, then the own page of each post known only by its cover, load one at a time in the job's read slot,
+   * in the account's pace; the profile's page is closed before any post's page loads. Nothing is asked while
+   * Instagram's slow-down holds. Called off before its page opens: failed, "Cancelled.".
    */
-  async readFirstPosts(username: string, o: { gap(signal?: AbortSignal): Promise<void>; signal?: AbortSignal }): Promise<FirstPosts> {
+  async readFirstPosts(username: string, o: { read<T>(fn: () => Promise<T>, signal?: AbortSignal): Promise<T>; signal?: AbortSignal }): Promise<FirstPosts> {
     const { pacer } = this.deps;
     if (pacer.held()) return { type: "rateLimited" };
     if (o.signal?.aborted) return { type: "failed", message: "Cancelled." };
-    await o.gap(o.signal);
-    await pacer.pace(o.signal);
-    if (pacer.held()) return { type: "rateLimited" };
-    if (o.signal?.aborted) return { type: "failed", message: "Cancelled." };
-    const source = this.deps.open(username.toLowerCase(), this.deps.session.cookies());
-    try {
-      // a slow-down on the profile's page holds the whole account
-      const profile = await pacer.ask(() => source.profile());
-      if (isLocked(profile)) return { type: "private" };
-      const page = await source.page(undefined, o.signal);
-      const items: InstagramItem[] = [];
-      for (const post of page.posts) {
-        if (!post.unread || !post.code) {
-          items.push(...post.items);
-          continue;
-        }
-        // a called-off read asks Instagram nothing more
-        if (o.signal?.aborted) break;
-        const code = post.code;
-        await o.gap(o.signal);
-        if (pacer.held()) return { type: "rateLimited" };
+    /** one page Instagram sees, in the read slot and the account's pace; a slow-down on it holds the whole account */
+    const paced = <T>(load: () => Promise<T>): Promise<T> =>
+      o.read(async () => {
+        if (pacer.held()) throw new SavedError("rateLimited");
         await pacer.pace(o.signal);
-        if (pacer.held()) return { type: "rateLimited" };
-        const found = await pacer.ask(() => this.deps.findPost(code, o.signal)).catch(() => null);
-        items.push(...(found ?? []));
-      }
-      // Instagram asked to slow down while the posts were read
-      if (pacer.held()) return { type: "rateLimited" };
-      return { type: "items", profile, items, limited: source.limited, posts: page.posts.length };
+        if (pacer.held()) throw new SavedError("rateLimited");
+        if (o.signal?.aborted) throw new Error("Cancelled.");
+        return pacer.ask(load);
+      }, o.signal);
+    let opened: { source: ProfileSource; profile: InstagramProfile };
+    try {
+      opened = await paced(async () => {
+        const source = this.deps.open(username.toLowerCase(), this.deps.session.cookies());
+        try {
+          return { source, profile: await source.profile() };
+        } catch (err) {
+          source.close();
+          throw err;
+        }
+      });
+    } catch (err) {
+      return failedPage(err);
+    }
+    const { source, profile } = opened;
+    const limited = source.limited;
+    let posts: SavedPost[];
+    try {
+      if (isLocked(profile)) return { type: "private" };
+      posts = (await source.page(undefined, o.signal)).posts;
     } catch (err) {
       return failedPage(err);
     } finally {
+      // its posts are taken: the profile's page goes before any post's page loads
       source.close();
     }
+    const items: InstagramItem[] = [];
+    let failed = 0;
+    for (const post of posts) {
+      if (!post.unread || !post.code) {
+        items.push(...post.items);
+        continue;
+      }
+      // a called-off read asks Instagram nothing more
+      if (o.signal?.aborted) break;
+      const code = post.code;
+      const found = await paced(() => this.deps.findPost(code, o.signal)).catch(() => null);
+      if (pacer.held()) return { type: "rateLimited" };
+      if (found && found.length > 0) items.push(...found);
+      else if (!o.signal?.aborted) failed++;
+    }
+    return { type: "items", profile, items, limited, posts: posts.length, failed };
   }
 
   /** `<baseDir>/Instagram/<username>`: a profile's picks and backups. */
