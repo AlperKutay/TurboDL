@@ -1363,21 +1363,77 @@ describe("Instagram signed out, and a folder per account", () => {
       now += ms;
     };
     const c = await start({}, null, so.deps);
-    /** how many posts were read before each gap */
-    const gaps: number[] = [];
+    /** the pages opened and posts read before each gap */
+    const gaps: { opened: number; read: number }[] = [];
     const gap = async () => {
-      gaps.push(so.read.length);
+      gaps.push({ opened: so.opened.length, read: so.read.length });
     };
     expect(await c["profiles"].readFirstPosts("sample.user", { gap })).toEqual({ type: "items", profile: PROFILE, items: [item("a"), item("b")], limited: true });
-    expect(gaps).toEqual([0, 1]);
+    // a gap before the profile's page and before each post's own page, and the account's 1.5 s between the three
+    expect(gaps).toEqual([
+      { opened: 0, read: 0 },
+      { opened: 1, read: 0 },
+      { opened: 1, read: 1 },
+    ]);
     expect(so.read).toEqual(["C1", "C2"]);
-    expect(waits).toEqual([1500]);
+    expect(waits).toEqual([1500, 1500]);
     expect(so.closed).toEqual(["sample.user"]);
-    // while Instagram's slow-down holds, nothing more is read
-    await c["pacer"].ask(() => Promise.reject(new SavedError("rateLimited"))).catch(() => undefined);
-    expect(await c["profiles"].readFirstPosts("sample.user", { gap })).toEqual({ type: "rateLimited" });
+  });
+
+  it("asks Instagram nothing while its slow-down holds, and answers rateLimited when one begins during the read", async () => {
+    const so = fakeSignedOut({ C1: [item("a")], C2: [item("b")] });
+    let now = 0;
+    so.deps.now = () => now;
+    so.deps.wait = async (ms) => {
+      now += ms;
+    };
+    const c = await start({}, null, so.deps);
+    const pacer = c["pacer"];
+    const slowDown = () => pacer.ask(() => Promise.reject(new SavedError("rateLimited"))).catch(() => undefined);
+    const gap = async () => undefined;
+    const read = () => c["profiles"].readFirstPosts("sample.user", { gap });
+    // held: no page opened at all
+    await slowDown();
+    expect(await read()).toEqual({ type: "rateLimited" });
+    expect(so.opened).toEqual([]);
+    now += 2 * 60_000;
+    // a slow-down on the profile's page holds the account too
+    const open = so.deps.openProfile!;
+    so.deps.openProfile = (username, cookies) => ({
+      ...open(username, cookies),
+      profile: async () => {
+        throw new SavedError("rateLimited");
+      },
+    });
+    expect(await read()).toEqual({ type: "rateLimited" });
+    expect(pacer.held()).toBe(true);
+    expect(so.closed).toEqual(["sample.user"]);
+    now += 2 * 60_000;
+    // one that begins while the last post is read
+    so.deps.openProfile = open;
+    const find = so.deps.find;
+    so.deps.find = async (link, cookies, signal) => {
+      const found = await find(link, cookies, signal);
+      if (link.kind === "post" && link.code === "C2") await slowDown();
+      return found;
+    };
+    expect(await read()).toEqual({ type: "rateLimited" });
     expect(so.read).toEqual(["C1", "C2"]);
     expect(so.closed).toEqual(["sample.user", "sample.user"]);
+  });
+
+  it("opens no page for a read already called off", async () => {
+    const so = fakeSignedOut({ C1: [item("a")] });
+    const c = await start({}, null, so.deps);
+    let gaps = 0;
+    const gap = async () => {
+      gaps++;
+    };
+    const called = new AbortController();
+    called.abort();
+    expect(await c["profiles"].readFirstPosts("sample.user", { gap, signal: called.signal })).toEqual({ type: "failed", message: "Cancelled." });
+    expect(gaps).toBe(0);
+    expect(so.opened).toEqual([]);
   });
 
   it("puts a link's items in their account's folder, highlights under it, and in Instagram when that is switched off", async () => {
