@@ -1,6 +1,10 @@
 import { existsSync, promises as fsp } from "node:fs";
 import path from "node:path";
 import {
+  API_VERSION,
+  APP_ID,
+  type ApiLaunch,
+  type InstagramLoginResult,
   CATEGORY_LABELS,
   EXTENSION_ORIGIN,
   categorize,
@@ -39,17 +43,18 @@ import {
   type PendingItem,
   type Result,
   type Settings,
-  type StreamOrigin,
   type BrowserCookie,
   SavedError,
   parseInstagramLink,
 } from "@turbodl/shared";
+import { apiToken, writeApiFile } from "./api-file";
+import type { ApiHandlers } from "./api-routes";
 import { createBridgeServer, type BridgeServer } from "./bridge-server";
 import { HttpDownloadTask } from "./engine/download-task";
 import { delay } from "./engine/http";
 import { fetchMedia } from "./instagram/fetch-media";
-import { itemFolder } from "./instagram/folders";
-import { Backups } from "./instagram/backups";
+import { itemDownload } from "./instagram/item-download";
+import { Backups, type StartResult } from "./instagram/backups";
 import { LedgerStore } from "./instagram/ledger";
 import { InstagramPacer } from "./instagram/pacer";
 import { ProfileIndex } from "./instagram/profile-index";
@@ -57,11 +62,18 @@ import { ProfileService, type ProfileSource } from "./instagram/profile-service"
 import { httpGet, type HttpGet } from "./instagram/saved-client";
 import { SavedService } from "./instagram/saved-service";
 import type { FindOutcome } from "./instagram/finder";
-import { instagramExtension } from "./instagram/files";
 import { InstagramSession, type Crypt } from "./instagram/session";
 import { probe } from "./engine/probe";
+import { Gate } from "./jobs/gate";
+import { runInstagramJob } from "./jobs/instagram-job";
+import { InstagramLane } from "./jobs/instagram-lane";
+import { Jobs } from "./jobs/jobs";
+import { jobKindOf } from "./jobs/kind";
+import type { JobRecord } from "./jobs/job-record";
+import { runWebJob } from "./jobs/web-job";
 import { DownloadManager, type StateFile } from "./manager";
 import { cookiesFromHeader, withCookieFile } from "./media/cookies";
+import { pageDownload, streamDownload } from "./media/new-download";
 import { createResolver, streamOptions, type Resolved } from "./media/resolve";
 import { StreamTask } from "./media/stream-task";
 import { ToolManager, type ToolPaths } from "./media/tools";
@@ -100,6 +112,8 @@ export interface ControllerOptions {
   ytdlpCommand?: YtdlpCommand;
   /** Instagram: reading pages, signing in, keeping the session (Electron in the app, stand-ins in tests) */
   instagram?: InstagramDeps;
+  /** how API clients start this app in the background, written to api.json (default: this executable, hidden) */
+  launch?: ApiLaunch;
 }
 
 export interface InstagramDeps {
@@ -180,6 +194,8 @@ function newId(): string {
 }
 
 const HTTP_URL = /^https?:\/\//i;
+/** file, page and stream jobs that may probe or ask yt-dlp at once */
+const WEB_JOB_SLOTS = 3;
 
 export class AppController {
   settings: Settings;
@@ -192,6 +208,8 @@ export class AppController {
   private readonly pending = new Map<string, PendingItem>();
   private bridge: BridgeServer | null = null;
   private bridgeStatus: BridgeStatus = { ok: false, port: 0 };
+  /** the token api.json holds, which the API asks for */
+  private apiToken = "";
   private countdown: CountdownState | null = null;
   private ownClipboardText: string | null = null;
   private readonly instagram: InstagramDeps;
@@ -209,6 +227,12 @@ export class AppController {
   private readonly profiles: ProfileService;
   /** the screen the last link asked for, until the main window takes it */
   private openRequest: OpenRequest | null = null;
+  /** the jobs the API runs */
+  readonly jobs: Jobs;
+  /** Instagram jobs' backups one at a time, and their page reads 3–6 s apart */
+  private readonly lane: InstagramLane;
+  /** file, page and stream jobs probing or asking yt-dlp at once, at most */
+  private readonly webSlots = new Gate(WEB_JOB_SLOTS);
 
   constructor(private readonly o: ControllerOptions) {
     this.instagram = o.instagram ?? NO_INSTAGRAM;
@@ -257,6 +281,14 @@ export class AppController {
       baseDir: () => this.settings.baseDir,
       now: () => (ig.now ? ig.now() : Date.now()),
     });
+    this.lane = new InstagramLane({
+      wait,
+      now: () => (ig.now ? ig.now() : Date.now()),
+      random: Math.random,
+      held: () => this.pacer.held(),
+      settled: () => this.backups.settled(),
+    });
+    this.jobs = new Jobs({ run: (job) => this.runJob(job) });
     this.defaults = defaultSettings(o.downloadsDir);
     this.settingsStore = new JsonStore<Settings>(path.join(o.userDataDir, "settings.json"));
     this.settings = normalizeSettings(this.settingsStore.load(() => this.defaults), this.defaults);
@@ -475,31 +507,20 @@ export class AppController {
     if (chosen.length === 0) return { ok: false, error: "Nothing was picked." };
     const fallback = p.link.kind === "post" ? p.link.code : p.link.kind === "story" ? p.link.item : p.link.kind === "highlight" ? p.link.id : "instagram";
     // each item into its account's folder when downloads are kept per account
-    const where = { baseDir: this.settings.baseDir, byAccount: this.settings.instagramByAccount, highlight: p.link.kind === "highlight" };
-    const named = chosen.map((item, k) => ({
-      item,
-      dir: itemFolder(p.defaultDir, item, where),
-      filename: sanitizeFilename(`${item.mediaId ?? `${fallback}-${k + 1}`}.${instagramExtension(item)}`),
-    }));
+    const target = {
+      defaultDir: p.defaultDir,
+      baseDir: this.settings.baseDir,
+      byAccount: this.settings.instagramByAccount,
+      highlight: p.link.kind === "highlight",
+      fallback,
+      pageUrl: p.pageUrl,
+      agent: this.instagram.agent,
+    };
+    const named = chosen.map((item, k) => itemDownload(item, k, target));
     // a profile's or its highlights' picks go where their backups go: what is there already isn't downloaded again
     const fresh = p.keepsFolder ? named.filter(({ dir, filename }) => !existsSync(path.join(dir, filename))) : named;
     if (fresh.length === 0) return { ok: false, error: `These are already in ${p.keepsFolder}.` };
-    fresh.forEach(({ item, dir, filename }) => {
-      this.manager.add(
-        {
-          kind: "http",
-          url: item.url,
-          pageUrl: p.pageUrl,
-          filename,
-          dir,
-          category: item.kind === "video" ? "video" : "images",
-          size: null,
-          resumable: true,
-          headers: { Referer: "https://www.instagram.com/", ...(this.instagram.agent ? { "User-Agent": this.instagram.agent } : {}) },
-        },
-        mode,
-      );
-    });
+    fresh.forEach((download) => this.manager.add(download, mode));
     this.forgetInstagram(pendingId);
     this.finishPending(pendingId);
     return { ok: true };
@@ -548,7 +569,7 @@ export class AppController {
     return this.saved.plan(collectionId);
   }
 
-  async startBackup(collectionId: string): Promise<Result> {
+  async startBackup(collectionId: string): Promise<StartResult> {
     return this.saved.startBackup(collectionId);
   }
 
@@ -612,7 +633,7 @@ export class AppController {
     return this.profiles.highlightsPlan(username);
   }
 
-  startHighlightsBackup(username: string): Promise<Result> {
+  startHighlightsBackup(username: string): Promise<StartResult> {
     return this.profiles.startHighlightsBackup(username);
   }
 
@@ -620,7 +641,7 @@ export class AppController {
     return this.profiles.plan(username);
   }
 
-  startProfileBackup(username: string): Promise<Result> {
+  startProfileBackup(username: string): Promise<StartResult> {
     return this.profiles.startBackup(username);
   }
 
@@ -733,23 +754,14 @@ export class AppController {
     const base = sanitizeFilename(p.title || "video");
     let item: NewDownload;
     if (choice.kind === "format") {
-      const audio = choice.option.audioOnly;
-      item = {
-        kind: "stream",
-        url: p.pageUrl,
+      item = pageDownload({
         pageUrl: p.pageUrl,
-        filename: `${base}.${audio ? "mp3" : "mp4"}`,
+        title: p.title,
+        option: choice.option,
         dir,
-        category: audio ? "music" : "video",
-        size: null,
-        resumable: true,
         headers: withoutCookie(p.headers),
-        stream: {
-          origin: { type: "ytdlp", pageUrl: p.pageUrl, formatSelector: choice.option.formatSelector, ...(p.useLogin ? { cookies: p.cookieJar } : {}) },
-          output: audio ? "mp3" : "mp4",
-          tracks: [],
-        },
-      };
+        ...(p.useLogin && p.cookieJar ? { cookies: p.cookieJar } : {}),
+      });
     } else {
       const media = p.items[choice.index];
       if (!media) return { ok: false, error: "The selected media was not found." };
@@ -775,23 +787,7 @@ export class AppController {
           headers,
         };
       } else if (choice.option) {
-        const audio = choice.option.audioOnly;
-        const origin: StreamOrigin =
-          media.kind === "hls"
-            ? { type: "hls", url: media.url, variant: choice.option.id === "media" ? null : choice.option.formatSelector }
-            : { type: "dash", url: media.url, video: audio ? null : choice.option.formatSelector, audio: null };
-        item = {
-          kind: "stream",
-          url: media.url,
-          pageUrl: p.pageUrl,
-          filename: `${base}.${audio ? "mp3" : "mp4"}`,
-          dir,
-          category: audio ? "music" : "video",
-          size: null,
-          resumable: true,
-          headers,
-          stream: { origin, output: audio ? "mp3" : "mp4", tracks: [] },
-        };
+        item = streamDownload({ url: media.url, pageUrl: p.pageUrl, kind: media.kind, title: p.title, option: choice.option, dir, headers });
       } else {
         const cookies = cookiesFromHeader(media.cookies, media.url);
         item = {
@@ -910,7 +906,69 @@ export class AppController {
     this.o.ui.closePending(pendingId);
   }
 
+  /** Does one API job: file, page and stream links as downloads; Instagram's links, profiles and Saved as Instagram jobs. */
+  private async runJob(job: JobRecord): Promise<void> {
+    const { url } = job.request;
+    const link = jobKindOf(url) === "file" ? null : parseInstagramLink(url);
+    if (link) {
+      await runInstagramJob(job, link, {
+        session: this.instagramSession,
+        find: (l, signal) => this.instagram.find(l, this.instagramSession.cookies(), signal),
+        profiles: this.profiles,
+        saved: this.saved,
+        backups: this.backups,
+        pacer: this.pacer,
+        lane: this.lane,
+        manager: this.manager,
+        settings: () => this.settings,
+        agent: this.instagram.agent,
+      });
+      return;
+    }
+    if (isInstagramPage(url)) {
+      job.end({ state: "failed", reason: "unsupported", error: "TurboDL opens Instagram posts, reels, stories, highlights, profiles and Saved." });
+      return;
+    }
+    await runWebJob(job, {
+      manager: this.manager,
+      probe: (u) => probe(u, {}, undefined, 15000),
+      mediaInfo: async (pageUrl) => fetchMediaInfo(await this.tools.ensure(), pageUrl, {}, { command: this.o.ytdlpCommand, cookieFile: null }),
+      streamOptions: (kind, u) => streamOptions(kind, u, {}),
+      categoryDir: (category) => this.categoryDir(category),
+      slots: this.webSlots,
+    });
+  }
+
+  /** What the bridge serves the jobs API from; the Instagram name is only what the app already holds. */
+  private apiHandlers(): ApiHandlers {
+    return {
+      token: () => this.apiToken,
+      info: async () => {
+        const signedIn = this.instagramSession.signedIn();
+        const username = signedIn ? this.saved.knownUsername() : undefined;
+        return { app: APP_ID, version: this.o.version, api: API_VERSION, instagram: { signedIn, ...(username ? { username } : {}) } };
+      },
+      createJob: (request) => this.jobs.create(request),
+      jobs: () => this.jobs.list(),
+      job: (id) => this.jobs.get(id),
+      cancelJob: (id) => this.jobs.cancel(id),
+      subscribe: (id, listener) => this.jobs.subscribe(id, listener),
+      instagramLogin: async () => {
+        await this.instagramSignIn();
+        return this.instagramApiAccount();
+      },
+      instagramLogout: () => this.instagramSignOut(),
+    };
+  }
+
+  private async instagramApiAccount(): Promise<InstagramLoginResult> {
+    const account = await this.instagramAccount();
+    return account.signedIn ? { signedIn: true, ...(account.username ? { username: account.username } : {}) } : { signedIn: false };
+  }
+
   private async startBridge(): Promise<void> {
+    // the API has its token before the bridge listens
+    if (!this.apiToken) this.apiToken = apiToken(this.o.userDataDir);
     const port = this.settings.bridgePort;
     const server = createBridgeServer({
       version: this.o.version,
@@ -918,6 +976,7 @@ export class AppController {
       getConfig: () => this.bridgeConfig(),
       onDownload: (req) => this.handleDownloadRequest(req),
       onMedia: (req) => this.handleMediaRequest(req),
+      api: this.apiHandlers(),
     });
     try {
       await server.listen(port);
@@ -934,6 +993,19 @@ export class AppController {
             ? `Port ${port} is used by another program. Choose another port in Settings.`
             : `Could not start the browser bridge: ${message(err)}`,
       };
+    }
+    try {
+      await writeApiFile({
+        userDataDir: this.o.userDataDir,
+        version: this.o.version,
+        port: this.bridgeStatus.ok ? port : null,
+        error: this.bridgeStatus.error,
+        launch: this.o.launch ?? { file: process.execPath, args: ["--hidden"] },
+        token: this.apiToken,
+      });
+    } catch (err) {
+      // clients can't find the app without api.json, but the app itself still works
+      console.error(`Could not write api.json: ${message(err)}`);
     }
     this.o.ui.broadcast({ type: "bridge", status: this.bridgeStatus });
   }

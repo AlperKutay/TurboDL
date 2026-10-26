@@ -22,12 +22,24 @@ export interface BackupsDeps {
   onBackup(view: BackupView): void;
 }
 
+/** Why a backup didn't start. */
+export type StartReason = "signInRequired" | "private" | "rateLimited" | "busy" | "empty" | "error";
+/** A Result whose failures say why (still a Result for the screens). */
+export type StartResult = { ok: true } | { ok: false; error: string; reason: StartReason };
+
+/** Someone following the backups besides the screens (a job): every view a run reports, every file it puts in the folder. */
+export interface BackupWatcher {
+  view?(view: BackupView): void;
+  file?(targetId: string, file: string, existing: boolean): void;
+}
+
 /** The account's one backup slot, Saved's collections and profiles alike: one backup at a time. */
 export class Backups {
   private run: BackupRun | null = null;
   private starting = false;
   /** how the last backup is started again (Continue) */
   private again: (() => Promise<Result>) | null = null;
+  private readonly watchers = new Set<BackupWatcher>();
 
   constructor(private readonly deps: BackupsDeps) {}
 
@@ -39,18 +51,29 @@ export class Backups {
    * Starts `target`; refused while another runs. A stopped run records its last item before this one reads the ledger.
    * `again` starts it once more, for Continue.
    */
-  async start(target: BackupTarget, page: BackupDeps["page"], again: () => Promise<Result>): Promise<Result> {
-    if (this.isRunning()) return { ok: false, error: "A backup is already running." };
+  async start(target: BackupTarget, page: BackupDeps["page"], again: () => Promise<Result>): Promise<StartResult> {
+    if (this.isRunning()) return { ok: false, error: "A backup is already running.", reason: "busy" };
     this.starting = true;
     try {
       await this.run?.settled();
-      if (this.deps.held()) return { ok: false, error: SLOW_DOWN };
+      if (this.deps.held()) return { ok: false, error: SLOW_DOWN, reason: "rateLimited" };
       const run: BackupRun = new BackupRun(
         target,
-        { page, fetch: this.deps.fetch, ledgers: this.deps.ledgers, wait: (ms, signal) => this.deps.wait(ms, signal), headers: this.deps.headers() },
+        {
+          page,
+          fetch: this.deps.fetch,
+          ledgers: this.deps.ledgers,
+          wait: (ms, signal) => this.deps.wait(ms, signal),
+          headers: this.deps.headers(),
+          onFile: (file, existing) => {
+            if (this.run === run) this.tell((watcher) => watcher.file?.(target.id, file, existing));
+          },
+        },
         // a run replaced by a newer one reports nothing more
         (view) => {
-          if (this.run === run) this.deps.onBackup(view);
+          if (this.run !== run) return;
+          this.deps.onBackup(view);
+          this.tell((watcher) => watcher.view?.(view));
         },
       );
       this.run = run;
@@ -65,6 +88,14 @@ export class Backups {
   /** Starts the last backup again, whatever it backs up. */
   continueLast(): Promise<Result> {
     return this.again ? this.again() : Promise.resolve({ ok: false, error: "There is no backup to continue." });
+  }
+
+  /** Tells `watcher` every view and file of the backups from now on, until the returned function is called. */
+  watch(watcher: BackupWatcher): () => void {
+    this.watchers.add(watcher);
+    return () => {
+      this.watchers.delete(watcher);
+    };
   }
 
   /** Resolves once the item in flight is dropped. */
@@ -98,6 +129,17 @@ export class Backups {
       large: (count ?? 0) > LARGE,
       resumes: ledger.saved.length > 0 && !ledger.reachedEnd,
     };
+  }
+
+  /** Tells every watcher; one that throws keeps neither the others nor the run from going on. */
+  private tell(each: (watcher: BackupWatcher) => void): void {
+    for (const watcher of [...this.watchers]) {
+      try {
+        each(watcher);
+      } catch {
+        // the watcher's own trouble
+      }
+    }
   }
 }
 

@@ -44,6 +44,7 @@ function setup(o: Setup = {}) {
   const waits: number[] = [];
   const views: BackupView[] = [];
   const cleaned: string[] = [];
+  const files: { file: string; existing: boolean }[] = [];
   const target: BackupTarget = {
     id: "102",
     kind: "collection",
@@ -83,10 +84,11 @@ function setup(o: Setup = {}) {
       },
       random: () => (o.randoms && o.randoms.length > 1 ? (o.randoms.shift() as number) : (o.randoms?.[0] ?? 0.5)),
       headers: { Referer: "https://www.instagram.com/" },
+      onFile: (file, existing) => files.push({ file, existing }),
     },
     (view) => views.push(view),
   );
-  return { run, asked, fetched, waits, views, ledgers, target, cleaned };
+  return { run, asked, fetched, waits, views, ledgers, target, cleaned, files };
 }
 
 describe("BackupRun", () => {
@@ -173,6 +175,19 @@ describe("BackupRun", () => {
     await run.start();
     expect(fetched).not.toContain("https://cdn.example/11.jpg");
     expect(ledgers.load("102").saved).toContain("11");
+  });
+
+  it("reports each item it puts in the folder, and the ones already there", async () => {
+    const { run, files, target } = setup({ failing: ["https://cdn.example/12.mp4"] });
+    mkdirSync(target.dir, { recursive: true });
+    writeFileSync(path.join(target.dir, "11.jpg"), "x");
+    await run.start();
+    // 12 failed: nothing of it is in the folder
+    expect(files).toEqual([
+      { file: path.join(target.dir, "11.jpg"), existing: true },
+      { file: path.join(target.dir, "2.jpg"), existing: false },
+      { file: path.join(target.dir, "3.jpg"), existing: false },
+    ]);
   });
 
   it("counts a post that shows nothing as failed, tried again next run, and goes on", async () => {

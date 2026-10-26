@@ -1,6 +1,7 @@
 import { existsSync } from "node:fs";
-import { BrowserWindow, clipboard, dialog, ipcMain, shell, type OpenDialogOptions } from "electron";
+import { app, BrowserWindow, clipboard, dialog, ipcMain, shell, type OpenDialogOptions } from "electron";
 import { RELEASES_URL, type DownloadDecision, type MediaChoice, type MediaDecision, type SavedSource, type Settings } from "@turbodl/shared";
+import { cliStatus, installCli, realCliDeps, removeCli } from "./cli-install";
 import type { AppController } from "./controller";
 
 export const EVENT_CHANNEL = "turbodl:event";
@@ -87,6 +88,10 @@ export function registerIpc(c: AppController): void {
     if (result.ok) await shell.openPath(result.path);
     return result;
   });
+  const cliDeps = () => realCliDeps({ platform: process.platform, userDataDir: app.getPath("userData"), supported: app.isPackaged && !process.env.TURBODL_USER_DATA });
+  handle("cliStatus", () => cliStatus(cliDeps()));
+  handle("installCli", () => installCli(cliDeps()));
+  handle("removeCli", () => removeCli(cliDeps()));
   handle("copyText", (text: string) => {
     c.noteOwnClipboardText(String(text));
     return clipboard.writeText(String(text));

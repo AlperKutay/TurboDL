@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import http from "node:http";
 import type { AddressInfo } from "node:net";
 import {
@@ -12,6 +13,7 @@ import {
   type MediaKind,
   type MediaRequest,
 } from "@turbodl/shared";
+import { handleApi, isApiPath, isHttpUrl, isObj, readBody, type ApiHandlers } from "./api-routes";
 
 export interface BridgeHandlers {
   version: string;
@@ -19,6 +21,8 @@ export interface BridgeHandlers {
   getConfig(): BridgeConfig;
   onDownload(req: DownloadRequest): Promise<DownloadResponse>;
   onMedia(req: MediaRequest): Promise<void>;
+  /** The token-protected jobs API; its routes answer 404 when absent. */
+  api?: ApiHandlers;
 }
 
 export interface BridgeServer {
@@ -26,24 +30,15 @@ export interface BridgeServer {
   close(): Promise<void>;
 }
 
-const MAX_BODY = 1024 * 1024;
 const SOURCES: CaptureSource[] = ["intercept", "context-menu", "media", "manual"];
 const KINDS: MediaKind[] = ["file", "hls", "dash"];
 
-type Obj = Record<string, unknown>;
-
-function isObj(v: unknown): v is Obj {
-  return typeof v === "object" && v !== null && !Array.isArray(v);
-}
-
-function isHttpUrl(v: unknown): v is string {
-  if (typeof v !== "string" || v.length > 16_000) return false;
-  try {
-    const u = new URL(v);
-    return u.protocol === "http:" || u.protocol === "https:";
-  } catch {
-    return false;
-  }
+/** True when the Authorization header is `Bearer <token>`; compared in constant time. */
+function hasToken(header: string | undefined, token: string): boolean {
+  if (token === "") return false;
+  const given = Buffer.from(header ?? "");
+  const wanted = Buffer.from(`Bearer ${token}`);
+  return given.length === wanted.length && crypto.timingSafeEqual(given, wanted);
 }
 
 function optString(v: unknown, max = 16_000): string | undefined {
@@ -141,21 +136,6 @@ export function parseMediaRequest(v: unknown): MediaRequest | string {
   return out;
 }
 
-function readBody(req: http.IncomingMessage): Promise<string | null> {
-  return new Promise((resolve, reject) => {
-    const chunks: Buffer[] = [];
-    let size = 0;
-    let tooBig = false;
-    req.on("data", (chunk: Buffer) => {
-      size += chunk.length;
-      if (size > MAX_BODY) tooBig = true;
-      else chunks.push(chunk);
-    });
-    req.on("end", () => resolve(tooBig ? null : Buffer.concat(chunks).toString("utf8")));
-    req.on("error", reject);
-  });
-}
-
 export function createBridgeServer(h: BridgeHandlers): BridgeServer {
   let port = 0;
 
@@ -177,6 +157,14 @@ export function createBridgeServer(h: BridgeHandlers): BridgeServer {
     const handle = async () => {
       const host = req.headers.host ?? "";
       if (host !== `127.0.0.1:${port}` && host !== `localhost:${port}`) return send(403, { error: "host" });
+      const path = (req.url ?? "").split("?")[0];
+      if (h.api && isApiPath(path) && (req.method === "GET" || req.method === "POST")) {
+        // clients without a browser send no Origin; a website's Origin is refused even with the token
+        if ((origin !== undefined && !allowed) || !hasToken(req.headers.authorization, h.api.token())) {
+          return send(403, { error: "token" });
+        }
+        return handleApi(req, res, path, h.api);
+      }
       if (!allowed) return send(403, { error: "origin" });
       if (req.method === "OPTIONS") {
         res.writeHead(204, {
@@ -189,7 +177,6 @@ export function createBridgeServer(h: BridgeHandlers): BridgeServer {
         return;
       }
 
-      const path = (req.url ?? "").split("?")[0];
       // Chrome omits Origin on GETs from an extension, so the extension uses POST; GET stays for tools.
       const read = req.method === "GET" || req.method === "POST";
       if (read && path === "/v1/ping") return send(200, { app: APP_ID, version: h.version });

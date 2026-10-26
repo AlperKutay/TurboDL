@@ -6,13 +6,12 @@ import {
   type BackupPlan,
   type InstagramAccount,
   type InstagramItem,
-  type Result,
   type SavedCollection,
   type SavedPageResult,
   type SavedPost,
   type SavedSource,
 } from "@turbodl/shared";
-import type { Backups } from "./backups";
+import type { Backups, StartResult } from "./backups";
 import { failedPage, type InstagramPacer } from "./pacer";
 import { SavedClient, type HttpGet } from "./saved-client";
 import type { InstagramSession } from "./session";
@@ -69,6 +68,13 @@ export class SavedService {
     } catch {
       return undefined;
     }
+  }
+
+  /** The account's username as far as the app already knows it (memory, then the collections cache); never asks Instagram. */
+  knownUsername(): string | undefined {
+    const session = this.deps.session.cookies().find((c) => c.name === "sessionid")?.value ?? "";
+    if (this.account?.session === session) return this.account.username;
+    return this.readCache()?.username;
   }
 
   async signOut(): Promise<void> {
@@ -147,10 +153,10 @@ export class SavedService {
   }
 
   /** Starts backing up one of the account's own collections, in the account's one backup slot. */
-  async startBackup(collectionId: string): Promise<Result> {
-    if (this.deps.backups.isRunning()) return { ok: false, error: "A backup is already running." };
+  async startBackup(collectionId: string): Promise<StartResult> {
+    if (this.deps.backups.isRunning()) return { ok: false, error: "A backup is already running.", reason: "busy" };
     const collection = this.collection(collectionId);
-    if (!collection || collection.isAll) return { ok: false, error: "Only your own collections can be backed up." };
+    if (!collection || collection.isAll) return { ok: false, error: "Only your own collections can be backed up.", reason: "error" };
     const { pacer } = this.deps;
     const source: SavedSource = { kind: "collection", id: collection.id };
     return this.deps.backups.start(
@@ -174,7 +180,8 @@ export class SavedService {
   private async username(): Promise<string> {
     const session = this.deps.session.cookies().find((c) => c.name === "sessionid")?.value ?? "";
     if (this.account?.session === session) return this.account.username;
-    const username = await this.client.username();
+    // a slow-down on it holds the whole account, though its callers answer with what they already have
+    const username = await this.deps.pacer.ask(() => this.client.username());
     this.account = { session, username };
     return username;
   }

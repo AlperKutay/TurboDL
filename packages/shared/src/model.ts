@@ -246,6 +246,8 @@ export interface MediaFormatOption {
   label: string;
   formatSelector: string;
   audioOnly: boolean;
+  /** Pixel height of a video quality, when known. */
+  height?: number;
 }
 
 export type MediaChoice = { kind: "item"; index: number; option?: MediaFormatOption } | { kind: "format"; option: MediaFormatOption };
@@ -284,6 +286,13 @@ export type AppEvent =
   | { type: "openProfile"; username: string };
 
 export type Result = { ok: true } | { ok: false; error: string };
+
+/** Whether the `turbodl` command is on the PATH: `supported` only in the installed app, `where` the folder or link it lives at. */
+export interface CliStatus {
+  supported: boolean;
+  installed: boolean;
+  where: string;
+}
 
 export type DownloadDecision = { filename: string; dir: string; mode: "now" | "later" };
 export type MediaDecision = { dir: string; mode: "now" | "later" };
@@ -349,6 +358,9 @@ export interface TurboApi {
   startHighlightsBackup(username: string): Promise<Result>;
   cancelCountdown(): Promise<void>;
   installExtension(): Promise<InstallResult>;
+  cliStatus(): Promise<CliStatus>;
+  installCli(): Promise<Result>;
+  removeCli(): Promise<Result>;
   copyText(text: string): Promise<void>;
   openReleasesPage(): Promise<void>;
   readClipboardText(): Promise<string>;

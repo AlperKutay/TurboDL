@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { Notification, app, clipboard, safeStorage, shell, type Tray } from "electron";
 import { ClipboardWatcher } from "./clipboard-watcher";
+import { clientLaunch } from "./api-file";
 import { AppController } from "./controller";
 import { chromeAgent } from "./instagram/agent";
 import { DEMO_COOKIE, demoInstagram } from "./instagram/demo";
@@ -11,9 +12,10 @@ import { ProfileFeed } from "./instagram/profile-feed";
 import { ElectronInstagramPage, allowTestSite, instagramSession } from "./instagram/page";
 import { signInToInstagram } from "./instagram/signin";
 import { EVENT_CHANNEL, broadcast, registerIpc } from "./ipc";
+import { writeCliLauncher } from "./cli-install";
 import { isBackgroundLaunch, registerNativeHost } from "./native-host";
 import { CompletionNotifier, notificationIdentity, revealDownload } from "./notifications";
-import { appIconPath, extensionSourceDir, ffmpegPath, nativeHostScript, trayIconPath } from "./paths";
+import { appIconPath, cliLauncherExe, cliScript, extensionSourceDir, ffmpegPath, nativeHostScript, trayIconPath } from "./paths";
 import { createTray } from "./tray";
 import { WindowManager } from "./windows";
 
@@ -73,6 +75,7 @@ async function start(): Promise<void> {
   windows = wm;
   const c = new AppController({
     version: app.getVersion(),
+    launch: clientLaunch({ platform: process.platform, execPath: process.execPath, isPackaged: app.isPackaged, appPath: app.getAppPath() }),
     userDataDir: app.getPath("userData"),
     downloadsDir: app.getPath("downloads"),
     documentsDir: app.getPath("documents"),
@@ -117,6 +120,11 @@ async function start(): Promise<void> {
       execPath: process.execPath,
       hostScript: nativeHostScript(),
     }).catch((err: unknown) => console.warn("Could not register the browser launcher:", err));
+    try {
+      writeCliLauncher({ platform: process.platform, userDataDir: app.getPath("userData"), execPath: process.execPath, script: cliScript(), launcherExe: cliLauncherExe() });
+    } catch (err) {
+      console.warn("Could not write the turbodl launcher:", err);
+    }
   }
   await c.init();
   watcher = new ClipboardWatcher({ read: () => clipboard.readText(), onText: (text) => void c.handleClipboardText(text) });

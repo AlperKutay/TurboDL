@@ -180,7 +180,7 @@ export function hlsOptions(master: HlsMaster): MediaFormatOption[] {
   return [
     ...chosen.map((v) => {
       const key = variantKey(v);
-      return { id: key, label: qualityLabel(v.height, v.frameRate, v.bandwidth), formatSelector: key, audioOnly: false };
+      return { id: key, label: qualityLabel(v.height, v.frameRate, v.bandwidth), formatSelector: key, audioOnly: false, ...(v.height !== null ? { height: v.height } : {}) };
     }),
     AUDIO_ONLY,
   ];

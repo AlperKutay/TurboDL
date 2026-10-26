@@ -34,3 +34,15 @@ export function ffmpegPath(): string | null {
 export function nativeHostScript(): string {
   return path.join(resourcesRoot(), "native-host", "host.cjs");
 }
+
+function cliDir(): string {
+  return app.isPackaged ? path.join(process.resourcesPath, "cli") : path.join(app.getAppPath(), "out", "cli");
+}
+
+export function cliScript(): string {
+  return path.join(cliDir(), "turbodl.cjs");
+}
+
+export function cliLauncherExe(): string {
+  return path.join(cliDir(), "turbodl.exe");
+}

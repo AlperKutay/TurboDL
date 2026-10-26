@@ -36,6 +36,12 @@ jobs:
       - name: Unit tests
         run: pnpm test
         continue-on-error: true
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Python client tests
+        run: pnpm test:python
+        continue-on-error: true
       - run: pnpm build
       # macOS: signed with the Developer ID certificate and notarized by Apple when the secrets are set (ad hoc otherwise)
       - name: Apple's notarization key

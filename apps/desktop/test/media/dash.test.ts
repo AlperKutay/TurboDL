@@ -55,9 +55,9 @@ describe("parseMpd", () => {
 
   it("offers one quality per height plus audio only", () => {
     expect(dashOptions(parseMpd(AKAMAI, URL_AKAMAI))).toEqual([
-      { id: "bbb_30fps_1920x1080_8000k", label: "1080p · 9.9 Mbps", formatSelector: "bbb_30fps_1920x1080_8000k", audioOnly: false },
-      { id: "bbb_30fps_1280x720_4000k", label: "720p · 5.0 Mbps", formatSelector: "bbb_30fps_1280x720_4000k", audioOnly: false },
-      { id: "bbb_30fps_320x180_400k", label: "180p · 0.5 Mbps", formatSelector: "bbb_30fps_320x180_400k", audioOnly: false },
+      { id: "bbb_30fps_1920x1080_8000k", label: "1080p · 9.9 Mbps", formatSelector: "bbb_30fps_1920x1080_8000k", audioOnly: false, height: 1080 },
+      { id: "bbb_30fps_1280x720_4000k", label: "720p · 5.0 Mbps", formatSelector: "bbb_30fps_1280x720_4000k", audioOnly: false, height: 720 },
+      { id: "bbb_30fps_320x180_400k", label: "180p · 0.5 Mbps", formatSelector: "bbb_30fps_320x180_400k", audioOnly: false, height: 180 },
       { id: "audio", label: "Audio only (MP3)", formatSelector: "audio", audioOnly: true },
     ]);
   });

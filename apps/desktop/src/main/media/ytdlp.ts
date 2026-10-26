@@ -137,7 +137,7 @@ export function formatOptionsFromInfo(info: unknown): { title: string; options: 
   }
   const options: MediaFormatOption[] = [...heights]
     .sort((a, b) => b - a)
-    .map((h) => ({ id: `h${h}`, label: `${h}p${h >= 2160 ? " (4K)" : ""}`, formatSelector: heightSelector(h), audioOnly: false }));
+    .map((h) => ({ id: `h${h}`, label: `${h}p${h >= 2160 ? " (4K)" : ""}`, formatSelector: heightSelector(h), audioOnly: false, height: h }));
   if (options.length === 0) options.push({ id: "best", label: "Best quality", formatSelector: DEFAULT_FORMAT, audioOnly: false });
   options.push({ id: "audio", label: "Audio only (MP3)", formatSelector: AUDIO_FORMAT, audioOnly: true });
   return { title, options };

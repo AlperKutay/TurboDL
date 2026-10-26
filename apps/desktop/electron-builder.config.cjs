@@ -14,12 +14,13 @@ module.exports = {
   appId: "com.turbodl.app",
   productName: "TurboDL",
   directories: { output: "release", buildResources: "build" },
-  files: ["out/**/*", "package.json"],
+  files: ["out/**/*", "!out/cli/**", "package.json"],
   npmRebuild: false,
   extraResources: [
     { from: "resources/icons", to: "icons" },
     { from: "../extension/dist", to: "extension" },
     { from: "resources/native-host", to: "native-host" },
+    { from: "out/cli", to: "cli" },
     { from: ffmpegDir, to: "ffmpeg", filter: ["ffmpeg", "ffmpeg.exe"] },
   ],
   win: {

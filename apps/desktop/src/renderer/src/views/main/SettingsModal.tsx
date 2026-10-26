@@ -1,5 +1,5 @@
-import { useState } from "react";
-import type { InstallResult, Settings } from "@turbodl/shared";
+import { useEffect, useState } from "react";
+import type { CliStatus, InstallResult, Result, Settings } from "@turbodl/shared";
 import { api } from "../../api";
 import { Modal } from "../../components/Modal";
 
@@ -16,6 +16,28 @@ export function SettingsModal({ settings, version, onClose }: { settings: Settin
   const [minKb, setMinKb] = useState(String(Math.round(settings.minCaptureSize / 1024)));
   const [install, setInstall] = useState<InstallResult | null>(null);
   const [saving, setSaving] = useState(false);
+  const [cli, setCli] = useState<CliStatus | null>(null);
+  const [cliError, setCliError] = useState("");
+
+  const [cliBusy, setCliBusy] = useState(false);
+
+  useEffect(() => {
+    api.cliStatus().then(setCli, () => setCliError("Couldn't read the command line status."));
+  }, []);
+
+  const changeCli = async (action: () => Promise<Result>) => {
+    setCliBusy(true);
+    try {
+      const result = await action();
+      setCliError(result.ok ? "" : result.error);
+      setCli(await api.cliStatus());
+    } catch {
+      setCliError("Couldn't change the command line tool.");
+    } finally {
+      setCliBusy(false);
+    }
+  };
+
   const set = <K extends keyof Settings>(key: K, value: Settings[K]) => setDraft((d) => ({ ...d, [key]: value }));
 
   const save = async () => {
@@ -151,6 +173,30 @@ export function SettingsModal({ settings, version, onClose }: { settings: Settin
         Put Instagram downloads in a folder per account
       </label>
       <p className="muted field-note">Instagram › account (its highlights in Instagram › account › Highlights). Off: single links and Saved picks go to Instagram.</p>
+
+      <h3>Command line</h3>
+      <div className="install-box">
+        {cli && !cli.supported && <p className="muted">Available in the installed app.</p>}
+        {cli?.supported && !cli.installed && (
+          <>
+            <button type="button" className="btn" disabled={cliBusy} onClick={() => void changeCli(api.installCli)}>
+              Install command line tool
+            </button>
+            <p className="muted">Adds the turbodl command to your PATH.</p>
+          </>
+        )}
+        {cli?.supported && cli.installed && (
+          <>
+            <p className="muted">
+              The turbodl command is installed ({cli.where}). Open a new terminal and run <code>turbodl --help</code>.
+            </p>
+            <button type="button" className="btn" disabled={cliBusy} onClick={() => void changeCli(api.removeCli)}>
+              Remove
+            </button>
+          </>
+        )}
+        {cliError && <p className="error-text">{cliError}</p>}
+      </div>
 
       <h3>System</h3>
       <label className="check">

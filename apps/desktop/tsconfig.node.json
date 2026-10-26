@@ -4,5 +4,5 @@
     "lib": ["ES2023", "DOM"],
     "types": ["node", "chrome"]
   },
-  "include": ["src/main/**/*", "src/preload/**/*", "test/**/*", "e2e/**/*", "electron.vite.config.ts", "vitest.config.ts", "playwright.config.ts"]
+  "include": ["src/main/**/*", "src/preload/**/*", "src/cli/**/*", "test/**/*", "e2e/**/*", "electron.vite.config.ts", "vitest.config.ts", "playwright.config.ts"]
 }
