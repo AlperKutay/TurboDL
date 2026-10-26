@@ -115,7 +115,7 @@ class ClientTests(ClientCase):
     def test_reads_jobs_with_non_ascii_paths(self) -> None:
         t = self.serve()
         path = "C:\\Users\\Çağrı\\a.jpg"
-        self.stub.jobs["j9"] = make_job("j9", files=[path], state="ended", reason="done", failedItems=2, endedAt=5)
+        self.stub.jobs["j9"] = make_job("j9", files=[path], state="done", reason="done", failedItems=2, endedAt=5)
         job = t.job("j9")
         self.assertEqual(job.files, [path])
         self.assertEqual((job.failed_items, job.ended_at, job.ended), (2, 5, True))
@@ -127,7 +127,7 @@ class ClientTests(ClientCase):
         self.stub.jobs["j1"]["state"] = "running"
         self.assertEqual(job.refresh().state, "running")
         self.assertEqual(job.cancel().reason, "stopped")
-        self.assertEqual(t.cancel("j1").state, "ended")
+        self.assertEqual(t.cancel("j1").state, "cancelled")
 
     def test_unknown_job(self) -> None:
         t = self.serve()

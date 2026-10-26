@@ -1,14 +1,18 @@
 """The TurboDL client: finds the app, starts it when needed, and talks to its local API."""
 
 import os
-from typing import Any, Dict, List, Optional
+import time
+from typing import Any, Callable, Dict, Iterator, List, Optional
 
 from . import _discover
-from ._http import request
+from ._http import request, stream_lines
 from .errors import TurboDLError
 from .job import Job
 
 API_VERSION = 1
+# When an events stream closes without `end`, how long the app gets to answer again before it counts as quit.
+RECONNECT_WINDOW = 5.0
+RECONNECT_POLL = 0.25
 
 
 class TurboDL:
@@ -74,6 +78,30 @@ class TurboDL:
 
     def _job_call(self, method: str, path: str, id: str) -> Dict[str, Any]:
         return request(self._port, self._token, method, path, not_found="No job %s." % id)["job"]
+
+    def _stream(self, id: str, deadline: Optional[float]) -> Iterator[Dict[str, Any]]:
+        return stream_lines(self._port, self._token, "/v1/jobs/" + id + "/events", deadline, "No job %s." % id)
+
+    def _reconnect(self) -> bool:
+        """Looks api.json up again (the app may have restarted on another port) for up to RECONNECT_WINDOW seconds."""
+        began = time.monotonic()
+        while True:
+            file = _discover.read_api_file(self._folder)
+            if file is not None and file.get("port") is not None and _discover._ping(file["port"], file["token"]):
+                self._port, self._token = file["port"], file["token"]
+                return True
+            if time.monotonic() - began >= RECONNECT_WINDOW:
+                return False
+            time.sleep(RECONNECT_POLL)
+
+    def get(self, url: str, dir: Optional[str] = None, name: Optional[str] = None, *, audio: bool = False,
+            max_height: Optional[int] = None, highlights: bool = False, highlights_only: bool = False,
+            collections: Optional[List[str]] = None, all_collections: bool = False,
+            on_event: Optional[Callable[[Dict[str, Any]], None]] = None) -> Job:
+        """Queues a link and waits for it: the finished Job, or the exception for how it ended."""
+        job = self.add(url, dir, name, audio=audio, max_height=max_height, highlights=highlights,
+                       highlights_only=highlights_only, collections=collections, all_collections=all_collections)
+        return job.wait(on_event=on_event)
 
     def instagram_login(self) -> Dict[str, Any]:
         """Opens TurboDL's Instagram sign-in and waits for it: {"signed_in": bool, "username": Optional[str]}."""

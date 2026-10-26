@@ -44,6 +44,7 @@ class StubApi:
         self.api = api
         self.jobs = {}  # type: Dict[str, Dict[str, Any]]
         self.posted = []  # type: List[Dict[str, Any]]
+        self.cancelled = []  # type: List[str]
         self.events = {}  # type: Dict[str, queue.Queue]
         self.instagram = {"signedIn": True, "username": "alper"}
         self.fail_add = None  # type: Optional[str]
@@ -93,7 +94,8 @@ class StubApi:
                     if len(parts) == 4 and not post:
                         return self.send(200, {"job": job})
                     if len(parts) == 5 and parts[4] == "cancel" and post:
-                        job["state"] = "ended"
+                        stub.cancelled.append(job["id"])
+                        job["state"] = "cancelled"
                         job["reason"] = "stopped"
                         return self.send(200, {"job": job})
                     if len(parts) == 5 and parts[4] == "events" and not post:
@@ -118,7 +120,7 @@ class StubApi:
         self.server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
         self.server.daemon_threads = True
         self.port = self.server.server_address[1]
-        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread = threading.Thread(target=self.server.serve_forever, kwargs={"poll_interval": 0.02}, daemon=True)
 
     def start(self) -> "StubApi":
         self.thread.start()
