@@ -78,7 +78,7 @@ describe("ApiClient", () => {
   });
 
   it("turns a 400 into an ApiError with the API's message", async () => {
-    await expect(client.createJob({ url: "" })).rejects.toMatchObject({ status: 400, message: expect.any(String) });
+    await expect(client.createJob({ url: "ftp://nope" })).rejects.toMatchObject({ status: 400, message: "url" });
   });
 
   it("returns null for an unknown job", async () => {
@@ -131,5 +131,31 @@ describe("ApiClient", () => {
     expect(err).toBeInstanceOf(ApiError);
     expect(err).toMatchObject({ status: 0, message: "Lost the connection to TurboDL." });
     expect(await ping({ port: closed, token: TOKEN })).toBe(false);
+  });
+  it("rejects events for an unknown job and for a wrong token", async () => {
+    await expect(client.events("nope")[Symbol.asyncIterator]().next()).rejects.toMatchObject({ status: 404, message: "not found" });
+    const bad = new ApiClient({ port, token: "wrong" });
+    await expect(bad.events("j")[Symbol.asyncIterator]().next()).rejects.toMatchObject({ status: 403, message: "TurboDL refused the key in api.json." });
+  });
+
+  it("reassembles a line and a multi-byte character split across chunks", async () => {
+    const NL = String.fromCharCode(10);
+    const event: JobEvent = { type: "warning", message: "café 日本", jobId: "j" };
+    const bytes = Buffer.from(JSON.stringify(event) + NL + JSON.stringify({ type: "state", state: "done", jobId: "j" }) + NL, "utf8");
+    // cut inside the two-byte "é"
+    const cut = bytes.indexOf(Buffer.from("é", "utf8")) + 1;
+    const raw = http.createServer((_req, res) => {
+      res.writeHead(200, { "Content-Type": "application/x-ndjson" });
+      res.write(bytes.subarray(0, cut));
+      setTimeout(() => res.end(bytes.subarray(cut)), 30);
+    });
+    const rawPort = await new Promise<number>((r) => raw.listen(0, "127.0.0.1", () => r((raw.address() as { port: number }).port)));
+    try {
+      const got: JobEvent[] = [];
+      for await (const e of new ApiClient({ port: rawPort, token: TOKEN }).events("j")) got.push(e);
+      expect(got).toEqual([event, { type: "state", state: "done", jobId: "j" }]);
+    } finally {
+      raw.close();
+    }
   });
 });

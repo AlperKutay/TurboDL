@@ -39,6 +39,8 @@ export interface ConnectDeps {
 const NEVER_OPENED = "TurboDL hasn't been opened on this computer yet. Open it once, then try again.";
 const PORT_FALLBACK = "TurboDL couldn't open its local port. Pick another port in TurboDL's Settings.";
 const POLL_MS = 250;
+/** How long a file that says `port: null` gets to change after the start before its message is returned. */
+const PORT_GRACE_MS = 5000;
 
 /** The running app, or the app started from api.json's `launch` and waited for. */
 export async function connect(d: ConnectDeps): Promise<Connection | { error: string }> {
@@ -55,6 +57,7 @@ export async function connect(d: ConnectDeps): Promise<Connection | { error: str
     file = readApiFile(d.dir) ?? file;
     if (file.port === null) {
       portError = file.error || PORT_FALLBACK;
+      if (d.now() - start >= PORT_GRACE_MS) return { error: portError };
       continue;
     }
     portError = undefined;

@@ -104,6 +104,33 @@ describe("connect", () => {
     expect(r).toEqual({ error: "Port 47123 is used by another program. Choose another port in Settings." });
   });
 
+  it("answers a taken port after the 5 s grace, not the full wait", async () => {
+    write({ port: null, error: "taken" });
+    const c = clock();
+    let spawned = 0;
+    const r = await connect({ dir, spawn: () => void spawned++, ping: async () => true, ...c });
+    expect(r).toEqual({ error: "taken" });
+    expect(spawned).toBe(1);
+    expect(c.now()).toBeGreaterThanOrEqual(5000);
+    expect(c.now()).toBeLessThan(6000);
+  });
+
+  it("connects when the port appears within the grace", async () => {
+    write({ port: null });
+    const c = clock();
+    const r = await connect({
+      dir,
+      spawn: () => undefined,
+      ping: async () => true,
+      now: c.now,
+      sleep: async (ms) => {
+        await c.sleep(ms);
+        if (c.now() >= 3000) write({ port: 7000 });
+      },
+    });
+    expect(r).toEqual({ port: 7000, token: "tok" });
+  });
+
   it("falls back to the fixed port message without an app message", async () => {
     write({ port: null });
     const r = await connect({ dir, spawn: () => undefined, ping: async () => true, ...clock() });
