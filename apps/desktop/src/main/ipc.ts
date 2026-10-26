@@ -92,7 +92,7 @@ export function registerIpc(c: AppController): void {
   handle("cliStatus", () => cliStatus(cliDeps()));
   handle("installCli", () => installCli(cliDeps()));
   handle("removeCli", () => removeCli(cliDeps()));
-  handle("copyText",(text: string) => {
+  handle("copyText", (text: string) => {
     c.noteOwnClipboardText(String(text));
     return clipboard.writeText(String(text));
   });

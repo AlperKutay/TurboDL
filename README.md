@@ -24,7 +24,7 @@ turbodl get https://www.instagram.com/someone/              # a profile's posts
 turbodl get https://www.instagram.com/someone/ --highlights # ... and its highlights
 turbodl get https://www.instagram.com/someone/ --highlights-only
 turbodl get https://www.instagram.com/someone/saved/ --collection "Travel"   # a Saved collection (repeat the option, or use --all-collections)
-turbodl get https://x.com/someone/status/123 --dir ~/Videos # an X link into a folder
+turbodl get https://x.com/someone/status/123 --dir D:\Videos   # an X link into a folder
 turbodl add https://example.com/a.zip https://example.com/b.zip   # queue and return at once; prints the job ids
 turbodl wait <id> [<id>...]                                 # wait until queued jobs finish
 turbodl list                                                # all jobs
@@ -38,7 +38,7 @@ Other options for `get` and `add`: `--name <file>` (one link only), `--audio`, `
 - Instagram downloads always go to TurboDL's Instagram folders, whatever `--dir` says.
 - Without signing in (`turbodl instagram login`), a profile gives only the first posts Instagram shows visitors, and the command ends with exit code 3.
 - `--json` prints one JSON object per line, for scripts.
-- Ctrl+C cancels the jobs that `get` is waiting for; a second Ctrl+C gives up at once.
+- Ctrl+C in `get` or `wait` cancels the jobs it is waiting for; a second Ctrl+C gives up at once.
 
 | Exit code | Meaning |
 | --- | --- |

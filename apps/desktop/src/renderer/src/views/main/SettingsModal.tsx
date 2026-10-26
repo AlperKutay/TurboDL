@@ -19,14 +19,23 @@ export function SettingsModal({ settings, version, onClose }: { settings: Settin
   const [cli, setCli] = useState<CliStatus | null>(null);
   const [cliError, setCliError] = useState("");
 
+  const [cliBusy, setCliBusy] = useState(false);
+
   useEffect(() => {
-    void api.cliStatus().then(setCli);
+    api.cliStatus().then(setCli, () => setCliError("Couldn't read the command line status."));
   }, []);
 
   const changeCli = async (action: () => Promise<Result>) => {
-    const result = await action();
-    setCliError(result.ok ? "" : result.error);
-    setCli(await api.cliStatus());
+    setCliBusy(true);
+    try {
+      const result = await action();
+      setCliError(result.ok ? "" : result.error);
+      setCli(await api.cliStatus());
+    } catch {
+      setCliError("Couldn't change the command line tool.");
+    } finally {
+      setCliBusy(false);
+    }
   };
 
   const set = <K extends keyof Settings>(key: K, value: Settings[K]) => setDraft((d) => ({ ...d, [key]: value }));
@@ -170,7 +179,7 @@ export function SettingsModal({ settings, version, onClose }: { settings: Settin
         {cli && !cli.supported && <p className="muted">Available in the installed app.</p>}
         {cli?.supported && !cli.installed && (
           <>
-            <button type="button" className="btn" onClick={() => void changeCli(api.installCli)}>
+            <button type="button" className="btn" disabled={cliBusy} onClick={() => void changeCli(api.installCli)}>
               Install command line tool
             </button>
             <p className="muted">Adds the turbodl command to your PATH.</p>
@@ -181,7 +190,7 @@ export function SettingsModal({ settings, version, onClose }: { settings: Settin
             <p className="muted">
               The turbodl command is installed ({cli.where}). Open a new terminal and run <code>turbodl --help</code>.
             </p>
-            <button type="button" className="btn" onClick={() => void changeCli(api.removeCli)}>
+            <button type="button" className="btn" disabled={cliBusy} onClick={() => void changeCli(api.removeCli)}>
               Remove
             </button>
           </>
