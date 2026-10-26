@@ -7,7 +7,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
 import { SavedError, type AppEvent, type BackupView, type BrowserCookie, type InstagramItem, type InstagramProfile, type PendingItem, type SavedPost } from "@turbodl/shared";
 import { AppController, type ControllerUi, type InstagramDeps } from "../src/main/controller";
 import type { FindOutcome } from "../src/main/instagram/finder";
-import { PUBLIC_PROFILE, fakeProfiles, fakeSignedOut, savedGet } from "./fixtures/instagram-fakes";
+import { PUBLIC_PROFILE, fakeProfiles, fakeSignedOut, savedGet, signedOutCover } from "./fixtures/instagram-fakes";
 import { FFMPEG, makeClips, serveFolder, type Clips } from "./fixtures/media";
 import { startTestServer, type TestServer } from "./fixtures/test-server";
 
@@ -934,9 +934,7 @@ describe("Instagram profiles", () => {
       },
       { hangFetch: true },
     );
-    const c = await start({}, null, ig.deps);
-    expect(await c.startProfileBackup("sample.user")).toEqual({ ok: false, error: "Sign in to Instagram to back up a profile.", reason: "signInRequired" });
-    c.instagramSession.take(sessionJar);
+    const c = await signedIn(ig.deps);
     expect(await c.startProfileBackup("nobody")).toEqual({ ok: false, error: "Instagram's answer couldn't be read.", reason: "error" });
     expect(await c.startProfileBackup("shut.door")).toEqual({ ok: false, error: "This account is private.", reason: "private" });
     expect(await c.startHighlightsBackup("no.highlights")).toEqual({ ok: false, error: "This profile has no highlights.", reason: "empty" });
@@ -948,36 +946,6 @@ describe("Instagram profiles", () => {
     expect(await c.startHighlightsBackup("sample.user")).toEqual(busy);
     expect(await c.startBackup("102")).toEqual(busy);
     await c.stopBackup();
-  });
-
-  it("reads a profile's first posts on a page of its own, leaving the screen's page open", async () => {
-    const ig = fakeProfiles({ "sample.user": SAMPLE, "other.user": { profile: person("53", "other.user"), pages: [[photo("3")]] } });
-    const c = await signedIn(ig.deps);
-    await c.profileLoad("sample.user");
-    const read = <T>(fn: () => Promise<T>) => fn();
-    expect(await c["profiles"].readFirstPosts("other.user", { read })).toEqual({ type: "items", profile: person("53", "other.user"), items: photo("3").items, limited: false, posts: 1, failed: 0 });
-    expect(await c["profiles"].readFirstPosts("Sample.User", { read })).toEqual({
-      type: "items",
-      profile: SAMPLE.profile,
-      items: [...photo("1").items, ...photo("2").items],
-      limited: false,
-      posts: 2,
-      failed: 0,
-    });
-    // the reads' own two pages, each closed once read; the screen's page is still the open profile's
-    expect(ig.opened).toEqual(["sample.user", "other.user", "sample.user"]);
-    expect(ig.closed).toEqual(["other.user", "sample.user"]);
-    expect((await c.profilePage("sample.user")).type).toBe("page");
-  });
-
-  it("reads nothing of a private profile, and closes the page it opened whatever the answer", async () => {
-    const ig = fakeProfiles({ "shut.door": { profile: person("52", "shut.door", { isPrivate: true }), pages: [[photo("1")]] } });
-    const c = await signedIn(ig.deps);
-    const read = <T>(fn: () => Promise<T>) => fn();
-    expect(await c["profiles"].readFirstPosts("shut.door", { read })).toEqual({ type: "private" });
-    expect(await c["profiles"].readFirstPosts("nobody", { read })).toEqual({ type: "failed", message: "Instagram's answer couldn't be read." });
-    expect(ig.asked).toEqual([]);
-    expect(ig.closed).toEqual(["shut.door", "nobody"]);
   });
 
   it("keeps a backed-up profile's page open until its backup ends, even when another profile opens", async () => {
@@ -1232,8 +1200,18 @@ describe("Instagram signed out, and a folder per account", () => {
   const item = (id: string, owner = "sample.user"): InstagramItem => ({ kind: "image", url: server.url(`/ig/${id}.jpg`), mediaId: id, owner });
 
   beforeEach(() => {
-    for (const id of ["a", "b", "c"]) server.setFile(`/ig/${id}.jpg`, { data: Buffer.alloc(300, 1), contentType: "image/jpeg" });
+    for (const id of ["a", "b", "c", "d"]) server.setFile(`/ig/${id}.jpg`, { data: Buffer.alloc(300, 1), contentType: "image/jpeg" });
   });
+
+  /** sample.user seen signed out: C1 and C2 on its first page, C3 on its second */
+  const LISTING = () => [[signedOutCover("p1", "C1"), signedOutCover("p2", "C2")], [signedOutCover("p3", "C3")]];
+  /** what each of those posts' own pages shows */
+  const OWN = () => ({ C1: [item("a"), item("b")], C2: [item("c")], C3: [item("d")] });
+
+  async function backupEnds(c: AppController) {
+    for (let i = 0; i < 200 && c.snapshot().instagramBackup?.state === "running"; i++) await new Promise((r) => setTimeout(r, 25));
+    return c.snapshot().instagramBackup;
+  }
 
   it("opens a public profile without a session, as Instagram shows it to signed-out visitors", async () => {
     const so = fakeSignedOut({});
@@ -1254,112 +1232,118 @@ describe("Instagram signed out, and a folder per account", () => {
     expect(await c.openProfilePicks("sample.user", ["p2"])).toEqual({ ok: false, error: "Couldn't read these posts." });
   });
 
-  it("asks to sign in before backing up a profile seen signed out", async () => {
-    const so = fakeSignedOut({});
+  it("backs a profile up without a session, reading each post from its own page, into its username's folder", async () => {
+    const so = fakeSignedOut(OWN(), { listing: LISTING() });
+    const c = await start({}, null, so.deps);
+    expect(await c.startProfileBackup("sample.user")).toEqual({ ok: true });
+    expect(await backupEnds(c)).toMatchObject({ state: "finished", kind: "profile", name: "sample.user", done: 3, failed: 0, saved: 4 });
+    expect(readdirSync(path.join(root, "dl", "Instagram", "sample.user")).sort()).toEqual(["a.jpg", "b.jpg", "c.jpg", "d.jpg"]);
+    expect(so.opened).toEqual([{ username: "sample.user", cookies: [] }]);
+    expect(so.asked.map((a) => a.cursor)).toEqual([undefined, "1"]);
+    expect(so.read).toEqual(["C1", "C2", "C3"]);
+    expect(await c.instagramProfiles()).toMatchObject([{ id: PUBLIC_PROFILE.id, username: "sample.user", saved: 4 }]);
+    // the page it opened goes with the backup
+    expect(so.closed).toEqual(["sample.user"]);
+  });
+
+  it("reads a signed-out backup's pages one at a time in the read slot it shares, 3–6 s apart", async () => {
+    const so = fakeSignedOut(OWN(), { listing: LISTING() });
+    /** when each post's page was read, and how many were read at once at most */
+    const reads: number[] = [];
+    let reading = 0;
+    let most = 0;
+    const find = so.deps.find;
+    so.deps.find = async (link, cookies, signal) => {
+      reads.push(so.deps.now!());
+      most = Math.max(most, ++reading);
+      await new Promise((r) => setImmediate(r));
+      try {
+        return await find(link, cookies, signal);
+      } finally {
+        reading--;
+      }
+    };
     const c = await start({}, null, so.deps);
     await c.profileLoad("sample.user");
-    const signIn = { ok: false, error: "Sign in to Instagram to back up a profile.", reason: "signInRequired" };
-    expect(await c.startProfileBackup("sample.user")).toEqual(signIn);
-    expect(await c.startHighlightsBackup("sample.user")).toEqual(signIn);
+    await c.profilePage("sample.user");
+    expect(await c.startProfileBackup("sample.user")).toEqual({ ok: true });
+    // a pick read from the screen meanwhile takes its turn in the same slot
+    const picked = c.openProfilePicks("sample.user", ["p2"]);
+    expect(await backupEnds(c)).toMatchObject({ state: "finished", done: 3 });
+    expect(await picked).toEqual({ ok: true });
+    expect(so.read.filter((code) => code === "C2")).toHaveLength(2);
+    expect(most).toBe(1);
+    // the listing's next page is a page read too
+    const pages = [...reads, ...so.asked.filter((a) => a.cursor !== undefined).map((a) => a.at)].sort((x, y) => x - y);
+    expect(pages).toHaveLength(5);
+    for (let k = 1; k < pages.length; k++) expect(pages[k] - pages[k - 1]).toBeGreaterThanOrEqual(3000);
   });
 
-  it("closes the page it opened for a backup it refuses", async () => {
-    const so = fakeSignedOut({});
+  it("still refuses a private profile, with or without a session, closing the page it opened", async () => {
+    const so = fakeSignedOut(OWN(), { profile: { ...PUBLIC_PROFILE, isPrivate: true } });
     const c = await start({}, null, so.deps);
+    const shut = { ok: false, error: "This account is private.", reason: "private" };
+    expect(await c.startProfileBackup("sample.user")).toEqual(shut);
+    expect(await c.startHighlightsBackup("sample.user")).toEqual(shut);
     // signed in, yet the page came as signed-out visitors see it
     c.instagramSession.take(sessionJar);
-    const signIn = { ok: false, error: "Sign in to Instagram to back up a profile.", reason: "signInRequired" };
-    expect(await c.startProfileBackup("sample.user")).toEqual(signIn);
-    expect(await c.startHighlightsBackup("sample.user")).toEqual(signIn);
-    expect(so.opened).toHaveLength(2);
-    expect(so.closed).toEqual(["sample.user", "sample.user"]);
+    expect(await c.startProfileBackup("sample.user")).toEqual(shut);
+    expect(so.opened).toHaveLength(3);
+    expect(so.closed).toEqual(["sample.user", "sample.user", "sample.user"]);
+    expect(so.read).toEqual([]);
   });
 
-  it("reads its pages one at a time in the job's read slot and the account's pace, and counts the posts that show nothing", async () => {
-    const so = fakeSignedOut({ C1: [item("a"), item("b")] });
-    let now = 0;
-    const waits: number[] = [];
-    so.deps.now = () => now;
-    so.deps.wait = async (ms) => {
-      waits.push(ms);
-      now += ms;
-    };
-    const c = await start({}, null, so.deps);
-    /** the pages opened and closed, and posts read, as each read gets the slot */
-    const slots: { opened: number; closed: number; read: number }[] = [];
-    const read = async <T>(fn: () => Promise<T>): Promise<T> => {
-      slots.push({ opened: so.opened.length, closed: so.closed.length, read: so.read.length });
-      return fn();
-    };
-    // C2's own page shows nothing
-    expect(await c["profiles"].readFirstPosts("sample.user", { read })).toEqual({ type: "items", profile: PUBLIC_PROFILE, items: [item("a"), item("b")], limited: true, posts: 2, failed: 1 });
-    // the profile's page, then each post's own page, the profile's closed first; the account's 1.5 s between the three
-    expect(slots).toEqual([
-      { opened: 0, closed: 0, read: 0 },
-      { opened: 1, closed: 1, read: 0 },
-      { opened: 1, closed: 1, read: 1 },
-    ]);
-    expect(so.read).toEqual(["C1", "C2"]);
-    expect(waits).toEqual([1500, 1500]);
-    expect(so.closed).toEqual(["sample.user"]);
-  });
-
-  it("asks Instagram nothing while its slow-down holds, and answers rateLimited when one begins during the read", async () => {
-    const so = fakeSignedOut({ C1: [item("a")], C2: [item("b")] });
-    let now = 0;
-    so.deps.now = () => now;
-    so.deps.wait = async (ms) => {
-      now += ms;
-    };
-    const c = await start({}, null, so.deps);
-    const pacer = c["pacer"];
-    const slowDown = () => pacer.ask(() => Promise.reject(new SavedError("rateLimited"))).catch(() => undefined);
-    const slot = <T>(fn: () => Promise<T>) => fn();
-    const read = () => c["profiles"].readFirstPosts("sample.user", { read: slot });
-    // held: no page opened at all
-    await slowDown();
-    expect(await read()).toEqual({ type: "rateLimited" });
-    expect(so.opened).toEqual([]);
-    now += 2 * 60_000;
-    // a slow-down on the profile's page holds the account too
-    const open = so.deps.openProfile!;
-    so.deps.openProfile = (username, cookies) => ({
-      ...open(username, cookies),
-      profile: async () => {
-        throw new SavedError("rateLimited");
-      },
-    });
-    expect(await read()).toEqual({ type: "rateLimited" });
-    expect(pacer.held()).toBe(true);
-    expect(so.closed).toEqual(["sample.user"]);
-    now += 2 * 60_000;
-    // one that begins while the last post is read
-    so.deps.openProfile = open;
+  it("stops a signed-out backup at Instagram's login wall on a post's page, holding the account, and keeps what it saved", async () => {
+    const so = fakeSignedOut(OWN(), { listing: LISTING() });
     const find = so.deps.find;
     so.deps.find = async (link, cookies, signal) => {
       const found = await find(link, cookies, signal);
-      if (link.kind === "post" && link.code === "C2") await slowDown();
-      return found;
+      return link.kind === "post" && link.code === "C2" ? { type: "signedOut" } : found;
     };
-    expect(await read()).toEqual({ type: "rateLimited" });
+    const c = await start({}, null, so.deps);
+    expect(await c.startProfileBackup("sample.user")).toEqual({ ok: true });
+    expect(await backupEnds(c)).toMatchObject({ state: "rateLimited", done: 1, failed: 0 });
+    expect(c["pacer"].held()).toBe(true);
     expect(so.read).toEqual(["C1", "C2"]);
+    expect(so.asked.map((a) => a.cursor)).toEqual([undefined]);
+    expect(readdirSync(path.join(root, "dl", "Instagram", "sample.user")).sort()).toEqual(["a.jpg", "b.jpg"]);
+  });
+
+  it("takes a listing page that asks to sign in, without a session, for the login wall", async () => {
+    const so = fakeSignedOut(OWN(), { listing: LISTING() });
+    const open = so.deps.openProfile!;
+    so.deps.openProfile = (username, cookies) => {
+      const source = open(username, cookies);
+      return { ...source, page: (cursor, signal) => (cursor ? Promise.reject(new SavedError("signedOut")) : source.page(cursor, signal)) };
+    };
+    const c = await start({}, null, so.deps);
+    expect(await c.startProfileBackup("sample.user")).toEqual({ ok: true });
+    expect(await backupEnds(c)).toMatchObject({ state: "rateLimited", done: 2 });
+    expect(c["pacer"].held()).toBe(true);
+  });
+
+  it("takes a profile's page landing on sign-in for the login wall without a session, and for an expired session with one", async () => {
+    const so = fakeSignedOut({});
+    const open = so.deps.openProfile!;
+    so.deps.openProfile = (username, cookies) => ({ ...open(username, cookies), profile: () => Promise.reject(new SavedError("signedOut")) });
+    const c = await start({}, null, so.deps);
+    expect(await c.startProfileBackup("sample.user")).toEqual({ ok: false, error: "Instagram asked TurboDL to slow down. Try again in a few minutes.", reason: "rateLimited" });
+    expect(c["pacer"].held()).toBe(true);
+    await so.deps.wait!(2 * 60_000);
+    c.instagramSession.take(sessionJar);
+    expect(await c.startProfileBackup("sample.user")).toEqual({ ok: false, error: "Sign in to Instagram again.", reason: "signInRequired" });
+    expect(c["pacer"].held()).toBe(false);
     expect(so.closed).toEqual(["sample.user", "sample.user"]);
   });
 
-  it("holds the account when a signed-out post page lands on Instagram's login wall, and answers signed out when a session expired", async () => {
+  it("answers signed out, holding nothing, when a post's or highlight's page lands on sign-in with a session", async () => {
     const so = fakeSignedOut({});
     so.deps.find = async () => ({ type: "signedOut" });
     const c = await start({}, null, so.deps);
-    const slot = <T>(fn: () => Promise<T>) => fn();
-    // no session: the wall holds the pacer
-    expect(await c["profiles"].readFirstPosts("sample.user", { read: slot })).toEqual({ type: "rateLimited" });
-    expect(c["pacer"].held()).toBe(true);
-    // a session that no longer works: signed out, no hold
-    const expired = await start({}, null, { ...so.deps });
-    expired.instagramSession.take(sessionJar);
-    await expect(expired["profiles"]["deps"].findPost("C1")).rejects.toMatchObject({ kind: "signedOut" });
-    await expect(expired["profiles"]["deps"].findHighlight("17900000000000002")).rejects.toMatchObject({ kind: "signedOut" });
-    expect(expired["pacer"].held()).toBe(false);
+    c.instagramSession.take(sessionJar);
+    await expect(c["profiles"]["deps"].findPost("C1")).rejects.toMatchObject({ kind: "signedOut" });
+    await expect(c["profiles"]["deps"].findHighlight("17900000000000002")).rejects.toMatchObject({ kind: "signedOut" });
+    expect(c["pacer"].held()).toBe(false);
   });
 
   it("passes a post shown only to signed-in visitors through, and shows it to the picker as signed out", async () => {
@@ -1370,21 +1354,6 @@ describe("Instagram signed out, and a folder per account", () => {
     expect(c["pacer"].held()).toBe(false);
     await c.handleDownloadRequest({ url: "https://www.instagram.com/p/C1abcDEF/", source: "manual" });
     expect(await c.findInstagram(ui.opened[0].pendingId)).toEqual({ type: "signedOut" });
-  });
-
-  it("opens no page for a read already called off", async () => {
-    const so = fakeSignedOut({ C1: [item("a")] });
-    const c = await start({}, null, so.deps);
-    let reads = 0;
-    const read = async <T>(fn: () => Promise<T>): Promise<T> => {
-      reads++;
-      return fn();
-    };
-    const called = new AbortController();
-    called.abort();
-    expect(await c["profiles"].readFirstPosts("sample.user", { read, signal: called.signal })).toEqual({ type: "failed", message: "Cancelled." });
-    expect(reads).toBe(0);
-    expect(so.opened).toEqual([]);
   });
 
   it("puts a link's items in their account's folder, highlights under it, and in Instagram when that is switched off", async () => {

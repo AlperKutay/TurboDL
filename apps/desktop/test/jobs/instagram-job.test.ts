@@ -362,23 +362,20 @@ describe("Instagram profile jobs", () => {
     expect(opened[1] - opened[0]).toBeLessThanOrEqual(6000);
   });
 
-  it("saves a signed-out profile's first posts, limited, and says highlights need sign-in", async () => {
+  it("backs a signed-out profile's posts up, and says highlights need sign-in", async () => {
     const so = fakeSignedOut({ C1: [item("a", "sample.user"), item("b", "sample.user")], C2: [item("c", "sample.user")] });
     const c = await start(so.deps);
     const job = await run(c, { url: PROFILE_URL, options: { highlights: true } });
-    expect(job).toMatchObject({
-      state: "done",
-      limited: true,
-      reason: "signInRequired",
-      warnings: ["Signed out: only the first 2 posts Instagram shows visitors. Sign in to Instagram for the rest.", "Highlights need you signed in to Instagram."],
-    });
+    expect(job).toMatchObject({ state: "done", failedItems: 0 });
+    expect(job.limited).toBeUndefined();
+    expect(job.warnings).toEqual([expect.stringMatching(/^Backing up every post/), "Highlights need you signed in to Instagram."]);
     expect(sorted(job.files)).toEqual([dl("sample.user", "a.jpg"), dl("sample.user", "b.jpg"), dl("sample.user", "c.jpg")]);
     expect(so.closed).toEqual(["sample.user"]);
     expect(await run(c, { url: PROFILE_URL, options: { highlightsOnly: true } })).toMatchObject({ state: "failed", reason: "signInRequired", error: "Highlights need you signed in to Instagram." });
     expect(so.opened).toHaveLength(1);
   });
 
-  it("ends failed when the signed-out read couldn't read every post, the rest saved", async () => {
+  it("ends failed when a signed-out backup couldn't read every post, the rest saved", async () => {
     // C2's own page shows nothing
     const so = fakeSignedOut({ C1: [item("a", "sample.user"), item("b", "sample.user")] });
     const c = await start(so.deps);
@@ -386,9 +383,8 @@ describe("Instagram profile jobs", () => {
     expect(job).toMatchObject({
       state: "failed",
       reason: "error",
-      error: "1 post couldn't be read.",
+      error: "1 post couldn't be saved; it's tried again on the next run.",
       failedItems: 1,
-      warnings: ["Signed out: only the first 2 posts Instagram shows visitors. Sign in to Instagram for the rest."],
     });
     expect(sorted(job.files)).toEqual([dl("sample.user", "a.jpg"), dl("sample.user", "b.jpg")]);
   });

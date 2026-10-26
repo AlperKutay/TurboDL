@@ -25,8 +25,8 @@ describe("ProfileIndex", () => {
     const { ledgers, index } = setup();
     index.record(person("51", "first.one"), 1000);
     index.record(person("52", "second.one"), 2000);
-    ledgers.save("profile-51", { saved: ["a", "b"], failedPosts: [], reachedEnd: true });
-    ledgers.save("highlights-51", { saved: ["c"], failedPosts: [], reachedEnd: true });
+    ledgers.save("profile-51", { saved: ["a", "b"], failedPosts: [], reachedEnd: true, donePosts: [], signInPosts: [] });
+    ledgers.save("highlights-51", { saved: ["c"], failedPosts: [], reachedEnd: true, donePosts: [], signInPosts: [] });
     expect(index.list()).toEqual([
       { id: "52", username: "second.one", fullName: "Name second.one", picture: "https://cdn.example/52.jpg", lastRun: 2000, saved: 0 },
       { id: "51", username: "first.one", fullName: "Name first.one", picture: "https://cdn.example/51.jpg", lastRun: 1000, saved: 3 },
@@ -44,9 +44,9 @@ describe("ProfileIndex", () => {
     const { ledgers, index } = setup();
     index.record(person("51", "first.one"), 1000);
     index.record(person("52", "second.one"), 2000);
-    ledgers.save("profile-51", { saved: ["a"], failedPosts: [], reachedEnd: true });
-    ledgers.save("highlights-51", { saved: ["c"], failedPosts: [], reachedEnd: true });
-    ledgers.save("profile-52", { saved: ["z"], failedPosts: [], reachedEnd: true });
+    ledgers.save("profile-51", { saved: ["a"], failedPosts: [], reachedEnd: true, donePosts: [], signInPosts: [] });
+    ledgers.save("highlights-51", { saved: ["c"], failedPosts: [], reachedEnd: true, donePosts: [], signInPosts: [] });
+    ledgers.save("profile-52", { saved: ["z"], failedPosts: [], reachedEnd: true, donePosts: [], signInPosts: [] });
     index.remove("51");
     expect(index.list().map((e) => e.id)).toEqual(["52"]);
     expect([ledgers.load("profile-51").saved, ledgers.load("highlights-51").saved, ledgers.load("profile-52").saved]).toEqual([[], [], ["z"]]);

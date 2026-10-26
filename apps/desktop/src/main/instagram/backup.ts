@@ -19,6 +19,8 @@ export interface BackupTarget {
   allowsEarlyStop: boolean;
   /** ms before each next page, picked at random in the range, where a page costs more than a feed request */
   pageGap?: [number, number];
+  /** the listing's end counts only when it listed at least 90% of `count` (a profile seen signed out may list fewer) */
+  checkCount?: boolean;
 }
 
 export interface BackupDeps {
@@ -34,11 +36,18 @@ export interface BackupDeps {
   headers: Record<string, string>;
   /** each item put in the folder: fetched now, or found there already */
   onFile?(file: string, existing: boolean): void;
+  /**
+   * A post known only by its cover (`unread`, a profile seen signed out), read from its own page: with its items,
+   * `signInOnly`, or with none. Throws SavedError when Instagram pushes back (its login wall is a slow-down).
+   */
+  read?(post: SavedPost, signal: AbortSignal): Promise<SavedPost>;
 }
 
 /** ms between posts fetched (picked at random in the range) and before each next page, as the iPhone app waits. */
 const POST_GAP: [number, number] = [1500, 3000];
 const PAGE_GAP = 2000;
+/** the share of the post count a listing must reach for its end to count, when the target checks it */
+const LISTED_ENOUGH = 0.9;
 /** ms between progress reports while an item is fetched */
 const PROGRESS_EVERY = 100;
 
@@ -52,6 +61,9 @@ export class BackupRun {
   private done = 0;
   private failed = 0;
   private saved = 0;
+  /** posts left for a sign-in */
+  private signInOnly = 0;
+  private warning?: string;
   private cover?: string;
   private progress = 0;
   private lastReport = 0;
@@ -74,10 +86,12 @@ export class BackupRun {
       ...(this.error ? { error: this.error } : {}),
       done: this.done,
       failed: this.failed,
-      ...(count !== undefined ? { left: Math.max(count - this.done - this.failed, 0) } : {}),
+      ...(count !== undefined ? { left: Math.max(count - this.done - this.failed - this.signInOnly, 0) } : {}),
       saved: this.saved,
       ...(this.cover ? { cover: this.cover } : {}),
       progress: this.progress,
+      ...(this.signInOnly > 0 ? { signInOnly: this.signInOnly } : {}),
+      ...(this.warning ? { warning: this.warning } : {}),
     };
   }
 
@@ -93,7 +107,7 @@ export class BackupRun {
     if (this.stopper) return;
     const stopper = new AbortController();
     this.stopper = stopper;
-    Object.assign(this, { state: "running", error: undefined, done: 0, failed: 0, saved: 0, cover: undefined, progress: 0 });
+    Object.assign(this, { state: "running", error: undefined, done: 0, failed: 0, saved: 0, signInOnly: 0, warning: undefined, cover: undefined, progress: 0 });
     this.report();
     this.running = this.run(stopper.signal)
       .catch((err: unknown) => {
@@ -132,15 +146,34 @@ export class BackupRun {
     const ledger = deps.ledgers.load(target.id);
     const saved = new Set(ledger.saved);
     const failedPosts = new Set(ledger.failedPosts);
+    // new stories land in old highlights: a highlight is never done by its id, only by the stories it shows now
+    const byId = target.kind !== "highlights";
+    const donePosts = new Set(byId ? ledger.donePosts : []);
+    const signInPosts = new Set(ledger.signInPosts);
+    /** the posts left for a sign-in that this run met */
+    const met = new Set<string>();
     let reachedEnd = ledger.reachedEnd;
-    const record = () => deps.ledgers.save(target.id, { saved: [...saved], failedPosts: [...failedPosts], reachedEnd });
-    // a post with nothing to save (a highlight whose page showed nothing) is never done
-    const isDone = (post: SavedPost) => post.items.length > 0 && post.items.every((item) => saved.has(itemId(post, item)));
+    const record = () =>
+      deps.ledgers.save(target.id, { saved: [...saved], failedPosts: [...failedPosts], reachedEnd, donePosts: [...donePosts], signInPosts: [...signInPosts] });
+    // a post with nothing to save (a highlight whose page showed nothing) is done only by its id
+    const isDone = (post: SavedPost) => donePosts.has(post.id) || (post.items.length > 0 && post.items.every((item) => saved.has(itemId(post, item))));
+    /** the post is done: neither failed nor waiting for a sign-in any more; true when that is news for the ledger */
+    const finish = (post: SavedPost): boolean => {
+      const failedBefore = failedPosts.delete(post.id);
+      const waited = signInPosts.delete(post.id);
+      const known = !byId || donePosts.has(post.id);
+      if (byId) donePosts.add(post.id);
+      return failedBefore || waited || !known;
+    };
     const random = deps.random ?? Math.random;
     // a new draw before each page, so the pages never come at a steady beat
     const pageGap = () => (target.pageGap ? target.pageGap[0] + random() * (target.pageGap[1] - target.pageGap[0]) : PAGE_GAP);
-    // newest posts come first, so after a clean complete pass a page already saved means nothing new is below it
-    const earlyStop = target.allowsEarlyStop && allowsEarlyStop(ledger);
+    // newest posts come first, so after a clean complete pass a page already saved means nothing new is below it; a
+    // run that reads no post's page (signed in) goes all the way while posts wait for a sign-in, to save them
+    const earlyStop = target.allowsEarlyStop && allowsEarlyStop(ledger) && (deps.read !== undefined || signInPosts.size === 0);
+    // read from its page signed out, a post only signed-in visitors see is as far as a run gets with it
+    const settled = (post: SavedPost) => isDone(post) || (post.unread === true && signInPosts.has(post.id));
+    let listed = 0;
     let cursor: string | undefined;
     for (;;) {
       if (cursor !== undefined) await this.pause(pageGap(), signal);
@@ -150,19 +183,55 @@ export class BackupRun {
         page = await deps.page(cursor, signal);
       } catch (err) {
         if (signal.aborted) return;
-        if (err instanceof SavedError && (err.kind === "signedOut" || err.kind === "rateLimited")) this.state = err.kind;
-        else throw err;
+        this.pushedBack(err);
         return;
       }
-      if (earlyStop && page.posts.every(isDone)) {
-        // this page and everything below it were saved before
-        const below = this.done + page.posts.length;
-        this.done = target.count !== undefined ? Math.max(target.count - this.failed, below) : below;
+      if (earlyStop && page.posts.every(settled)) {
+        // this page and everything below it were saved before (or wait for a sign-in, as the ledger knows)
+        this.signInOnly = signInPosts.size;
+        const below = this.done + page.posts.filter(isDone).length;
+        this.done = target.count !== undefined ? Math.max(target.count - this.failed - this.signInOnly, below) : below;
         this.state = "finished";
         return;
       }
-      for (const post of page.posts) {
+      listed += page.posts.length;
+      for (const listedPost of page.posts) {
         if (signal.aborted) return;
+        let post = listedPost;
+        if (isDone(post)) {
+          this.done++;
+          if (finish(post)) record();
+          this.report();
+          continue;
+        }
+        if (post.unread && signInPosts.has(post.id)) {
+          // not read again signed out: its page would only ask to sign in
+          met.add(post.id);
+          this.signInOnly = met.size;
+          this.report();
+          continue;
+        }
+        if (post.unread && deps.read) {
+          this.cover = post.cover;
+          this.report();
+          try {
+            post = await deps.read(post, signal);
+          } catch (err) {
+            if (signal.aborted) return;
+            this.pushedBack(err);
+            return;
+          }
+          if (signal.aborted) return;
+          if (post.signInOnly) {
+            signInPosts.add(post.id);
+            failedPosts.delete(post.id);
+            met.add(post.id);
+            this.signInOnly = met.size;
+            record();
+            this.report();
+            continue;
+          }
+        }
         if (post.items.length === 0) {
           // nothing came back for it: not done, tried again next run
           failedPosts.add(post.id);
@@ -172,7 +241,9 @@ export class BackupRun {
           continue;
         }
         if (isDone(post)) {
+          // saved before, known by its items once read
           this.done++;
+          if (finish(post)) record();
           this.report();
           continue;
         }
@@ -196,7 +267,7 @@ export class BackupRun {
           failedPosts.add(post.id);
           this.failed++;
         } else {
-          failedPosts.delete(post.id);
+          finish(post);
           this.done++;
         }
         record();
@@ -204,13 +275,24 @@ export class BackupRun {
         if (asked) await this.pause(POST_GAP[0] + random() * (POST_GAP[1] - POST_GAP[0]), signal);
       }
       if (!page.next) {
-        reachedEnd = true;
+        // Instagram's end of the listing; checked against the count where a listing may end short
+        const short = target.checkCount === true && target.count !== undefined && listed < target.count * LISTED_ENOUGH;
+        if (short) this.warning = `Instagram listed ${listed} of ${target.count} posts.`;
+        reachedEnd = !short;
+        // a whole pass met every post still there: the others left for a sign-in are gone, or were saved
+        for (const id of signInPosts) if (!met.has(id)) signInPosts.delete(id);
         record();
         this.state = "finished";
         return;
       }
       cursor = page.next;
     }
+  }
+
+  /** Instagram pushing back ends the run in its state (signed out, slow down); anything else fails it. */
+  private pushedBack(err: unknown): void {
+    if (err instanceof SavedError && (err.kind === "signedOut" || err.kind === "rateLimited")) this.state = err.kind;
+    else throw err;
   }
 
   /** One item into the collection's folder; a file already there counts as saved. */

@@ -56,13 +56,20 @@ export function fakeProfiles(profiles: Record<string, { profile: InstagramProfil
 export const PUBLIC_PROFILE: InstagramProfile = { id: "5100000000000000001", username: "sample.user", fullName: "Sample User", isPrivate: false, following: false };
 
 /** A post a profile's page shows signed out: only its cover, its items read from its own page. */
-const cover = (id: string, code: string): SavedPost => ({ id, code, cover: `https://cdn.example/${id}.jpg`, items: [], unread: true, mediaType: 8 });
+export const signedOutCover = (id: string, code: string): SavedPost => ({ id, code, cover: `https://cdn.example/${id}.jpg`, items: [], unread: true, mediaType: 8 });
 
-/** A public profile seen signed out (covers only), and post or highlight pages that show `pages[code or id]`. */
-export function fakeSignedOut(pages: Record<string, InstagramItem[]>) {
+/**
+ * A public profile seen signed out (covers only: `listing`, page by page; p1 and p2 on one page unless given), and
+ * post or highlight pages that show `pages[code or id]`. Its clock moves only when something waits.
+ */
+export function fakeSignedOut(pages: Record<string, InstagramItem[]>, o: { listing?: SavedPost[][]; profile?: InstagramProfile } = {}) {
+  let now = 0;
+  const listing = o.listing ?? [[signedOutCover("p1", "C1"), signedOutCover("p2", "C2")]];
   const opened: { username: string; cookies: string[] }[] = [];
   const closed: string[] = [];
   const read: string[] = [];
+  /** each page of the listing asked for, with the fake clock's time */
+  const asked: { cursor?: string; at: number }[] = [];
   const deps: InstagramDeps = {
     find: async (link) => {
       const key = link.kind === "post" ? link.code : link.kind === "highlight" ? link.id : link.kind;
@@ -73,21 +80,28 @@ export function fakeSignedOut(pages: Record<string, InstagramItem[]>) {
     signIn: async () => null,
     crypt: { available: () => false, encrypt: (t: string) => Buffer.from(t), decrypt: (b: Buffer) => b.toString() },
     agent: "TestAgent/1",
-    wait: async () => undefined,
+    wait: async (ms) => {
+      now += ms;
+    },
+    now: () => now,
     fetch: async (_url, file) => writeFileSync(file, "x"),
     openProfile: (username, cookies) => {
       opened.push({ username, cookies: cookies.map((c) => c.name) });
       return {
-        profile: async () => PUBLIC_PROFILE,
+        profile: async () => o.profile ?? PUBLIC_PROFILE,
         highlights: [{ id: "17900000000000002", title: "Summer" }],
         limited: true,
-        page: async () => ({ posts: [cover("p1", "C1"), cover("p2", "C2")] }),
+        page: async (cursor) => {
+          asked.push({ cursor, at: now });
+          const k = cursor ? Number(cursor) : 0;
+          return { posts: listing[k] ?? [], ...(k + 1 < listing.length ? { next: String(k + 1) } : {}) };
+        },
         moreHighlights: async () => null,
         close: () => closed.push(username),
       };
     },
   };
-  return { deps, opened, closed, read };
+  return { deps, opened, closed, read, asked };
 }
 
 /**

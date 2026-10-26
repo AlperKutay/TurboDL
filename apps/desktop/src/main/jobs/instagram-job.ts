@@ -44,7 +44,7 @@ const CALLED_OFF: Refusal = { ok: false, error: "Cancelled.", reason: "error" };
 
 /**
  * Runs an Instagram link as a job, into the app's Instagram folders: a post's, story's or highlight's items, a
- * profile's backups (posts, highlights) or its first posts signed out, Saved's collections. Every page it reads waits
+ * profile's backups (posts, signed out too; highlights), Saved's collections. Every page it reads waits
  * for the jobs' read slot and the account's pace; nothing is asked while Instagram's slow-down holds.
  */
 export async function runInstagramJob(job: JobRecord, link: InstagramLink, deps: InstagramJobDeps): Promise<void> {
@@ -69,26 +69,24 @@ async function linkJob(job: JobRecord, link: Exclude<InstagramLink, { kind: "pro
   if (await saveItems(job, deps, outcome.items, where)) job.end({ state: "done" });
 }
 
-/** A profile: its posts' backup, then its highlights' when asked; signed out, the first posts Instagram shows visitors. */
+/** A profile: its posts' backup (signed out too, each post read from its own page), then its highlights' when asked. */
 async function profileJob(job: JobRecord, username: string, deps: InstagramJobDeps): Promise<void> {
   const { profiles } = deps;
   const options = job.request.options ?? {};
   const highlightsOnly = options.highlightsOnly === true;
   const highlights = highlightsOnly || options.highlights === true;
-  if (!deps.session.signedIn()) {
-    if (highlightsOnly) return fail(job, deps, "signInRequired", HIGHLIGHTS_SIGN_IN);
-    return firstPosts(job, username, highlights, deps);
-  }
+  const signedIn = deps.session.signedIn();
+  if (!signedIn && highlightsOnly) return fail(job, deps, "signInRequired", HIGHLIGHTS_SIGN_IN);
   let missedPosts = 0;
   if (!highlightsOnly) {
     const posts = await backup(job, deps, () => profiles.startBackup(username), async () => job.warn(planWarning(await profiles.plan(username))));
     if (posts === null) return;
-    // the page came as signed-out visitors see it: what they see is saved
-    if (typeof posts !== "number") return posts.reason === "signInRequired" ? firstPosts(job, username, highlights, deps) : refused(job, deps, posts);
+    if (typeof posts !== "number") return refused(job, deps, posts);
     missedPosts = posts;
   }
   let missedHighlights = 0;
-  if (highlights) {
+  if (highlights && !signedIn) job.warn(HIGHLIGHTS_SIGN_IN);
+  else if (highlights) {
     const stories = await backup(job, deps, () => profiles.startHighlightsBackup(username));
     if (stories === null) return;
     if (typeof stories === "number") missedHighlights = stories;
@@ -99,25 +97,6 @@ async function profileJob(job: JobRecord, username: string, deps: InstagramJobDe
     [missedPosts, "post"],
     [missedHighlights, "highlight"],
   ]);
-}
-
-/** Signed out: the first posts Instagram shows visitors, read in the jobs' read slot, into the profile's folder; `limited`. */
-async function firstPosts(job: JobRecord, username: string, highlights: boolean, deps: InstagramJobDeps): Promise<void> {
-  job.start();
-  const read = await deps.profiles.readFirstPosts(username, { read: (fn, signal) => deps.lane.read(signal, fn), signal: job.signal });
-  if (job.signal.aborted) return job.end({ state: "cancelled" });
-  if (read.type === "rateLimited") return fail(job, deps, "rateLimited", SLOW_DOWN);
-  if (read.type === "private") return fail(job, deps, "private", "This account is private.");
-  if (read.type === "signedOut") return fail(job, deps, "signInRequired", "Sign in to Instagram to read this profile.");
-  if (read.type === "failed") return fail(job, deps, "error", read.message);
-  job.warn(`Signed out: only the first ${read.posts} posts Instagram shows visitors. Sign in to Instagram for the rest.`);
-  if (highlights) job.warn(HIGHLIGHTS_SIGN_IN);
-  for (let k = 0; k < read.failed; k++) job.failItem();
-  // as the profile's picks in the app: a post already in its folder isn't downloaded again
-  if (!(await saveItems(job, deps, read.items, { defaultDir: deps.profiles.folder(username), highlight: false, fallback: "instagram" }))) return;
-  // a post whose own page showed nothing is not saved: never a full success
-  if (read.failed > 0) return fail(job, deps, "error", `${counted(read.failed, "post")} couldn't be read.`);
-  job.end({ state: "done", limited: true });
 }
 
 /** Saved: the account's own collections picked by name (or all of them), backed up one after another. */
