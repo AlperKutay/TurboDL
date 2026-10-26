@@ -50,6 +50,7 @@ export class DownloadManager extends EventEmitter<ManagerEvents> {
   private readonly records = new Map<string, DownloadRecord>();
   private readonly running = new Map<string, Running>();
   private readonly dirty = new Set<string>();
+  private readonly removing = new Set<string>();
   private timer: NodeJS.Timeout | null = null;
   private ticks = 0;
   private stopping = false;
@@ -70,6 +71,11 @@ export class DownloadManager extends EventEmitter<ManagerEvents> {
 
   get(id: string): DownloadRecord | undefined {
     return this.records.get(id);
+  }
+
+  /** true while `remove` is stopping and deleting this download */
+  isRemoving(id: string): boolean {
+    return this.removing.has(id);
   }
 
   list(): DownloadView[] {
@@ -131,12 +137,14 @@ export class DownloadManager extends EventEmitter<ManagerEvents> {
     for (const id of ids) {
       const record = this.records.get(id);
       if (!record) continue;
+      this.removing.add(id);
       const run = this.running.get(id);
       if (run) {
         run.task.pause();
         await run.done;
       }
       this.records.delete(id);
+      this.removing.delete(id);
       this.dirty.delete(id);
       removed.push(id);
       if (deleteFiles) {

@@ -58,6 +58,7 @@ export function followDownloads(manager: DownloadManager, ids: string[], job: Jo
     };
     const see = (record: DownloadRecord) => {
       if (settled || !wanted.has(record.id) || completed.has(record.id) || removed.has(record.id)) return;
+      if (manager.isRemoving(record.id)) return; // a removal pauses the task first; its `removed` event follows
       if (record.status === "paused") {
         settle({ type: "stopped", message: PAUSED });
       } else if (record.status === "completed") {

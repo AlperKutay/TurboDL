@@ -2,11 +2,12 @@ import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import type { JobEvent, NewDownload } from "@turbodl/shared";
+import type { DownloadRecord, JobEvent, NewDownload } from "@turbodl/shared";
 import { HttpDownloadTask, TEMP_SUFFIX } from "../../src/main/engine/download-task";
 import { followDownloads } from "../../src/main/jobs/follow-downloads";
 import { JobRecord } from "../../src/main/jobs/job-record";
 import { DownloadManager, type StateFile, type StateStore } from "../../src/main/manager";
+import type { TaskHandle } from "../../src/main/task";
 import { defaultSettings } from "../../src/main/settings";
 import { startTestServer, type TestServer } from "../fixtures/test-server";
 
@@ -94,6 +95,7 @@ describe("followDownloads", () => {
     const followed = followDownloads(manager, [id], job);
     await until(() => manager.get(id)!.status === "downloading");
     manager.pause([id]);
+    manager.flushUpdates();
     expect(await followed).toEqual({ type: "stopped", message: "A download was paused in TurboDL." });
     await until(() => manager.get(id)!.status === "paused");
     expect(manager.get(id)!.status).toBe("paused");
@@ -105,8 +107,10 @@ describe("followDownloads", () => {
     const id = manager.add(item("/slow.bin", "slow.bin"), "now").id;
     const followed = followDownloads(manager, [id], job);
     await until(() => manager.get(id)!.status === "downloading");
-    void manager.remove([id], true);
+    const removal = manager.remove([id], true);
+    manager.flushUpdates(); // an update while the removal is stopping the task must not read as a pause
     expect(await followed).toEqual({ type: "stopped", message: "A download was removed in TurboDL." });
+    await removal;
   });
 
   it("stops on Pause all", async () => {
@@ -143,5 +147,44 @@ describe("followDownloads", () => {
     job.cancel();
     expect(await followDownloads(manager, [id], job)).toEqual({ type: "cancelled" });
     expect(manager.get(id)).toBeUndefined();
+  });
+
+  it("does not read a removal's pause as a pause", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const fake = new DownloadManager({
+      store: new MemoryStore(),
+      settings: () => ({ ...defaultSettings(dir), maxConcurrent: 1 }),
+      createTask: (record: DownloadRecord): TaskHandle => ({
+        record,
+        speed: 0,
+        eta: null,
+        connections: 0,
+        note: undefined,
+        pause: () => {
+          record.status = "paused";
+        },
+        start: async () => {
+          record.status = "downloading";
+          await gate;
+        },
+      }),
+      tickMs: 60_000,
+    });
+    fake.init();
+    try {
+      const { job } = newJob();
+      const id = fake.add(item("/x.bin", "x.bin"), "now").id;
+      const followed = followDownloads(fake, [id], job);
+      const removal = fake.remove([id], true);
+      fake.flushUpdates(); // the record is paused while the removal waits for the task
+      expect(fake.get(id)?.status).toBe("paused");
+      release();
+      await removal;
+      expect(await followed).toEqual({ type: "stopped", message: "A download was removed in TurboDL." });
+    } finally {
+      release();
+      await fake.shutdown();
+    }
   });
 });
