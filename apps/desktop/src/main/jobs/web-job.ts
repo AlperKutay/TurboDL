@@ -52,6 +52,19 @@ export async function runWebJob(job: JobRecord, deps: WebJobDeps): Promise<void>
   const cancelled = () => job.signal.aborted && (job.end({ state: "cancelled" }), true);
   const dirFor = (category: Category) => job.request.dir || deps.categoryDir(category);
 
+  /** the quality the job asked for, as a download named and placed as the job asks; null once the job has failed */
+  const pickMedia = (formats: MediaFormatOption[], build: (option: MediaFormatOption, dir: string) => NewDownload): NewDownload | null => {
+    const picked = pickFormat(formats, { audio: options?.audio, maxHeight: options?.maxHeight });
+    if (!picked) {
+      fail("unsupported", options?.audio ? "This video has no audio-only choice." : "No quality to download.");
+      return null;
+    }
+    if (picked.warning) job.warn(picked.warning);
+    const made = build(picked.option, dirFor(picked.option.audioOnly ? "music" : "video"));
+    if (name) made.filename = mediaName(name, made);
+    return made;
+  };
+
   // probe
   let info: ProbeResult;
   try {
@@ -77,14 +90,9 @@ export async function runWebJob(job: JobRecord, deps: WebJobDeps): Promise<void>
       return;
     }
     if (cancelled()) return;
-    const picked = pickFormat(formats, { audio: options?.audio, maxHeight: options?.maxHeight });
-    if (!picked) {
-      fail("unsupported", options?.audio ? "This video has no audio-only choice." : "No quality to download.");
-      return;
-    }
-    if (picked.warning) job.warn(picked.warning);
-    item = streamDownload({ url, pageUrl: url, kind, title: streamTitle(url), option: picked.option, dir: dirFor(picked.option.audioOnly ? "music" : "video"), headers: {} });
-    if (name) item.filename = mediaName(name, item);
+    const made = pickMedia(formats, (option, dir) => streamDownload({ url, pageUrl: url, kind, title: streamTitle(url), option, dir, headers: {} }));
+    if (!made) return;
+    item = made;
   } else if (info.mime === "text/html") {
     job.setKind("media");
     let page: unknown;
@@ -99,14 +107,9 @@ export async function runWebJob(job: JobRecord, deps: WebJobDeps): Promise<void>
     }
     if (cancelled()) return;
     const { title, options: formats } = formatOptionsFromInfo(page);
-    const picked = pickFormat(formats, { audio: options?.audio, maxHeight: options?.maxHeight });
-    if (!picked) {
-      fail("unsupported", options?.audio ? "This video has no audio-only choice." : "No quality to download.");
-      return;
-    }
-    if (picked.warning) job.warn(picked.warning);
-    item = pageDownload({ pageUrl: url, title, option: picked.option, dir: dirFor(picked.option.audioOnly ? "music" : "video"), headers: {} });
-    if (name) item.filename = mediaName(name, item);
+    const made = pickMedia(formats, (option, dir) => pageDownload({ pageUrl: url, title, option, dir, headers: {} }));
+    if (!made) return;
+    item = made;
   } else {
     const filename = sanitizeFilename(name || info.filename || "download");
     const category = categorize(filename, info.mime);

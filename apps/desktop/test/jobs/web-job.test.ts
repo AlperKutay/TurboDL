@@ -105,7 +105,39 @@ describe("runWebJob", () => {
     const out = path.join(root, "out");
     const job = newJob({ url: server.url("/files/a.zip"), dir: out, name: "a/b:c.zip" });
     await runWebJob(job, deps());
-    expect((await job.ended).files).toEqual([path.join(out, sanitizeFilename("a/b:c.zip"))]);
+    const files = (await job.ended).files;
+    expect(files).toEqual([path.join(out, sanitizeFilename("a/b:c.zip"))]);
+    expect(path.dirname(files[0])).toBe(out);
+    expect(path.basename(files[0])).not.toMatch(/[\\/:]/);
+  });
+
+  it("falls back to a usable name when the given one is empty, dots or a device name", async () => {
+    server.setFile("/files/a.zip", { data: Buffer.alloc(2000, 7), contentType: "application/zip" });
+    const out = path.join(root, "out");
+    for (const name of ["..", "  ", "CON"]) {
+      const job = newJob({ url: server.url("/files/a.zip"), dir: out, name });
+      await runWebJob(job, deps());
+      const file = (await job.ended).files[0];
+      expect(path.dirname(file)).toBe(out);
+      expect(path.basename(file)).toMatch(/^(download|_CON)/);
+    }
+  });
+
+  it("makes a media name safe and keeps it inside dir", async () => {
+    pageInfo();
+    const out = path.join(root, "v");
+    const names: Record<string, string> = { "..\\evil/x:y.mkv": ".._evil_x_y.mp4", "..": "download.mp4", CON: "_CON.mp4" };
+    for (const [name, expected] of Object.entries(names)) {
+      const job = newJob({ url: server.url("/yt/page"), dir: out, name });
+      const run = runWebJob(job, deps());
+      await until(() => manager.list().length === 1);
+      const record = manager.get(manager.list()[0].id)!;
+      expect(record.dir).toBe(out);
+      expect(record.filename).not.toMatch(/[\\/:]/);
+      expect(record.filename).toBe(expected);
+      job.cancel();
+      await run;
+    }
   });
 
   it("fails notFound for a 404", async () => {
