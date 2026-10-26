@@ -5,6 +5,7 @@ import os
 import subprocess
 import sys
 import time
+import warnings
 from typing import Any, Dict, Optional, Tuple
 
 from ._http import raw_request
@@ -62,11 +63,14 @@ def _spawn(launch: Dict[str, Any]) -> None:
         kwargs["creationflags"] = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP  # type: ignore[attr-defined]
     else:
         kwargs["start_new_session"] = True
-    try:
-        subprocess.Popen([launch["file"]] + list(launch.get("args") or []), env=env, stdin=subprocess.DEVNULL,
-                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **kwargs)
-    except (OSError, ValueError, KeyError):
-        pass  # the wait below reports that the app didn't start
+    # The app outlives this process by design: dropping its Popen must not warn "subprocess N is still running".
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", ResourceWarning)
+        try:
+            subprocess.Popen([launch["file"]] + list(launch.get("args") or []), env=env, stdin=subprocess.DEVNULL,
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **kwargs)
+        except (OSError, ValueError, KeyError):
+            pass  # the wait below reports that the app didn't start
 
 
 def connect(folder: str, start: bool, timeout: float) -> Tuple[int, str]:

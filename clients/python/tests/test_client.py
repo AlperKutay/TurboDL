@@ -6,6 +6,8 @@ import tempfile
 import threading
 import time
 import unittest
+import warnings
+from unittest import mock
 
 from turbodl_client import AppNotReachable, TurboDL, TurboDLError
 from turbodl_client import _discover
@@ -80,16 +82,22 @@ class ClientTests(ClientCase):
     def test_null_port_returns_the_apps_message_after_the_grace(self) -> None:
         write_api_file(self.tmp, None, error="Port 1 is taken.", launch={"file": sys.executable, "args": ["-c", "pass"]})
         began = time.time()
-        with self.assertRaises(AppNotReachable) as cm:
+        with mock.patch.object(_discover, "PORT_GRACE", 0.3), self.assertRaises(AppNotReachable) as cm:
             TurboDL(user_data=self.tmp, timeout=30)
         self.assertEqual(str(cm.exception), "Port 1 is taken.")
-        self.assertLess(time.time() - began, 15)
+        self.assertLess(time.time() - began, 5)
 
     def test_null_port_without_error_uses_the_fixed_message(self) -> None:
         write_api_file(self.tmp, None, launch={"file": sys.executable, "args": ["-c", "pass"]})
-        with self.assertRaises(AppNotReachable) as cm:
+        with mock.patch.object(_discover, "PORT_GRACE", 0.3), self.assertRaises(AppNotReachable) as cm:
             TurboDL(user_data=self.tmp, timeout=30)
         self.assertEqual(str(cm.exception), "TurboDL couldn't open its local port. Pick another port in TurboDL's Settings.")
+
+    def test_starting_the_app_leaves_no_resource_warning(self) -> None:
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            _discover._spawn({"file": sys.executable, "args": ["-c", "import time; time.sleep(0.5)"]})
+        self.assertEqual([str(w.message) for w in caught if issubclass(w.category, ResourceWarning)], [])
 
     def test_refuses_another_api_version(self) -> None:
         self.stub = StubApi(api=2).start()
