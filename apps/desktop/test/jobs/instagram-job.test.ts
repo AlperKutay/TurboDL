@@ -427,6 +427,19 @@ describe("Instagram profile jobs", () => {
     expect(sorted(job.files)).toEqual([dl("sample.user", "a.jpg"), dl("sample.user", "b.jpg"), dl("sample.user", "d.jpg")]);
   });
 
+  it("still names the posts shown only to signed-in visitors when a signed-out backup also failed one", async () => {
+    // C2 and C3 are shown only to signed-in visitors; C4's own page shows nothing
+    const so = fakeSignedOut(PUBLIC_POSTS(), { listing: [[signedOutCover("p1", "C1"), signedOutCover("p2", "C2"), signedOutCover("p3", "C3")], [signedOutCover("p4", "C4")]] });
+    const find = so.deps.find;
+    so.deps.find = (link, cookies, signal) => (link.kind === "post" && (link.code === "C2" || link.code === "C3") ? Promise.resolve({ type: "signInOnly" }) : find(link, cookies, signal));
+    const c = await start(so.deps);
+    const job = await run(c, { url: PROFILE_URL });
+    expect(job).toMatchObject({ state: "failed", reason: "error", error: "1 post couldn't be saved; it's tried again on the next run.", failedItems: 1 });
+    expect(job.limited).toBeUndefined();
+    expect(job.warnings).toContain("2 posts are shown only to signed-in visitors; sign in to save them.");
+    expect(sorted(job.files)).toEqual([dl("sample.user", "a.jpg"), dl("sample.user", "b.jpg")]);
+  });
+
   it("ends rateLimited when Instagram's login wall stops a signed-out backup, what was saved listed", async () => {
     const so = fakeSignedOut(PUBLIC_POSTS(), { listing: THREE_PAGES() });
     const open = so.deps.openProfile!;

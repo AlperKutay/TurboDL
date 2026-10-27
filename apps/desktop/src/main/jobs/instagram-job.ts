@@ -232,15 +232,12 @@ async function paced<T>(job: JobRecord, deps: InstagramJobDeps, read: () => Prom
 
 /**
  * Done when every part saved everything; otherwise failed, naming what is missing, its saved files still listed.
- * Posts shown only to signed-in visitors leave it done, but limited, with a warning.
+ * Posts shown only to signed-in visitors are named in a warning either way; alone, they leave it done, but limited.
  */
 function complete(job: JobRecord, deps: InstagramJobDeps, missed: [count: number, unit: string][], signInOnly = 0): void {
   const parts = missed.filter(([count]) => count > 0).map(([count, unit]) => counted(count, unit));
-  if (parts.length === 0 && signInOnly > 0) {
-    job.warn(`${signInOnly === 1 ? "1 post is" : `${signInOnly} posts are`} shown only to signed-in visitors; sign in to save them.`);
-    return job.end({ state: "done", limited: true });
-  }
-  if (parts.length === 0) return job.end({ state: "done" });
+  if (signInOnly > 0) job.warn(`${signInOnly === 1 ? "1 post is" : `${signInOnly} posts are`} shown only to signed-in visitors; sign in to save them.`);
+  if (parts.length === 0) return job.end(signInOnly > 0 ? { state: "done", limited: true } : { state: "done" });
   const total = missed.reduce((sum, [count]) => sum + count, 0);
   fail(job, deps, "error", `${parts.join(" and ")} couldn't be saved; ${total === 1 ? "it's" : "they're"} tried again on the next run.`);
 }
