@@ -172,9 +172,10 @@ export class ProfileFeed {
         this.driver.stopCollecting();
         return profile;
       }
-      // a public profile as signed-out visitors see it (with a session: only when the signed-in view never came)
+      // a public profile as signed-out visitors see it (with a session: only when the signed-in view never came), once
+      // its posts' piece is in too (a private profile has none)
       const open = signedOutProfile(documents, this.username);
-      if (open && (!this.o.signedIn || lastLook)) {
+      if (open && (!this.o.signedIn || lastLook) && (open.timeline || open.profile.isPrivate || lastLook)) {
         this.first = { posts: open.posts, hasNext: open.hasNext, ...(open.cursor ? { cursor: open.cursor } : {}) };
         this.highlights = open.highlights;
         if (open.trayHasNext && open.trayCursor) this.trayCursor = open.trayCursor;

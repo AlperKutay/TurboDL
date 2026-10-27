@@ -125,16 +125,21 @@ export const SIGNED_OUT_TRAY_QUERY = "PolarisLoggedOutProfileStoryHighlightsTray
 /**
  * A public profile as Instagram shows it to signed-out visitors (`data.xig_user_by_username`): the profile, its first
  * posts known only by their covers and kinds, and its highlights, with where each first page ends and whether more
- * follow. Undefined when the page doesn't show it that way.
+ * follow. The page may hold the profile in pieces (by name with its tray, by id alone with its timeline); `timeline`
+ * says whether its posts' piece was there. Undefined when the page doesn't show it that way.
  */
 export function signedOutProfile(
   documents: string[],
   username: string,
-): { profile: InstagramProfile; posts: SavedPost[]; highlights: Highlight[]; cursor?: string; hasNext: boolean; trayCursor?: string; trayHasNext: boolean } | undefined {
+):
+  | { profile: InstagramProfile; posts: SavedPost[]; highlights: Highlight[]; cursor?: string; hasNext: boolean; trayCursor?: string; trayHasNext: boolean; timeline: boolean }
+  | undefined {
   const name = username.toLowerCase();
-  const user = objectsInDocuments(documents, (o) => str(dict(o, "xig_user_by_username")?.username)?.toLowerCase() === name).map((o) => dict(o, "xig_user_by_username") as Json)[0];
+  const users = objectsInDocuments(documents, (o) => isJson(o.xig_user_by_username)).map((o) => o.xig_user_by_username as Json);
+  const user = users.find((u) => str(u.username)?.toLowerCase() === name);
   const id = user && (str(user.pk) ?? str(user.id));
   if (!user || !id) return undefined;
+  const piece = (key: string) => users.find((u) => (str(u.pk) ?? str(u.id)) === id && isJson(u[key]));
   const picture = url(user.profile_pic_url);
   const postCount = int(user.all_media_count);
   const profile: InstagramProfile = {
@@ -146,9 +151,19 @@ export function signedOutProfile(
     ...(picture ? { picture } : {}),
     ...(postCount !== undefined ? { postCount } : {}),
   };
-  const posts = signedOutCovers(dict(user, "polaris_ordered_timeline_connection") ?? {});
-  const tray = signedOutHighlights(dict(user, "lox_highlights_connection") ?? {});
-  return { profile, posts: posts.posts, highlights: tray.highlights, ...(posts.cursor ? { cursor: posts.cursor } : {}), hasNext: posts.hasNext, ...(tray.cursor ? { trayCursor: tray.cursor } : {}), trayHasNext: tray.hasNext };
+  const timeline = piece("polaris_ordered_timeline_connection");
+  const posts = signedOutCovers(dict(timeline, "polaris_ordered_timeline_connection") ?? {});
+  const tray = signedOutHighlights(dict(piece("lox_highlights_connection"), "lox_highlights_connection") ?? {});
+  return {
+    profile,
+    posts: posts.posts,
+    highlights: tray.highlights,
+    ...(posts.cursor ? { cursor: posts.cursor } : {}),
+    hasNext: posts.hasNext,
+    ...(tray.cursor ? { trayCursor: tray.cursor } : {}),
+    trayHasNext: tray.hasNext,
+    timeline: timeline !== undefined,
+  };
 }
 
 /** An answer to the signed-out posts query: covers (`unread`), the cursor, more or not; throws as `profilePostsAnswer` does. */

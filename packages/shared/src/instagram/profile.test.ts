@@ -127,6 +127,24 @@ describe("profile pages signed out", () => {
     expect([signedOutProfile(end, "sample.user")?.cursor, signedOutProfile(end, "sample.user")?.hasNext]).toEqual([undefined, false]);
   });
 
+  it("reads the posts from the profile's own copy that holds only its timeline, never another account's", () => {
+    // the page holds the profile twice: by name with its tray, and by id alone with the timeline
+    expect(page.filter((d) => d.includes("xig_user_by_username"))).toHaveLength(2);
+    expect(signedOutProfile(page, "sample.user")?.posts).toHaveLength(3);
+    const elsewhere = page.map((d) => (d.includes("PostsTabContentQuery") ? d.replaceAll('"5100000000000000001"', '"5100000000000000009"') : d));
+    expect([signedOutProfile(elsewhere, "sample.user")?.posts, signedOutProfile(elsewhere, "sample.user")?.hasNext]).toEqual([[], false]);
+    expect(signedOutProfile(page.slice(0, 2), "sample.user")?.timeline).toBe(false);
+    expect(signedOutProfile(page, "sample.user")?.timeline).toBe(true);
+  });
+
+  it("reads a profile held in one piece, its timeline beside its tray", () => {
+    const whole = JSON.parse(page[1]) as { require: [unknown, unknown, unknown, [string, { __bbox: { result: { data: { xig_user_by_username: Record<string, unknown> } } } }]][] };
+    const timeline = (JSON.parse(page[2]) as typeof whole).require[0][3][1].__bbox.result.data.xig_user_by_username.polaris_ordered_timeline_connection;
+    whole.require[0][3][1].__bbox.result.data.xig_user_by_username.polaris_ordered_timeline_connection = timeline;
+    const found = signedOutProfile([page[0], JSON.stringify(whole)], "sample.user");
+    expect([found?.posts.length, found?.cursor, found?.highlights.length, found?.timeline]).toEqual([3, "c1", 2, true]);
+  });
+
   it("never takes a suggested account for the profile, and finds nothing on a signed-in page", () => {
     expect(signedOutProfile(page, "other.user")).toBeUndefined();
     expect(signedOutProfile(JSON.parse(profilePage) as string[], "sample.user")).toBeUndefined();

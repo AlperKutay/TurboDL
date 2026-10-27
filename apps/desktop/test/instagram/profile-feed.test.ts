@@ -257,6 +257,13 @@ describe("ProfileFeed seen signed out", () => {
     expect(page.scrolls).toBe(0);
   });
 
+  it("waits for the profile's timeline when the page holds the profile before its posts", async () => {
+    const f = feed(new SignedOutPage([LOGGED_OUT.slice(0, 2), LOGGED_OUT], byCursor));
+    await f.profile();
+    const first = await f.page();
+    expect([first.posts.map((p) => p.code), first.next]).toEqual([["C0001", "C0002", "C0003"], "c1"]);
+  });
+
   it("waits a little for the posts query's id before it stops reading the page's scripts", async () => {
     const page = new SignedOutPage([LOGGED_OUT], byCursor);
     const f = feed(page, { opWait: 2000 });
