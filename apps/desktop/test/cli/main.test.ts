@@ -146,6 +146,15 @@ describe("turbodl get", () => {
     expect(c.stderr.text.endsWith("job1: done, 1 file\n")).toBe(true);
   });
 
+  it("shows on the progress line what a job is doing, when it says", async () => {
+    const c = cli(["get", "https://www.instagram.com/someone/"], { tty: true });
+    await fake.subscribed("job1");
+    fake.push("job1", { type: "progress", progress: { done: 2, total: 7, note: "Signed out: reading each post from its own page" } });
+    fake.end("job1", { state: "done" });
+    expect(await c.done).toBe(0);
+    expect(c.stderr.text).toContain("\rjob1  2/7  Signed out: reading each post from its own page");
+  });
+
   it("prints warnings and why a job failed on stderr", async () => {
     const c = cli(["get", "https://example.com/a.zip"]);
     await fake.subscribed("job1");

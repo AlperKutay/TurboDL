@@ -33,9 +33,14 @@ export class InstagramPacer {
     try {
       return await request();
     } catch (err) {
-      if (err instanceof SavedError && err.kind === "rateLimited") this.heldUntil = this.now() + HOLD;
+      if (err instanceof SavedError && err.kind === "rateLimited") this.hold();
       throw err;
     }
+  }
+
+  /** Holds every request for 2 minutes from now, as Instagram asking to slow down does (its login wall, say). */
+  hold(): void {
+    this.heldUntil = this.now() + HOLD;
   }
 
   held(): boolean {

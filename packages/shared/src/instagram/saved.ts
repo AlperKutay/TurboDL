@@ -17,6 +17,8 @@ export interface SavedPost {
   unread?: boolean;
   /** 1 photo, 2 video, 8 carousel */
   mediaType?: number;
+  /** shown only to signed-in visitors: a signed-out read can't open it */
+  signInOnly?: true;
 }
 
 /** One page of a saved feed; `next` is the following page's cursor, absent on the last one. */

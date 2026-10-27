@@ -56,7 +56,7 @@ import { fetchMedia } from "./instagram/fetch-media";
 import { itemDownload } from "./instagram/item-download";
 import { Backups, type StartResult } from "./instagram/backups";
 import { LedgerStore } from "./instagram/ledger";
-import { InstagramPacer } from "./instagram/pacer";
+import { InstagramPacer, SLOW_DOWN, failedPage } from "./instagram/pacer";
 import { ProfileIndex } from "./instagram/profile-index";
 import { ProfileService, type ProfileSource } from "./instagram/profile-service";
 import { httpGet, type HttpGet } from "./instagram/saved-client";
@@ -145,6 +145,7 @@ const NO_PROFILE: ProfileSource = {
   highlights: [],
   limited: false,
   page: () => Promise.reject(new SavedError("badAnswer")),
+  moreHighlights: async () => null,
   close: () => undefined,
 };
 
@@ -266,12 +267,13 @@ export class AppController {
       open: (username, cookies) => (ig.openProfile ? ig.openProfile(username, cookies) : NO_PROFILE),
       findHighlight: async (id, signal) => {
         const outcome = await ig.find({ kind: "highlight", id }, this.instagramSession.cookies(), signal);
-        if (outcome.type === "signedOut") throw new SavedError("signedOut");
+        if (outcome.type === "signedOut") throw this.wallOrExpired();
         return outcome.type === "items" ? outcome.items : null;
       },
       findPost: async (code, signal) => {
         const outcome = await ig.find({ kind: "post", code }, this.instagramSession.cookies(), signal);
-        if (outcome.type === "signedOut") throw new SavedError("signedOut");
+        if (outcome.type === "signedOut") throw this.wallOrExpired();
+        if (outcome.type === "signInOnly") return "signInOnly";
         return outcome.type === "items" ? outcome.items : null;
       },
       byAccount: () => this.settings.instagramByAccount,
@@ -280,6 +282,8 @@ export class AppController {
       index: new ProfileIndex(path.join(o.userDataDir, "instagram-profiles.json"), ledgers),
       baseDir: () => this.settings.baseDir,
       now: () => (ig.now ? ig.now() : Date.now()),
+      // the jobs' read slot, built below: signed-out reads of the screens (posts, highlights, a tray's next pages) take it too; signed-in reads keep the account's pace only
+      read: (fn, signal) => this.lane.read(signal, fn),
     });
     this.lane = new InstagramLane({
       wait,
@@ -470,8 +474,9 @@ export class AppController {
   }
 
   /**
-   * Reads the link's items from its page, signed in when a session is kept; without one, public posts and reels still
-   * read (stories, highlights and hidden posts answer signedOut). A new read calls off the picker's previous one.
+   * Reads the link's items from its page, signed in when a session is kept; without one, public posts, reels and
+   * highlights still read (a story link answers signedOut without loading its page, and so does a post Instagram shows
+   * only to signed-in visitors). A new read calls off the picker's previous one.
    */
   async findInstagram(pendingId: string): Promise<InstagramFindResult> {
     const p = this.pending.get(pendingId);
@@ -480,6 +485,8 @@ export class AppController {
     const known = this.instagramItems.get(pendingId);
     if (known) return { type: "items", items: known };
     if (p.link.kind === "saved" || p.link.kind === "profile") return { type: "gone" };
+    // stories show only to signed-in visitors: no page is loaded for nothing
+    if (p.link.kind === "story" && !this.instagramSession.signedIn()) return { type: "signedOut" };
     this.instagramSearches.get(pendingId)?.abort();
     const search = new AbortController();
     this.instagramSearches.set(pendingId, search);
@@ -495,7 +502,14 @@ export class AppController {
     if (outcome.type === "items") this.instagramItems.set(pendingId, outcome.items);
     if (outcome.type === "signedOut" && outcome.at) this.instagramChecks.set(pendingId, outcome.at);
     else this.instagramChecks.delete(pendingId);
+    // a post shown only to signed-in visitors asks the picker to sign in, like a hidden one always did
+    if (outcome.type === "signInOnly") return { type: "signedOut" };
     return outcome;
+  }
+
+  /** A sign-in landing: with a session it expired; without one it is Instagram's login wall, which holds the account's pacer. */
+  private wallOrExpired(): SavedError {
+    return new SavedError(this.instagramSession.signedIn() ? "signedOut" : "rateLimited");
   }
 
   /** Queues the picked items (none picked: all of them), one download each, named by Instagram's id. */
@@ -526,10 +540,15 @@ export class AppController {
     return { ok: true };
   }
 
-  /** Instagram's own sign-in in TurboDL, on the check page the picker's page landed on if any; its cookies become the session. */
+  /**
+   * Instagram's own sign-in in TurboDL, on the check page the picker's page landed on if any; its cookies become the
+   * session, and a profile seen signed out on the screen is opened afresh with it.
+   */
   async instagramSignIn(pendingId?: string): Promise<boolean> {
     const cookies = await this.instagram.signIn(pendingId ? this.instagramChecks.get(pendingId) : undefined);
-    return cookies !== null && this.instagramSession.take(cookies);
+    if (cookies === null || !this.instagramSession.take(cookies)) return false;
+    this.profiles.reopenSignedIn();
+    return true;
   }
 
   instagramAccount(): Promise<InstagramAccount> {
@@ -590,10 +609,18 @@ export class AppController {
     return this.profiles.page(username, cursor);
   }
 
-  /** The picker over the picked posts' items, in pick order, into the profile's own folder. */
+  /** The picker over the picked posts' items, in pick order, into the profile's own folder; none when Instagram pushed back. */
   async openProfilePicks(username: string, postIds: string[]): Promise<Result> {
     if (postIds.length === 0) return { ok: false, error: "Nothing was picked." };
-    const items = await this.profiles.readPicks(postIds);
+    let items: InstagramItem[];
+    try {
+      items = await this.profiles.readPicks(postIds);
+    } catch (err) {
+      const failed = failedPage(err);
+      if (failed.type === "rateLimited") return { ok: false, error: SLOW_DOWN };
+      if (failed.type === "signedOut") return { ok: false, error: "Instagram signed TurboDL out. Sign in to Instagram again." };
+      return { ok: false, error: failed.message };
+    }
     if (items.length === 0) return { ok: false, error: "Couldn't read these posts." };
     const pendingId = newId();
     this.instagramItems.set(pendingId, items);

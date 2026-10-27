@@ -11,8 +11,15 @@ export interface PageDriver {
   close(): void;
 }
 
-/** `signedOut.at`: the check page (not the sign-in page) Instagram sent the page to, for the sign-in window to open. */
-export type FindOutcome = { type: "items"; items: InstagramItem[] } | { type: "signedOut"; at?: string } | { type: "nothing" };
+/**
+ * `signedOut.at`: the check page (not the sign-in page) Instagram sent the page to, for the sign-in window to open.
+ * `signInOnly`: read signed out, the post exists but Instagram shows it only to signed-in visitors.
+ */
+export type FindOutcome =
+  | { type: "items"; items: InstagramItem[] }
+  | { type: "signedOut"; at?: string }
+  | { type: "signInOnly" }
+  | { type: "nothing" };
 
 export interface FinderOptions {
   /** ms between looks at the page */
@@ -23,6 +30,8 @@ export interface FinderOptions {
   report?: (url: string, documents: string[]) => void;
   /** where the pages are loaded from: Instagram, or a stand-in in end-to-end tests */
   site?: string;
+  /** whether the page is read with a live session (default true); signed out, a gated post is `signInOnly` and a bare logged-out view is `nothing` */
+  signedIn?: boolean;
 }
 
 const SITE = "https://www.instagram.com";
@@ -82,14 +91,14 @@ export class InstagramFinder {
           const items = link.kind === "post" ? postItems(documents, link.code) : link.kind === "story" || link.kind === "highlight" ? storyItems(documents, link) : [];
           if (items.length > 0) return { type: "items", items };
           // the signed-out page keeps a post it won't show as an empty field: no need to wait for it
-          if (link.kind === "post" && postNeedsSignIn(documents, link.code)) return { type: "signedOut" };
+          if (link.kind === "post" && postNeedsSignIn(documents, link.code)) return this.o.signedIn === false ? { type: "signInOnly" } : { type: "signedOut" };
         }
         if (Date.now() >= deadline) break;
         await within(new Promise((r) => setTimeout(r, this.poll)), Infinity, signal);
         if (signal?.aborted) return { type: "nothing" };
       }
       // the session TurboDL keeps no longer works: Instagram served the page as to a signed-out visitor
-      if (loggedOutView(documents)) return { type: "signedOut" };
+      if (this.o.signedIn !== false && loggedOutView(documents)) return { type: "signedOut" };
       this.o.report?.(url, documents);
       return { type: "nothing" };
     } catch {

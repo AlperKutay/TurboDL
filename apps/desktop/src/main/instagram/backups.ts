@@ -49,9 +49,9 @@ export class Backups {
 
   /**
    * Starts `target`; refused while another runs. A stopped run records its last item before this one reads the ledger.
-   * `again` starts it once more, for Continue.
+   * `again` starts it once more, for Continue; `read` reads a post known only by its cover from its own page.
    */
-  async start(target: BackupTarget, page: BackupDeps["page"], again: () => Promise<Result>): Promise<StartResult> {
+  async start(target: BackupTarget, page: BackupDeps["page"], again: () => Promise<Result>, read?: BackupDeps["read"]): Promise<StartResult> {
     if (this.isRunning()) return { ok: false, error: "A backup is already running.", reason: "busy" };
     this.starting = true;
     try {
@@ -68,6 +68,7 @@ export class Backups {
           onFile: (file, existing) => {
             if (this.run === run) this.tell((watcher) => watcher.file?.(target.id, file, existing));
           },
+          ...(read ? { read } : {}),
         },
         // a run replaced by a newer one reports nothing more
         (view) => {

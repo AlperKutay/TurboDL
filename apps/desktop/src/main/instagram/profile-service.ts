@@ -24,20 +24,24 @@ export interface ProfileSource {
   /** loads the page once; throws SavedError */
   profile(): Promise<InstagramProfile>;
   readonly highlights: Highlight[];
-  /** seen as signed-out visitors see it: posts known by their covers, no next pages */
+  /** seen as signed-out visitors see it: posts known by their covers */
   readonly limited: boolean;
+  /** the tray's next page when it has more (signed out) */
+  readonly trayCursor?: string;
   /** no cursor: the posts its page loaded */
   page(cursor?: string, signal?: AbortSignal): Promise<SavedPage>;
+  /** the tray's next page; null when there is none */
+  moreHighlights(signal?: AbortSignal): Promise<Highlight[] | null>;
   close(): void;
 }
 
 export interface ProfileServiceDeps {
   session: InstagramSession;
   open(username: string, cookies: BrowserCookie[]): ProfileSource;
-  /** one highlight's stories from its own page; null when it showed none; throws SavedError("signedOut") */
+  /** one highlight's stories from its own page; null when it showed none; throws SavedError("signedOut"), or "rateLimited" when a signed-out read lands on the login wall */
   findHighlight(id: string, signal?: AbortSignal): Promise<InstagramItem[] | null>;
-  /** one post's items from its own page (it works signed out for public posts); null when it showed none */
-  findPost(code: string, signal?: AbortSignal): Promise<InstagramItem[] | null>;
+  /** one post's items from its own page (it works signed out for public posts); null when it showed none; "signInOnly" when Instagram shows it only to signed-in visitors */
+  findPost(code: string, signal?: AbortSignal): Promise<InstagramItem[] | null | "signInOnly">;
   /** downloads kept in a folder per account */
   byAccount(): boolean;
   pacer: InstagramPacer;
@@ -45,30 +49,30 @@ export interface ProfileServiceDeps {
   index: ProfileIndex;
   baseDir(): string;
   now(): number;
+  /**
+   * The one read slot the screens and jobs share: `fn` runs once no other read holds it, 3–6 s after the last one
+   * ended. Rejects, running nothing, when `signal` aborts before the slot is its.
+   */
+  read<T>(fn: () => Promise<T>, signal?: AbortSignal): Promise<T>;
 }
-
-/** A job's read of a profile's first posts: their items, or why there are none. */
-export type FirstPosts =
-  /** `posts`: how many posts the page showed (a carousel's items are more); `failed`: those whose own page showed nothing */
-  | { type: "items"; profile: InstagramProfile; items: InstagramItem[]; limited: boolean; posts: number; failed: number }
-  | { type: "signedOut" }
-  | { type: "rateLimited" }
-  | { type: "private" }
-  | { type: "failed"; message: string };
 
 /** A backup that didn't start, and why. */
 type Refusal = Extract<StartResult, { ok: false }>;
 
 /** posts kept per profile for estimates */
 const SAMPLE = 500;
-const SIGN_IN_TO_BACK_UP = "Sign in to Instagram to back up a profile.";
+/** further pages of a signed-out highlights tray read at most */
+const TRAY_PAGES = 20;
+/** a backup Instagram's slow-down keeps from starting (as `Backups.start` answers it) */
+const SLOWED_DOWN: Refusal = { ok: false, error: SLOW_DOWN, reason: "rateLimited" };
 
 /**
  * Profiles in the main process: one hidden page per open profile (it holds the request its posts are paged with),
  * paced next pages, picks, backups into `Instagram/<username>`, and the Profiles list.
  */
 export class ProfileService {
-  private current: { key: string; source: ProfileSource } | null = null;
+  /** the screen's profile page; `stale` once a sign-in came after it was seen signed out: the next load opens it afresh, its grid pages on meanwhile */
+  private current: { key: string; source: ProfileSource; stale?: boolean } | null = null;
   /** the page a running backup pages through; it stays open until the backup ends */
   private backupSource: ProfileSource | null = null;
   private backupKey = "";
@@ -87,9 +91,10 @@ export class ProfileService {
     const key = username.toLowerCase();
     const source = this.sourceFor(key);
     try {
-      // a slow-down on the page holds the whole account
-      const profile = await this.deps.pacer.ask(() => source.profile());
+      // a slow-down on the page holds the whole account; so does its login wall without a session
+      const profile = await this.deps.pacer.ask(() => this.walled(() => source.profile()));
       this.profiles.set(key, profile);
+      // signed out, the screen shows the tray as far as it was read (the page's first page); a highlights backup reads the rest
       this.trays.set(key, source.highlights);
       return { type: "profile", profile, highlights: source.highlights, ...(source.limited ? { limited: true } : {}) };
     } catch (err) {
@@ -122,7 +127,9 @@ export class ProfileService {
 
   /**
    * The picked posts' items, in pick order; a post known only by its cover (seen signed out) is read from its own
-   * page first, in the account's pace, and left out when it shows nothing. Posts never served are left out.
+   * page first (`readPost`), and left out when it shows nothing or can't be read. Posts never served are left out.
+   * Throws SavedError("rateLimited") while Instagram's slow-down holds or when a post's page lands on its login wall,
+   * and SavedError("signedOut") when the session expired: no part of the picks is answered then.
    */
   async readPicks(postIds: string[]): Promise<InstagramItem[]> {
     const items: InstagramItem[] = [];
@@ -133,77 +140,22 @@ export class ProfileService {
         items.push(...post.items);
         continue;
       }
-      const code = post.code;
-      const { pacer } = this.deps;
-      if (pacer.held()) break;
-      await pacer.pace();
-      const found = await pacer.ask(() => this.deps.findPost(code)).catch(() => null);
-      items.push(...(found ?? []));
+      if (this.deps.pacer.held()) throw new SavedError("rateLimited");
+      const read = await this.readPost(post).catch((err: unknown) => {
+        if (err instanceof SavedError && (err.kind === "rateLimited" || err.kind === "signedOut")) throw err;
+        return null;
+      });
+      if (read) items.push(...read.items);
     }
     return items;
   }
 
   /**
-   * A job's read of a profile's first posts on a page of its own: the screen's page is never used or closed. The
-   * profile's page, then the own page of each post known only by its cover, load one at a time in the job's read slot,
-   * in the account's pace; the profile's page is closed before any post's page loads. Nothing is asked while
-   * Instagram's slow-down holds. Called off before its page opens: failed, "Cancelled.".
+   * Signed in just now: the open profile's page, seen signed out, is let go at the screen's next load, which opens it
+   * with the session; a backup started meanwhile opens its own. A running backup's page stays.
    */
-  async readFirstPosts(username: string, o: { read<T>(fn: () => Promise<T>, signal?: AbortSignal): Promise<T>; signal?: AbortSignal }): Promise<FirstPosts> {
-    const { pacer } = this.deps;
-    if (pacer.held()) return { type: "rateLimited" };
-    if (o.signal?.aborted) return { type: "failed", message: "Cancelled." };
-    /** one page Instagram sees, in the read slot and the account's pace; a slow-down on it holds the whole account */
-    const paced = <T>(load: () => Promise<T>): Promise<T> =>
-      o.read(async () => {
-        if (pacer.held()) throw new SavedError("rateLimited");
-        await pacer.pace(o.signal);
-        if (pacer.held()) throw new SavedError("rateLimited");
-        if (o.signal?.aborted) throw new Error("Cancelled.");
-        return pacer.ask(load);
-      }, o.signal);
-    let opened: { source: ProfileSource; profile: InstagramProfile };
-    try {
-      opened = await paced(async () => {
-        const source = this.deps.open(username.toLowerCase(), this.deps.session.cookies());
-        try {
-          return { source, profile: await source.profile() };
-        } catch (err) {
-          source.close();
-          throw err;
-        }
-      });
-    } catch (err) {
-      return failedPage(err);
-    }
-    const { source, profile } = opened;
-    const limited = source.limited;
-    let posts: SavedPost[];
-    try {
-      if (isLocked(profile)) return { type: "private" };
-      posts = (await source.page(undefined, o.signal)).posts;
-    } catch (err) {
-      return failedPage(err);
-    } finally {
-      // its posts are taken: the profile's page goes before any post's page loads
-      source.close();
-    }
-    const items: InstagramItem[] = [];
-    let failed = 0;
-    for (const post of posts) {
-      if (!post.unread || !post.code) {
-        items.push(...post.items);
-        continue;
-      }
-      // a called-off read asks Instagram nothing more
-      if (o.signal?.aborted) break;
-      const code = post.code;
-      const found = await paced(() => this.deps.findPost(code, o.signal)).catch(() => null);
-      if (pacer.held()) return { type: "rateLimited" };
-      if (found && found.length > 0) items.push(...found);
-      else if (!o.signal?.aborted) failed++;
-    }
-    return { type: "items", profile, items, limited, posts: posts.length, failed };
+  reopenSignedIn(): void {
+    if (this.current?.source.limited && this.current.source !== this.backupSource) this.current.stale = true;
   }
 
   /** `<baseDir>/Instagram/<username>`: a profile's picks and backups. */
@@ -219,19 +171,24 @@ export class ProfileService {
 
   /**
    * Backs up a profile into its username's folder, its ledger keyed by the account's number: through the open
-   * profile's page, or a page of its own when the profile isn't open (Continue after leaving it).
+   * profile's page, or a page of its own when the profile isn't open (Continue after leaving it). Seen signed out
+   * (with or without a session), each post's items are read from its own page, and every page it reads (its listing's
+   * next pages too) takes the shared read slot.
    */
   async startBackup(username: string): Promise<StartResult> {
     if (this.deps.backups.isRunning()) return { ok: false, error: "A backup is already running.", reason: "busy" };
+    // no page is opened for a backup that wouldn't start
+    if (this.deps.pacer.held()) return SLOWED_DOWN;
     const key = username.toLowerCase();
     const opened = await this.pageFor(key);
     if ("error" in opened) return opened;
     const { profile, source } = opened;
-    const refused = refusal(profile, source);
+    const refused = refusal(profile);
     if (refused) {
       this.letGo(source);
       return refused;
     }
+    const { limited } = source;
     const result = await this.deps.backups.start(
       {
         id: `profile-${profile.id}`,
@@ -240,15 +197,24 @@ export class ProfileService {
         ...(profile.postCount !== undefined ? { count: profile.postCount } : {}),
         dir: this.folder(profile.username),
         allowsEarlyStop: true,
+        // the signed-out listing may end short of the count
+        ...(limited ? { checkCount: true } : {}),
       },
-      (cursor, signal) => this.paged(source, cursor, signal),
+      (cursor, signal) => (limited && cursor !== undefined ? this.deps.read(() => this.paged(source, cursor, signal), signal) : this.paged(source, cursor, signal)),
       () => this.startBackup(key),
+      limited ? (post, signal) => this.readPost(post, signal) : undefined,
     );
     if (!result.ok) {
       this.letGo(source);
       return result;
     }
     this.deps.index.record(profile, this.deps.now());
+    this.keepUntilSettled(source, key);
+    return result;
+  }
+
+  /** A running backup's page stays open until the backup ends. */
+  private keepUntilSettled(source: ProfileSource, key: string): void {
     this.backupSource = source;
     this.backupKey = key;
     void this.deps.backups.settled().then(() => {
@@ -256,18 +222,13 @@ export class ProfileService {
       this.backupSource = null;
       if (this.current?.source !== source) source.close();
     });
-    return result;
   }
 
   /** One highlight's stories, from its own page, in the account's pace; remembered for picks. */
   async loadHighlight(id: string): Promise<HighlightResult> {
-    if (!this.deps.session.signedIn()) return { type: "signedOut" };
-    const { pacer } = this.deps;
-    if (pacer.held()) return { type: "rateLimited" };
-    await pacer.pace();
-    if (pacer.held()) return { type: "rateLimited" };
     try {
-      const found = await pacer.ask(() => this.deps.findHighlight(id));
+      // a highlight's page is a page read in the account's pace; signed out it takes the read slot too
+      const found = await this.readHighlight(id);
       this.stories.set(id, found);
       return found && found.length > 0 ? { type: "stories", count: found.length } : { type: "nothing" };
     } catch (err) {
@@ -288,7 +249,10 @@ export class ProfileService {
   highlightsPlan(username: string): Promise<BackupPlan> {
     const key = username.toLowerCase();
     const profile = this.profiles.get(key);
-    const count = this.trays.get(key)?.length;
+    // a tray that may have more pages isn't counted
+    // (the open page's own tray: it grows as a backup pages it)
+    const open = this.current?.key === key ? this.current.source : this.backupKey === key ? this.backupSource : null;
+    const count = open?.limited && open.trayCursor !== undefined ? undefined : (open?.highlights ?? this.trays.get(key))?.length;
     return this.deps.backups.plan(profile ? `highlights-${profile.id}` : "", count, [], this.highlightsFolder(profile?.username ?? username));
   }
 
@@ -298,42 +262,66 @@ export class ProfileService {
    */
   async startHighlightsBackup(username: string): Promise<StartResult> {
     if (this.deps.backups.isRunning()) return { ok: false, error: "A backup is already running.", reason: "busy" };
+    if (this.deps.pacer.held()) return SLOWED_DOWN;
     const key = username.toLowerCase();
     const opened = await this.pageFor(key);
     if ("error" in opened) return opened;
     const { profile, source } = opened;
-    // the tray came with the page; a page opened only for this is no longer needed
-    this.letGo(source);
-    const refused = refusal(profile, source);
-    if (refused) return refused;
-    const tray = this.trays.get(key) ?? [];
+    const refused = refusal(profile);
+    if (refused) {
+      this.letGo(source);
+      return refused;
+    }
+    // the tray as the page listed it; a signed-out tray with more pages is read on, page by page, while the backup runs
+    const tray = [...source.highlights];
+    this.trays.set(key, source.highlights);
+    // a tray that may have more pages has no known count
+    const counted = !(source.limited && source.trayCursor !== undefined);
+    let trayPages = 0;
+    // a page that came back empty with more to come: the tray isn't read to its end
+    let stalled = false;
+    const moreTray = () => source.limited && source.trayCursor !== undefined && trayPages < TRAY_PAGES && !stalled;
+    // the page stays open for the tray's next pages only
+    if (!moreTray() || tray.length === 0) this.letGo(source);
     if (tray.length === 0) return { ok: false, error: "This profile has no highlights.", reason: "empty" };
-    const { pacer } = this.deps;
     const result = await this.deps.backups.start(
       {
         id: `highlights-${profile.id}`,
         kind: "highlights",
         name: `${profile.username} · Highlights`,
-        count: tray.length,
+        ...(counted ? { count: tray.length } : {}),
         dir: this.highlightsFolder(profile.username),
         allowsEarlyStop: false,
         pageGap: [3000, 6000],
+        endNote: () => (source.limited && source.trayCursor !== undefined && (trayPages >= TRAY_PAGES || stalled) ? "Instagram has more highlights than TurboDL read in one run." : undefined),
       },
       async (cursor, signal) => {
         const index = cursor ? Number(cursor) : 0;
+        while (!tray[index] && moreTray()) {
+          trayPages++;
+          const more = await this.readTrayPage(source, signal);
+          if (!more || more.length === 0) {
+            stalled = true;
+            break;
+          }
+          tray.push(...more);
+        }
         const highlight = tray[index];
         if (!highlight) return { posts: [] };
-        if (pacer.held()) throw new SavedError("rateLimited");
-        await pacer.pace(signal);
-        if (pacer.held()) throw new SavedError("rateLimited");
-        const found = (await pacer.ask(() => this.deps.findHighlight(highlight.id, signal))) ?? [];
+        const found = (await this.readHighlight(highlight.id, signal)) ?? [];
         // a story is remembered by its pk, or its file name when the page gives none (as the iPhone does)
         const items = found.map((item) => ({ ...item, mediaId: item.mediaId ?? lastSegment(item.url) }));
-        return { posts: [{ id: highlight.id, ...(highlight.cover ? { cover: highlight.cover } : {}), items }], ...(index + 1 < tray.length ? { next: String(index + 1) } : {}) };
+        return { posts: [{ id: highlight.id, ...(highlight.cover ? { cover: highlight.cover } : {}), items }], ...(index + 1 < tray.length || moreTray() ? { next: String(index + 1) } : {}) };
       },
       () => this.startHighlightsBackup(key),
     );
-    if (result.ok) this.deps.index.record(profile, this.deps.now());
+    if (!result.ok) {
+      this.letGo(source);
+      return result;
+    }
+    this.deps.index.record(profile, this.deps.now());
+    if (moreTray()) this.keepUntilSettled(source, key);
+    else this.letGo(source);
     return result;
   }
 
@@ -356,16 +344,25 @@ export class ProfileService {
     this.backupSource = null;
   }
 
-  /** The open profile's page and profile, a running backup's, or a page of its own for a backup. */
+  /** The open profile's page and profile, a running backup's, or a page of its own for a backup (without a session too). */
   private async pageFor(key: string): Promise<{ profile: InstagramProfile; source: ProfileSource } | Refusal> {
     const known = this.profiles.get(key);
-    if (this.current?.key === key && known) return { profile: known, source: this.current.source };
-    if (this.backupKey === key && this.backupSource && known) return { profile: known, source: this.backupSource };
-    if (!this.deps.session.signedIn()) return { ok: false, error: SIGN_IN_TO_BACK_UP, reason: "signInRequired" };
+    // a page seen signed out before a sign-in isn't backed up from: the backup opens one with the session
+    const reused = this.current?.key === key && !this.current.stale ? this.current.source : this.backupKey === key ? this.backupSource : null;
+    if (reused && known) {
+      // the tray as that page has read it so far
+      this.trays.set(key, reused.highlights);
+      return { profile: known, source: reused };
+    }
+    if (!this.deps.session.signedIn()) {
+      // a signed-out page load in the account's pace (not the read slot: a job starting a backup already holds it)
+      await this.deps.pacer.pace();
+      if (this.deps.pacer.held()) return SLOWED_DOWN;
+    }
     const source = this.deps.open(key, this.deps.session.cookies());
     try {
       // a slow-down on the page holds the whole account
-      const profile = await this.deps.pacer.ask(() => source.profile());
+      const profile = await this.deps.pacer.ask(() => this.walled(() => source.profile()));
       this.profiles.set(key, profile);
       this.trays.set(key, source.highlights);
       return { profile, source };
@@ -374,7 +371,7 @@ export class ProfileService {
       const failed = failedPage(err);
       if (failed.type === "failed") return { ok: false, error: failed.message, reason: "error" };
       if (failed.type === "signedOut") return { ok: false, error: "Sign in to Instagram again.", reason: "signInRequired" };
-      return { ok: false, error: SLOW_DOWN, reason: "rateLimited" };
+      return SLOWED_DOWN;
     }
   }
 
@@ -384,7 +381,7 @@ export class ProfileService {
   }
 
   private sourceFor(key: string): ProfileSource {
-    if (this.current?.key === key) return this.current.source;
+    if (this.current?.key === key && !this.current.stale) return this.current.source;
     this.release();
     // a running backup's page is the profile's page too
     if (this.backupKey === key && this.backupSource) {
@@ -410,15 +407,70 @@ export class ProfileService {
     if (pacer.held()) throw new SavedError("rateLimited");
     await pacer.pace(signal);
     if (pacer.held()) throw new SavedError("rateLimited");
-    return pacer.ask(() => source.page(cursor, signal));
+    return pacer.ask(() => this.walled(() => source.page(cursor, signal)));
+  }
+
+  /**
+   * A post known only by its cover, read from its own page in the shared read slot and the account's pace: with its
+   * items, as shown only to signed-in visitors (`signInOnly`), or with none. Throws SavedError("rateLimited") while
+   * Instagram's slow-down holds, and when its page lands on the login wall (the hold starts then).
+   */
+  private async readPost(post: SavedPost, signal?: AbortSignal): Promise<SavedPost> {
+    const { code } = post;
+    if (!code) return { ...post, items: [] };
+    const { pacer } = this.deps;
+    const found = await this.deps.read(async () => {
+      if (pacer.held()) throw new SavedError("rateLimited");
+      await pacer.pace(signal);
+      if (pacer.held()) throw new SavedError("rateLimited");
+      if (signal?.aborted) throw new Error("Cancelled.");
+      return pacer.ask(() => this.deps.findPost(code, signal));
+    }, signal);
+    if (found === "signInOnly") return { ...post, signInOnly: true };
+    return found && found.length > 0 ? { ...post, items: found, unread: false } : { ...post, items: [] };
+  }
+
+  /**
+   * One highlight's stories from its own page, in the account's pace; signed out also in the shared read slot (signed
+   * in, as before, the pace only). Throws SavedError("rateLimited") while Instagram's slow-down holds, and when a
+   * signed-out page lands on the login wall.
+   */
+  private readHighlight(id: string, signal?: AbortSignal): Promise<InstagramItem[] | null> {
+    return this.paced(() => this.deps.findHighlight(id, signal), signal);
+  }
+
+  /** The tray's next page (signed out), in the read slot and the account's pace; null when there is none. */
+  private readTrayPage(source: ProfileSource, signal?: AbortSignal): Promise<Highlight[] | null> {
+    return this.paced(() => this.walled(() => source.moreHighlights(signal)), signal, true);
+  }
+
+  /** `request` after the hold check and the account's pace; signed out (or `slotted`) in the read slot. */
+  private paced<T>(request: () => Promise<T>, signal?: AbortSignal, slotted = false): Promise<T> {
+    const { pacer } = this.deps;
+    const run = async () => {
+      if (pacer.held()) throw new SavedError("rateLimited");
+      await pacer.pace(signal);
+      if (pacer.held()) throw new SavedError("rateLimited");
+      if (signal?.aborted) throw new Error("Cancelled.");
+      return pacer.ask(request);
+    };
+    return slotted || !this.deps.session.signedIn() ? this.deps.read(run, signal) : run();
+  }
+
+  /** Without a session, a page that asks to sign in is Instagram's login wall for this computer: a slow-down. */
+  private async walled<T>(request: () => Promise<T>): Promise<T> {
+    try {
+      return await request();
+    } catch (err) {
+      if (err instanceof SavedError && err.kind === "signedOut" && !this.deps.session.signedIn()) throw new SavedError("rateLimited");
+      throw err;
+    }
   }
 }
 
-/** Why a profile can't be backed up from its page: seen as signed-out visitors see it, or private and not followed. */
-function refusal(profile: InstagramProfile, source: ProfileSource): Refusal | null {
-  if (source.limited) return { ok: false, error: SIGN_IN_TO_BACK_UP, reason: "signInRequired" };
-  if (isLocked(profile)) return { ok: false, error: "This account is private.", reason: "private" };
-  return null;
+/** Why a profile can't be backed up from its page: private and not followed (Instagram shows it to nobody else). */
+function refusal(profile: InstagramProfile): Refusal | null {
+  return isLocked(profile) ? { ok: false, error: "This account is private.", reason: "private" } : null;
 }
 
 /** The last part of an address's path (a file name), without its query. */

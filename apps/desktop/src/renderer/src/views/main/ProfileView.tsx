@@ -69,8 +69,7 @@ export function ProfileView({ username, backup }: { username: string; backup: Ba
       <ProfileHeader profile={profile} />
       {limited && (
         <p className="profile-limited">
-          <strong>Not signed in.</strong> Instagram shows only this profile's first posts to signed-out visitors. Sign in to see them all, its
-          highlights' stories, and to back it up.{" "}
+          <strong>Seen signed out:</strong> TurboDL reads each post from its own page, which is slower.{" "}
           <button type="button" className="link-button" disabled={busy} onClick={() => void signIn()}>
             Sign in to Instagram
           </button>
@@ -91,7 +90,7 @@ export function ProfileView({ username, backup }: { username: string; backup: Ba
         <ProfilePosts profile={profile} limited={limited} backup={backup} busy={busy} onSignIn={() => void signIn()} />
       </div>
       <div className="profile-side" hidden={tab !== "highlights"}>
-        <ProfileHighlights profile={profile} limited={limited} highlights={highlights} backup={backup} busy={busy} onSignIn={() => void signIn()} />
+        <ProfileHighlights profile={profile} highlights={highlights} backup={backup} busy={busy} onSignIn={() => void signIn()} />
       </div>
     </>
   );
@@ -110,6 +109,9 @@ function ProfileHeader({ profile }: { profile: InstagramProfile }) {
   );
 }
 
+/** What a backup seen signed out costs: one page per post. */
+const SIGNED_OUT_PACE = "Seen signed out, each post is read from its own page, a few seconds apart: a 50-post profile takes a few minutes; a 1,000-post profile takes hours.";
+
 function ProfilePosts({
   profile,
   limited,
@@ -118,6 +120,7 @@ function ProfilePosts({
   onSignIn,
 }: {
   profile: InstagramProfile;
+  /** seen as signed-out visitors see it */
   limited: boolean;
   backup: BackupView | null;
   busy: boolean;
@@ -152,7 +155,7 @@ function ProfilePosts({
 
   return (
     <>
-      {!limited && backup?.state !== "running" && (
+      {backup?.state !== "running" && (
         <div>
           <button type="button" className="btn" onClick={() => void api.profileBackupPlan(username).then(setConfirming)}>
             {resumes ? "Continue backup" : "Back up this profile"}
@@ -160,7 +163,14 @@ function ProfilePosts({
         </div>
       )}
       {confirming && (
-        <BackupConfirm title={`Back up @${username}`} folder={`Instagram › ${username}`} plan={confirming} onStart={() => void startBackup()} onClose={() => setConfirming(null)} />
+        <BackupConfirm
+          title={`Back up @${username}`}
+          folder={`Instagram › ${username}`}
+          plan={confirming}
+          {...(limited ? { note: SIGNED_OUT_PACE } : {})}
+          onStart={() => void startBackup()}
+          onClose={() => setConfirming(null)}
+        />
       )}
       <PostGrid state={state} setState={setState} sentinel={sentinel} emptyText="No posts yet" busy={busy} onSignIn={onSignIn} />
       <PickBar picked={state.picked.length} error={error} working={reading ? "Reading the picked posts…" : undefined} onNext={() => void next()} />
@@ -174,14 +184,12 @@ function ProfilePosts({
  */
 function ProfileHighlights({
   profile,
-  limited,
   highlights,
   backup,
   busy,
   onSignIn,
 }: {
   profile: InstagramProfile;
-  limited: boolean;
   highlights: Highlight[];
   backup: BackupView | null;
   busy: boolean;
@@ -236,7 +244,7 @@ function ProfileHighlights({
   if (highlights.length === 0) return <p className="muted">No highlights</p>;
   return (
     <>
-      {!limited && backup?.state !== "running" && (
+      {backup?.state !== "running" && (
         <div>
           <button type="button" className="btn" onClick={() => void api.highlightsBackupPlan(username).then(setConfirming)}>
             {resumes ? "Continue backup" : "Back up highlights"}
@@ -304,7 +312,7 @@ function ProfileHighlights({
         <>
           {signedOut && (
             <p>
-              {limited ? "Instagram shows highlights' stories only to signed-in visitors." : "Instagram signed TurboDL out."}{" "}
+              Instagram signed TurboDL out.{" "}
               <button type="button" className="link-button" disabled={busy} onClick={onSignIn}>
                 Sign in again
               </button>

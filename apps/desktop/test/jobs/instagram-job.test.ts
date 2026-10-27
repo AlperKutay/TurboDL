@@ -5,7 +5,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { SavedError, type AppEvent, type BrowserCookie, type InstagramItem, type InstagramProfile, type Job, type JobEvent, type JobRequest, type PendingItem, type SavedPost } from "@turbodl/shared";
 import { AppController, type ControllerUi, type InstagramDeps } from "../../src/main/controller";
-import { fakeProfiles, fakeSignedOut, savedGet } from "../fixtures/instagram-fakes";
+import { fakeProfiles, fakeSignedOut, savedGet, signedOutCover } from "../fixtures/instagram-fakes";
 import { startTestServer, type TestServer } from "../fixtures/test-server";
 
 const SESSION: BrowserCookie[] = [
@@ -182,12 +182,31 @@ describe("Instagram link jobs", () => {
     expect(c.manager.list()).toHaveLength(downloads);
   });
 
-  it("fails notFound when the link shows nothing, and signInRequired when Instagram shows it only signed in", async () => {
+  it("fails notFound when the link shows nothing, and signInRequired when the page asks a session to sign in again", async () => {
     const so = fakeSignedOut({});
     so.deps.find = async (link) => (link.kind === "post" && link.code === "Chidden" ? { type: "signedOut" } : { type: "nothing" });
     const c = await start(so.deps);
     expect(await run(c, { url: POST })).toMatchObject({ state: "failed", reason: "notFound", error: "Instagram showed nothing at this link." });
+    // with a session, a page landing on sign-in means the session expired
+    c.instagramSession.take(SESSION);
     expect(await run(c, { url: "https://www.instagram.com/p/Chidden/" })).toMatchObject({ state: "failed", reason: "signInRequired", error: "Sign in to Instagram to read this link." });
+    expect(c["pacer"].held()).toBe(false);
+  });
+
+  it("ends rateLimited and holds the account when a link read without a session lands on Instagram's login wall", async () => {
+    const so = fakeSignedOut({ "17900000000000009": [item("b")] });
+    const find = so.deps.find;
+    so.deps.find = async (link, cookies, signal) => {
+      await find(link, cookies, signal);
+      return { type: "signedOut" };
+    };
+    const c = await start(so.deps);
+    const highlight = "https://www.instagram.com/stories/highlights/17900000000000009/";
+    expect(await run(c, { url: highlight })).toMatchObject({ kind: "instagramHighlight", state: "failed", reason: "rateLimited", error: SLOW_DOWN });
+    expect(c["pacer"].held()).toBe(true);
+    // the next link loads no page while it holds
+    expect(await run(c, { url: POST })).toMatchObject({ state: "failed", reason: "rateLimited", error: SLOW_DOWN });
+    expect(so.read).toEqual(["17900000000000009"]);
   });
 
   it("spaces the pages jobs read 3–6 s apart", async () => {
@@ -265,17 +284,22 @@ describe("Instagram link jobs", () => {
     expect((await c.jobs.ended(backup.id))?.state).toBe("cancelled");
   });
 
-  it("needs a session for a story or highlight link", async () => {
+  it("reads a highlight link without a session, and needs one for a story link", async () => {
     const so = fakeSignedOut({ "17900000000000009": [item("b")] });
     const c = await start(so.deps);
     const story = "https://www.instagram.com/stories/someone/3800000000000000001/";
     const highlight = "https://www.instagram.com/stories/highlights/17900000000000009/";
-    for (const url of [story, highlight]) {
-      expect(await run(c, { url })).toMatchObject({ state: "failed", reason: "signInRequired", error: "Sign in to Instagram to read this link." });
-    }
+    expect(await run(c, { url: story })).toMatchObject({ state: "failed", reason: "signInRequired", error: "Sign in to Instagram to read this link." });
     expect(so.read).toEqual([]);
-    c.instagramSession.take(SESSION);
     expect(await run(c, { url: highlight })).toMatchObject({ kind: "instagramHighlight", state: "done", files: [dl("someone", "Highlights", "b.jpg")] });
+    expect(so.read).toEqual(["17900000000000009"]);
+  });
+
+  it("fails signInRequired for a post only signed-in visitors see, read signed out", async () => {
+    const so = fakeSignedOut({});
+    so.deps.find = async () => ({ type: "signInOnly" });
+    const c = await start(so.deps);
+    expect(await run(c, { url: POST })).toMatchObject({ state: "failed", reason: "signInRequired", error: "Instagram shows this post only to signed-in visitors." });
   });
 });
 
@@ -362,23 +386,98 @@ describe("Instagram profile jobs", () => {
     expect(opened[1] - opened[0]).toBeLessThanOrEqual(6000);
   });
 
-  it("saves a signed-out profile's first posts, limited, and says highlights need sign-in", async () => {
-    const so = fakeSignedOut({ C1: [item("a", "sample.user"), item("b", "sample.user")], C2: [item("c", "sample.user")] });
+  const PUBLIC_POSTS = () => ({ C1: [item("a", "sample.user"), item("b", "sample.user")], C2: [item("c", "sample.user")], C3: [item("d", "sample.user")] });
+  const THREE_PAGES = () => [[signedOutCover("p1", "C1"), signedOutCover("p2", "C2")], [signedOutCover("p3", "C3")]];
+
+  it("backs every post of a signed-out profile up, over several pages, and ends done", async () => {
+    const so = fakeSignedOut(PUBLIC_POSTS(), { listing: THREE_PAGES() });
     const c = await start(so.deps);
-    const job = await run(c, { url: PROFILE_URL, options: { highlights: true } });
-    expect(job).toMatchObject({
-      state: "done",
-      limited: true,
-      reason: "signInRequired",
-      warnings: ["Signed out: only the first 2 posts Instagram shows visitors. Sign in to Instagram for the rest.", "Highlights need you signed in to Instagram."],
-    });
-    expect(sorted(job.files)).toEqual([dl("sample.user", "a.jpg"), dl("sample.user", "b.jpg"), dl("sample.user", "c.jpg")]);
-    expect(so.closed).toEqual(["sample.user"]);
-    expect(await run(c, { url: PROFILE_URL, options: { highlightsOnly: true } })).toMatchObject({ state: "failed", reason: "signInRequired", error: "Highlights need you signed in to Instagram." });
-    expect(so.opened).toHaveLength(1);
+    const job = await run(c, { url: PROFILE_URL });
+    expect(job).toMatchObject({ state: "done", failedItems: 0 });
+    expect(job.limited).toBeUndefined();
+    expect(sorted(job.files)).toEqual([dl("sample.user", "a.jpg"), dl("sample.user", "b.jpg"), dl("sample.user", "c.jpg"), dl("sample.user", "d.jpg")]);
+    expect(so.asked).toHaveLength(2);
   });
 
-  it("ends failed when the signed-out read couldn't read every post, the rest saved", async () => {
+  /** A profile job run to its end, with the note of each progress it reported. */
+  async function progressNotes(c: AppController) {
+    const { id } = c.jobs.create({ url: PROFILE_URL });
+    const seen: (string | undefined)[] = [];
+    c.jobs.subscribe(id, (e) => e.type === "progress" && seen.push(e.progress.note));
+    const job = (await c.jobs.ended(id))!;
+    return { seen, job };
+  }
+
+  it("says in its progress, while it does, that a signed-out backup reads each post from its own page", async () => {
+    const { seen, job } = await progressNotes(await start(fakeSignedOut(PUBLIC_POSTS(), { listing: THREE_PAGES() }).deps));
+    expect(job.state).toBe("done");
+    expect(seen).toContain("Signed out: reading each post from its own page");
+    expect(job.progress.note).toBeUndefined();
+  });
+
+  it("has no note in its progress signed in, where the posts come with their items", async () => {
+    const { seen, job } = await progressNotes(await signedIn(fakeProfiles({ "sample.user": SAMPLE() }).deps));
+    expect(job.state).toBe("done");
+    expect(seen.length).toBeGreaterThan(0);
+    expect(seen.every((note) => note === undefined)).toBe(true);
+  });
+
+  it("backs a signed-out profile's highlights up too", async () => {
+    const so = fakeSignedOut({ ...PUBLIC_POSTS(), "17900000000000002": [item("s1", "sample.user")] });
+    const c = await start(so.deps);
+    const job = await run(c, { url: PROFILE_URL, options: { highlights: true } });
+    expect(job).toMatchObject({ state: "done", failedItems: 0 });
+    expect(job.limited).toBeUndefined();
+    expect(job.warnings).toEqual([expect.stringMatching(/^Backing up every post/)]);
+    expect(sorted(job.files)).toEqual([dl("sample.user", "Highlights", "s1.jpg"), dl("sample.user", "a.jpg"), dl("sample.user", "b.jpg"), dl("sample.user", "c.jpg")]);
+  });
+
+  it("backs a signed-out profile's highlights up by themselves", async () => {
+    const so = fakeSignedOut({ "17900000000000002": [item("s1", "sample.user")] });
+    const c = await start(so.deps);
+    const job = await run(c, { url: PROFILE_URL, options: { highlightsOnly: true } });
+    expect(job).toMatchObject({ state: "done", files: [dl("sample.user", "Highlights", "s1.jpg")], warnings: [] });
+  });
+
+  it("ends done and limited, the other posts saved, when Instagram shows a post only to signed-in visitors", async () => {
+    const so = fakeSignedOut(PUBLIC_POSTS(), { listing: THREE_PAGES() });
+    const find = so.deps.find;
+    so.deps.find = (link, cookies, signal) => (link.kind === "post" && link.code === "C2" ? Promise.resolve({ type: "signInOnly" }) : find(link, cookies, signal));
+    const c = await start(so.deps);
+    const job = await run(c, { url: PROFILE_URL });
+    expect(job).toMatchObject({ state: "done", limited: true, reason: "signInRequired", failedItems: 0 });
+    expect(job.warnings).toContain("1 post is shown only to signed-in visitors; sign in to save them.");
+    expect(sorted(job.files)).toEqual([dl("sample.user", "a.jpg"), dl("sample.user", "b.jpg"), dl("sample.user", "d.jpg")]);
+  });
+
+  it("still names the posts shown only to signed-in visitors when a signed-out backup also failed one", async () => {
+    // C2 and C3 are shown only to signed-in visitors; C4's own page shows nothing
+    const so = fakeSignedOut(PUBLIC_POSTS(), { listing: [[signedOutCover("p1", "C1"), signedOutCover("p2", "C2"), signedOutCover("p3", "C3")], [signedOutCover("p4", "C4")]] });
+    const find = so.deps.find;
+    so.deps.find = (link, cookies, signal) => (link.kind === "post" && (link.code === "C2" || link.code === "C3") ? Promise.resolve({ type: "signInOnly" }) : find(link, cookies, signal));
+    const c = await start(so.deps);
+    const job = await run(c, { url: PROFILE_URL });
+    expect(job).toMatchObject({ state: "failed", reason: "error", error: "1 post couldn't be saved; it's tried again on the next run.", failedItems: 1 });
+    expect(job.limited).toBeUndefined();
+    expect(job.warnings).toContain("2 posts are shown only to signed-in visitors; sign in to save them.");
+    expect(sorted(job.files)).toEqual([dl("sample.user", "a.jpg"), dl("sample.user", "b.jpg")]);
+  });
+
+  it("ends rateLimited when Instagram's login wall stops a signed-out backup, what was saved listed", async () => {
+    const so = fakeSignedOut(PUBLIC_POSTS(), { listing: THREE_PAGES() });
+    const open = so.deps.openProfile!;
+    so.deps.openProfile = (username, cookies) => {
+      const source = open(username, cookies);
+      return { ...source, page: (cursor, signal) => (cursor ? Promise.reject(new SavedError("rateLimited")) : source.page(cursor, signal)) };
+    };
+    const c = await start(so.deps);
+    const job = await run(c, { url: PROFILE_URL });
+    expect(job).toMatchObject({ state: "failed", reason: "rateLimited", error: SLOW_DOWN });
+    expect(sorted(job.files)).toEqual([dl("sample.user", "a.jpg"), dl("sample.user", "b.jpg"), dl("sample.user", "c.jpg")]);
+    expect(c["pacer"].held()).toBe(true);
+  });
+
+  it("ends failed when a signed-out backup couldn't read every post, the rest saved", async () => {
     // C2's own page shows nothing
     const so = fakeSignedOut({ C1: [item("a", "sample.user"), item("b", "sample.user")] });
     const c = await start(so.deps);
@@ -386,9 +485,8 @@ describe("Instagram profile jobs", () => {
     expect(job).toMatchObject({
       state: "failed",
       reason: "error",
-      error: "1 post couldn't be read.",
+      error: "1 post couldn't be saved; it's tried again on the next run.",
       failedItems: 1,
-      warnings: ["Signed out: only the first 2 posts Instagram shows visitors. Sign in to Instagram for the rest."],
     });
     expect(sorted(job.files)).toEqual([dl("sample.user", "a.jpg"), dl("sample.user", "b.jpg")]);
   });
