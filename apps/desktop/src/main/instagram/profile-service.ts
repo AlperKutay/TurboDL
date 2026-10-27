@@ -71,7 +71,8 @@ const SLOWED_DOWN: Refusal = { ok: false, error: SLOW_DOWN, reason: "rateLimited
  * paced next pages, picks, backups into `Instagram/<username>`, and the Profiles list.
  */
 export class ProfileService {
-  private current: { key: string; source: ProfileSource } | null = null;
+  /** the screen's profile page; `stale` once a sign-in came after it was seen signed out: the next load opens it afresh, its grid pages on meanwhile */
+  private current: { key: string; source: ProfileSource; stale?: boolean } | null = null;
   /** the page a running backup pages through; it stays open until the backup ends */
   private backupSource: ProfileSource | null = null;
   private backupKey = "";
@@ -90,8 +91,8 @@ export class ProfileService {
     const key = username.toLowerCase();
     const source = this.sourceFor(key);
     try {
-      // a slow-down on the page holds the whole account
-      const profile = await this.deps.pacer.ask(() => source.profile());
+      // a slow-down on the page holds the whole account; so does its login wall without a session
+      const profile = await this.deps.pacer.ask(() => this.walled(() => source.profile()));
       this.profiles.set(key, profile);
       // signed out, the screen shows the tray as far as it was read (the page's first page); a highlights backup reads the rest
       this.trays.set(key, source.highlights);
@@ -126,8 +127,9 @@ export class ProfileService {
 
   /**
    * The picked posts' items, in pick order; a post known only by its cover (seen signed out) is read from its own
-   * page first (`readPost`), and left out when it shows nothing or can't be read. Nothing more is read once
-   * Instagram's slow-down holds. Posts never served are left out.
+   * page first (`readPost`), and left out when it shows nothing or can't be read. Posts never served are left out.
+   * Throws SavedError("rateLimited") while Instagram's slow-down holds or when a post's page lands on its login wall,
+   * and SavedError("signedOut") when the session expired: no part of the picks is answered then.
    */
   async readPicks(postIds: string[]): Promise<InstagramItem[]> {
     const items: InstagramItem[] = [];
@@ -138,11 +140,22 @@ export class ProfileService {
         items.push(...post.items);
         continue;
       }
-      if (this.deps.pacer.held()) break;
-      const read = await this.readPost(post).catch(() => null);
+      if (this.deps.pacer.held()) throw new SavedError("rateLimited");
+      const read = await this.readPost(post).catch((err: unknown) => {
+        if (err instanceof SavedError && (err.kind === "rateLimited" || err.kind === "signedOut")) throw err;
+        return null;
+      });
       if (read) items.push(...read.items);
     }
     return items;
+  }
+
+  /**
+   * Signed in just now: the open profile's page, seen signed out, is let go at the screen's next load, which opens it
+   * with the session; a backup started meanwhile opens its own. A running backup's page stays.
+   */
+  reopenSignedIn(): void {
+    if (this.current?.source.limited && this.current.source !== this.backupSource) this.current.stale = true;
   }
 
   /** `<baseDir>/Instagram/<username>`: a profile's picks and backups. */
@@ -334,7 +347,8 @@ export class ProfileService {
   /** The open profile's page and profile, a running backup's, or a page of its own for a backup (without a session too). */
   private async pageFor(key: string): Promise<{ profile: InstagramProfile; source: ProfileSource } | Refusal> {
     const known = this.profiles.get(key);
-    const reused = this.current?.key === key ? this.current.source : this.backupKey === key ? this.backupSource : null;
+    // a page seen signed out before a sign-in isn't backed up from: the backup opens one with the session
+    const reused = this.current?.key === key && !this.current.stale ? this.current.source : this.backupKey === key ? this.backupSource : null;
     if (reused && known) {
       // the tray as that page has read it so far
       this.trays.set(key, reused.highlights);
@@ -367,7 +381,7 @@ export class ProfileService {
   }
 
   private sourceFor(key: string): ProfileSource {
-    if (this.current?.key === key) return this.current.source;
+    if (this.current?.key === key && !this.current.stale) return this.current.source;
     this.release();
     // a running backup's page is the profile's page too
     if (this.backupKey === key && this.backupSource) {

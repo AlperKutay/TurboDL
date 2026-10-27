@@ -56,7 +56,7 @@ import { fetchMedia } from "./instagram/fetch-media";
 import { itemDownload } from "./instagram/item-download";
 import { Backups, type StartResult } from "./instagram/backups";
 import { LedgerStore } from "./instagram/ledger";
-import { InstagramPacer } from "./instagram/pacer";
+import { InstagramPacer, SLOW_DOWN, failedPage } from "./instagram/pacer";
 import { ProfileIndex } from "./instagram/profile-index";
 import { ProfileService, type ProfileSource } from "./instagram/profile-service";
 import { httpGet, type HttpGet } from "./instagram/saved-client";
@@ -538,10 +538,15 @@ export class AppController {
     return { ok: true };
   }
 
-  /** Instagram's own sign-in in TurboDL, on the check page the picker's page landed on if any; its cookies become the session. */
+  /**
+   * Instagram's own sign-in in TurboDL, on the check page the picker's page landed on if any; its cookies become the
+   * session, and a profile seen signed out on the screen is opened afresh with it.
+   */
   async instagramSignIn(pendingId?: string): Promise<boolean> {
     const cookies = await this.instagram.signIn(pendingId ? this.instagramChecks.get(pendingId) : undefined);
-    return cookies !== null && this.instagramSession.take(cookies);
+    if (cookies === null || !this.instagramSession.take(cookies)) return false;
+    this.profiles.reopenSignedIn();
+    return true;
   }
 
   instagramAccount(): Promise<InstagramAccount> {
@@ -602,10 +607,18 @@ export class AppController {
     return this.profiles.page(username, cursor);
   }
 
-  /** The picker over the picked posts' items, in pick order, into the profile's own folder. */
+  /** The picker over the picked posts' items, in pick order, into the profile's own folder; none when Instagram pushed back. */
   async openProfilePicks(username: string, postIds: string[]): Promise<Result> {
     if (postIds.length === 0) return { ok: false, error: "Nothing was picked." };
-    const items = await this.profiles.readPicks(postIds);
+    let items: InstagramItem[];
+    try {
+      items = await this.profiles.readPicks(postIds);
+    } catch (err) {
+      const failed = failedPage(err);
+      if (failed.type === "rateLimited") return { ok: false, error: SLOW_DOWN };
+      if (failed.type === "signedOut") return { ok: false, error: "Instagram signed TurboDL out. Sign in to Instagram again." };
+      return { ok: false, error: failed.message };
+    }
     if (items.length === 0) return { ok: false, error: "Couldn't read these posts." };
     const pendingId = newId();
     this.instagramItems.set(pendingId, items);
