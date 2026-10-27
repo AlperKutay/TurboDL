@@ -11,12 +11,19 @@ const COLLECTIONS: SavedCollection[] = [
 /** demo.public's post that Instagram shows only to signed-in visitors */
 const SIGN_IN_ONLY = "DP5";
 
+/** The profile seen signed out a post's code belongs to: demo.public's DP…, demo.open's DO…. */
+function signedOutOwner(code: string): string | undefined {
+  return code.startsWith("DP") ? "demo.public" : code.startsWith("DO") ? "demo.open" : undefined;
+}
+
 /**
  * Test runs only (TURBODL_USER_DATA with TURBODL_INSTAGRAM_DEMO_BASE): every link is a post of three photos served at
  * `<base>/ig/<n>.png`, signed in already as demo.user (unless TURBODL_INSTAGRAM_DEMO_SIGNED_OUT), nothing kept on disk.
  * Saved: All holds six posts on two pages (the first a carousel), "Trips" three; profiles demo.person (with two
- * highlights), demo.locked, demo.plain, and demo.public as signed-out visitors see it (seven posts on three pages, one
- * shown only to signed-in visitors; two highlights, the second on the tray's next page); waits are short.
+ * highlights), demo.locked, demo.plain, and two as signed-out visitors see them, with or without the session:
+ * demo.public (seven posts on three pages; two highlights, the second on the tray's next page) and demo.open (three
+ * posts on two pages, none hidden, no highlights). demo.public's DP5 answers signInOnly whatever the cookies are, as
+ * if Instagram showed it only to signed-in visitors. Waits are short.
  */
 export function demoInstagram(base: string): InstagramDeps {
   const picture = (n: number) => ({ candidates: [{ url: `${base}/ig/${n}.png`, width: 640, height: 640 }] });
@@ -31,12 +38,13 @@ export function demoInstagram(base: string): InstagramDeps {
     find: async (link) => {
       if (link.kind === "highlight" && link.id === "17900000000000099") return { type: "signedOut" };
       if (link.kind === "post" && link.code === SIGN_IN_ONLY) return { type: "signInOnly" };
+      const owner = link.kind === "post" ? signedOutOwner(link.code) : undefined;
       return {
         type: "items",
-        // a highlight's two stories, named after it; demo.public's posts (DP…) two photos of that account; any other link three photos
+        // a highlight's two stories, named after it; the signed-out profiles' posts (DP…, DO…) two photos of that account; any other link three photos
         items:
-          link.kind === "post" && link.code.startsWith("DP")
-            ? [1, 2].map((n) => ({ kind: "image" as const, url: `${base}/ig/${n}.png`, thumbnail: `${base}/ig/${n}.png`, mediaId: `${link.code}-${n}`, owner: "demo.public" }))
+          link.kind === "post" && owner
+            ? [1, 2].map((n) => ({ kind: "image" as const, url: `${base}/ig/${n}.png`, thumbnail: `${base}/ig/${n}.png`, mediaId: `${link.code}-${n}`, owner }))
             : link.kind === "highlight"
             ? [1, 2].map((n) => ({ kind: "image" as const, url: `${base}/ig/${n}.png`, thumbnail: `${base}/ig/${n}.png`, mediaId: `h${link.id}-${n}` }))
             : [0, 1, 2].map((n) => ({ kind: "image" as const, url: `${base}/ig/${n}.png`, thumbnail: `${base}/ig/${n}.png`, width: 64, height: 64, mediaId: `demo${n}` })),
@@ -79,6 +87,12 @@ export function demoInstagram(base: string): InstagramDeps {
           ],
           highlights: [{ id: "17900000000000005", title: "Trips", cover: `${base}/ig/1.png` }],
           moreHighlights: [{ id: "17900000000000006", title: "Food", cover: `${base}/ig/2.png` }],
+          limited: true,
+        },
+        // seen signed out too, every post shown to signed-out visitors
+        "demo.open": {
+          profile: { id: "5100000000000000012", username: "demo.open", fullName: "Demo Open", isPrivate: false, following: false },
+          pages: [[cover("DO1", 1), cover("DO2", 8)], [cover("DO3", 1)]],
           limited: true,
         },
         "demo.plain": {

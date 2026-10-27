@@ -164,6 +164,20 @@ test("backs up a profile and its highlights without signing in", async () => {
   });
 });
 
+test("backs up a profile seen signed out that hides no post from signed-out visitors, exiting 0", async () => {
+  await withApp({ TURBODL_INSTAGRAM_DEMO_SIGNED_OUT: "1" }, async ({ userData, baseDir }) => {
+    const r = await turbodl(userData, ["get", "--json", "https://www.instagram.com/demo.open/"]);
+    expect(r.code, r.stderr).toBe(0);
+    const events = lines(r.stdout).map((l) => JSON.parse(l) as { type: string; progress?: { note?: string }; job?: { state: string; limited?: boolean } });
+    const end = events.find((e) => e.type === "end");
+    expect(end?.job?.state).toBe("done");
+    expect(end?.job?.limited).toBeUndefined();
+    // its progress says how it reads them
+    expect(events.some((e) => e.type === "progress" && e.progress?.note === "Signed out: reading each post from its own page")).toBe(true);
+    expect(readdirSync(path.join(baseDir, "Instagram", "demo.open")).sort()).toEqual(["DO1", "DO2", "DO3"].flatMap((code) => [`${code}-1.png`, `${code}-2.png`]));
+  });
+});
+
 test("ends a followed job with 6 when another command cancels it", async () => {
   await withApp({}, async ({ server, userData }) => {
     server.setFile("/files/slow.bin", { data: randomBytes(4 * 1024 * 1024), contentType: "application/octet-stream", throttle: 20_000 });
