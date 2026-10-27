@@ -61,6 +61,12 @@ const LOOK = 3000;
 const SIGNED_OUT_PAGE = 12;
 
 /**
+ * The look through a page's scripts again that is under way, whichever feed began it: the app looks once per run, so
+ * another profile's feed that meets a stale id meanwhile waits for that look instead of giving up.
+ */
+let rescanning: Promise<void> | null = null;
+
+/**
  * A profile's posts, page by page: the first ones from its loaded page, the rest by sending the page's own posts
  * request again with the last cursor (Instagram answers REST requests for profiles as spam), or signed out Instagram's
  * own signed-out query. Keeps nothing per caller, so the grid and a backup page through it alike.
@@ -191,8 +197,8 @@ export class ProfileFeed {
    * One of Instagram's signed-out queries, its answer read by `read`. An unknown id, or an answer without what was
    * asked for (`read` throws badAnswer: a stale id), is tried once more: at once with a newer id another page noted
    * meanwhile, otherwise after the feed's one look through the page's scripts again (a read that meets a stale id while
-   * that look runs waits for it). Still nothing: throws `stale`. Anything else (Instagram's push-back, no answer at all)
-   * throws as it is and keeps the id. Called off: "Cancelled.".
+   * a look runs, this feed's or another's, waits for it). Still nothing: throws `stale`. Anything else (Instagram's
+   * push-back, no answer at all) throws as it is and keeps the id. Called off: "Cancelled.".
    */
   private async signedOut<T>(
     name: string,
@@ -218,7 +224,12 @@ export class ProfileFeed {
       if (retried) throw new Error(stale);
       retried = true;
       if (!operationIds.get(name)) {
-        this.rescan ??= this.driver.rescanScripts().catch(() => undefined);
+        this.rescan ??= rescanning ??= this.driver
+          .rescanScripts()
+          .catch(() => undefined)
+          .finally(() => {
+            rescanning = null;
+          });
         await within(this.rescan, Infinity, signal);
       }
     }

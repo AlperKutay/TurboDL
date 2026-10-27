@@ -361,6 +361,26 @@ describe("ProfileFeed seen signed out", () => {
     expect(page.rescans).toBe(1);
   });
 
+  it("lets a second profile's page that meets a stale id wait for the look the first one is taking through its scripts", async () => {
+    operationIds.note(defines(SIGNED_OUT_POSTS_QUERY, "111"));
+    const answer = (q: Query) => (q.docId === "222" ? byCursor(q) : STALE);
+    // the app looks through a page's scripts once per run: a later look finds nothing, as the real page's does
+    let looked = false;
+    const look = async () => {
+      if (looked) return;
+      looked = true;
+      await new Promise((r) => setTimeout(r, 20));
+      operationIds.note(defines(SIGNED_OUT_POSTS_QUERY, "222"));
+    };
+    const a = new SignedOutPage([LOGGED_OUT], answer, look);
+    const b = new SignedOutPage([LOGGED_OUT], answer, look);
+    const [fa, fb] = [feed(a), feed(b)];
+    await Promise.all([fa.profile(), fb.profile()]);
+    const [pa, pb] = await Promise.all([fa.page("c1"), fb.page("c2")]);
+    expect([pa.next, pb.next]).toEqual(["c2", "c3"]);
+    expect(a.rescans + b.rescans).toBe(1);
+  });
+
   it("stops a called-off read: nothing is sent, and no retry follows the look through the scripts", async () => {
     operationIds.note(defines(SIGNED_OUT_POSTS_QUERY, "111"));
     const before = new SignedOutPage([LOGGED_OUT], byCursor);
