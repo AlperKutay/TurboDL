@@ -499,8 +499,10 @@ export class AppController {
     if (outcome.type === "items") this.instagramItems.set(pendingId, outcome.items);
     if (outcome.type === "signedOut" && outcome.at) this.instagramChecks.set(pendingId, outcome.at);
     else this.instagramChecks.delete(pendingId);
-    // a post shown only to signed-in visitors asks the picker to sign in, like a hidden one always did
-    return outcome.type === "signInOnly" ? { type: "signedOut" } : outcome;
+    // a post shown only to signed-in visitors asks the picker to sign in, like a hidden one always did; so does a story
+    // link read without a session (its page shows nothing signed out)
+    if (outcome.type === "signInOnly" || (outcome.type === "nothing" && p.link.kind === "story" && !this.instagramSession.signedIn())) return { type: "signedOut" };
+    return outcome;
   }
 
   /** A sign-in landing: with a session it expired; without one it is Instagram's login wall, which holds the account's pacer. */

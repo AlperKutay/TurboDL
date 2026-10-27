@@ -35,7 +35,7 @@ type PageRead<T> = { read: T } | "held" | "calledOff";
 
 const IGNORED = "Instagram downloads go to TurboDL's Instagram folders; dir and name are ignored.";
 const SIGN_IN_TO_READ = "Sign in to Instagram to read this link.";
-const HIGHLIGHTS_SIGN_IN = "Highlights need you signed in to Instagram.";
+const POST_SIGN_IN_ONLY = "Instagram shows this post only to signed-in visitors.";
 const NO_HIGHLIGHTS = "This profile has no highlights.";
 const SIGN_IN_TO_SAVED = "Sign in to Instagram to back up Saved.";
 const STOPPED = "The backup was stopped in TurboDL.";
@@ -44,7 +44,7 @@ const CALLED_OFF: Refusal = { ok: false, error: "Cancelled.", reason: "error" };
 
 /**
  * Runs an Instagram link as a job, into the app's Instagram folders: a post's, story's or highlight's items, a
- * profile's backups (posts, signed out too; highlights), Saved's collections. Every page it reads waits
+ * profile's backups (posts and highlights, signed out too), Saved's collections. Every page it reads waits
  * for the jobs' read slot and the account's pace; nothing is asked while Instagram's slow-down holds.
  */
 export async function runInstagramJob(job: JobRecord, link: InstagramLink, deps: InstagramJobDeps): Promise<void> {
@@ -58,35 +58,34 @@ export async function runInstagramJob(job: JobRecord, link: InstagramLink, deps:
 /** A post's, reel's, story's or highlight's items, into the folders the app's picker uses. */
 async function linkJob(job: JobRecord, link: Exclude<InstagramLink, { kind: "profile" | "saved" }>, deps: InstagramJobDeps): Promise<void> {
   job.start();
-  // stories and highlights show only to signed-in visitors: no page is loaded for nothing
-  if (link.kind !== "post" && !deps.session.signedIn()) return fail(job, deps, "signInRequired", SIGN_IN_TO_READ);
+  // stories show only to signed-in visitors: no page is loaded for nothing
+  if (link.kind === "story" && !deps.session.signedIn()) return fail(job, deps, "signInRequired", SIGN_IN_TO_READ);
   const outcome = await paced(job, deps, () => deps.find(link, job.signal));
   if (!outcome) return;
-  if (outcome.type === "signedOut" || outcome.type === "signInOnly") return fail(job, deps, "signInRequired", SIGN_IN_TO_READ);
+  if (outcome.type === "signInOnly") return fail(job, deps, "signInRequired", POST_SIGN_IN_ONLY);
+  if (outcome.type === "signedOut") return fail(job, deps, "signInRequired", SIGN_IN_TO_READ);
   if (outcome.type === "nothing") return fail(job, deps, "notFound", "Instagram showed nothing at this link.");
   const fallback = link.kind === "post" ? link.code : link.kind === "story" ? link.item : link.id;
   const where = { defaultDir: instagramFolder(deps.settings().baseDir), highlight: link.kind === "highlight", fallback };
   if (await saveItems(job, deps, outcome.items, where)) job.end({ state: "done" });
 }
 
-/** A profile: its posts' backup (signed out too, each post read from its own page), then its highlights' when asked. */
+/** A profile: its posts' backup, then its highlights' when asked; both work without a session. */
 async function profileJob(job: JobRecord, username: string, deps: InstagramJobDeps): Promise<void> {
   const { profiles } = deps;
   const options = job.request.options ?? {};
   const highlightsOnly = options.highlightsOnly === true;
   const highlights = highlightsOnly || options.highlights === true;
-  const signedIn = deps.session.signedIn();
-  if (!signedIn && highlightsOnly) return fail(job, deps, "signInRequired", HIGHLIGHTS_SIGN_IN);
+  const skipped = { signInOnly: 0 };
   let missedPosts = 0;
   if (!highlightsOnly) {
-    const posts = await backup(job, deps, () => profiles.startBackup(username), async () => job.warn(planWarning(await profiles.plan(username))));
+    const posts = await backup(job, deps, () => profiles.startBackup(username), async () => job.warn(planWarning(await profiles.plan(username))), skipped);
     if (posts === null) return;
     if (typeof posts !== "number") return refused(job, deps, posts);
     missedPosts = posts;
   }
   let missedHighlights = 0;
-  if (highlights && !signedIn) job.warn(HIGHLIGHTS_SIGN_IN);
-  else if (highlights) {
+  if (highlights) {
     const stories = await backup(job, deps, () => profiles.startHighlightsBackup(username));
     if (stories === null) return;
     if (typeof stories === "number") missedHighlights = stories;
@@ -96,7 +95,7 @@ async function profileJob(job: JobRecord, username: string, deps: InstagramJobDe
   complete(job, deps, [
     [missedPosts, "post"],
     [missedHighlights, "highlight"],
-  ]);
+  ], skipped.signInOnly);
 }
 
 /** Saved: the account's own collections picked by name (or all of them), backed up one after another. */
@@ -135,7 +134,7 @@ async function savedJob(job: JobRecord, deps: InstagramJobDeps): Promise<void> {
  * One backup of the job in the lane's turn, its start a page read in the jobs' read slot, followed to its end: how
  * many posts it couldn't save once it finished, the refusal when it didn't start, or null once the job has ended.
  */
-async function backup(job: JobRecord, deps: InstagramJobDeps, start: () => Promise<StartResult>, started?: () => Promise<void>): Promise<number | Refusal | null> {
+async function backup(job: JobRecord, deps: InstagramJobDeps, start: () => Promise<StartResult>, started?: () => Promise<void>, skipped?: { signInOnly: number }): Promise<number | Refusal | null> {
   const { backups, lane, pacer } = deps;
   const follower = new BackupFollower(job, backups);
   try {
@@ -167,16 +166,18 @@ async function backup(job: JobRecord, deps: InstagramJobDeps, start: () => Promi
     job.start();
     follower.claim();
     await started?.();
-    return finished(job, deps, await follower.settled());
+    return finished(job, deps, await follower.settled(), skipped);
   } finally {
     follower.close();
   }
 }
 
 /** How the job's backup ended: once finished, how many posts it couldn't save; null once the job has ended as the backup did. */
-function finished(job: JobRecord, deps: InstagramJobDeps, view: BackupView | undefined): number | null {
+function finished(job: JobRecord, deps: InstagramJobDeps, view: BackupView | undefined, skipped?: { signInOnly: number }): number | null {
   switch (view?.state) {
     case "finished":
+      if (view.warning) job.warn(view.warning);
+      if (skipped) skipped.signInOnly += view.signInOnly ?? 0;
       return view.failed;
     case "stopped":
       job.end(job.cancelledByClient ? { state: "cancelled" } : { state: "cancelled", reason: "stopped", error: STOPPED });
@@ -224,9 +225,16 @@ async function paced<T>(job: JobRecord, deps: InstagramJobDeps, read: () => Prom
   return answer.read;
 }
 
-/** Done when every part saved everything; otherwise failed, naming what is missing, its saved files still listed. */
-function complete(job: JobRecord, deps: InstagramJobDeps, missed: [count: number, unit: string][]): void {
+/**
+ * Done when every part saved everything; otherwise failed, naming what is missing, its saved files still listed.
+ * Posts shown only to signed-in visitors leave it done, but limited, with a warning.
+ */
+function complete(job: JobRecord, deps: InstagramJobDeps, missed: [count: number, unit: string][], signInOnly = 0): void {
   const parts = missed.filter(([count]) => count > 0).map(([count, unit]) => counted(count, unit));
+  if (parts.length === 0 && signInOnly > 0) {
+    job.warn(`${signInOnly === 1 ? "1 post is" : `${signInOnly} posts are`} shown only to signed-in visitors; sign in to save them.`);
+    return job.end({ state: "done", limited: true });
+  }
   if (parts.length === 0) return job.end({ state: "done" });
   const total = missed.reduce((sum, [count]) => sum + count, 0);
   fail(job, deps, "error", `${parts.join(" and ")} couldn't be saved; ${total === 1 ? "it's" : "they're"} tried again on the next run.`);
