@@ -87,7 +87,7 @@ export function ProfileView({ username, backup }: { username: string; backup: Ba
       </div>
       {/* both sides stay, each with its own picks; only the one chosen shows */}
       <div className="profile-side" hidden={tab !== "posts"}>
-        <ProfilePosts profile={profile} backup={backup} busy={busy} onSignIn={() => void signIn()} />
+        <ProfilePosts profile={profile} limited={limited} backup={backup} busy={busy} onSignIn={() => void signIn()} />
       </div>
       <div className="profile-side" hidden={tab !== "highlights"}>
         <ProfileHighlights profile={profile} highlights={highlights} backup={backup} busy={busy} onSignIn={() => void signIn()} />
@@ -109,13 +109,19 @@ function ProfileHeader({ profile }: { profile: InstagramProfile }) {
   );
 }
 
+/** What a backup seen signed out costs: one page per post. */
+const SIGNED_OUT_PACE = "Seen signed out, each post is read from its own page, a few seconds apart: a 50-post profile takes a few minutes; a 1,000-post profile takes hours.";
+
 function ProfilePosts({
   profile,
+  limited,
   backup,
   busy,
   onSignIn,
 }: {
   profile: InstagramProfile;
+  /** seen as signed-out visitors see it */
+  limited: boolean;
   backup: BackupView | null;
   busy: boolean;
   onSignIn(): void;
@@ -157,7 +163,14 @@ function ProfilePosts({
         </div>
       )}
       {confirming && (
-        <BackupConfirm title={`Back up @${username}`} folder={`Instagram › ${username}`} plan={confirming} onStart={() => void startBackup()} onClose={() => setConfirming(null)} />
+        <BackupConfirm
+          title={`Back up @${username}`}
+          folder={`Instagram › ${username}`}
+          plan={confirming}
+          {...(limited ? { note: SIGNED_OUT_PACE } : {})}
+          onStart={() => void startBackup()}
+          onClose={() => setConfirming(null)}
+        />
       )}
       <PostGrid state={state} setState={setState} sentinel={sentinel} emptyText="No posts yet" busy={busy} onSignIn={onSignIn} />
       <PickBar picked={state.picked.length} error={error} working={reading ? "Reading the picked posts…" : undefined} onNext={() => void next()} />

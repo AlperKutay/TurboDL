@@ -251,6 +251,7 @@ test("profiles: a public profile opens signed out; picks and a backup read each 
     await main.getByRole("button", { name: "Back up this profile" }).click();
     const confirm = main.getByRole("dialog", { name: "Back up @demo.public" });
     await expect(confirm).toContainText("Instagram doesn't say how many posts it holds.");
+    await expect(confirm).toContainText("a 50-post profile takes a few minutes; a 1,000-post profile takes hours.");
     await confirm.getByRole("button", { name: "Start backup" }).click();
     const panel = main.getByRole("region", { name: "Backup" });
     await expect(panel).toContainText("Backup finished", { timeout: 30_000 });

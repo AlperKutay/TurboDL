@@ -10,6 +10,7 @@ export function BackupConfirm({
   folder,
   unit = "posts",
   plan,
+  note,
   onStart,
   onClose,
 }: {
@@ -18,6 +19,8 @@ export function BackupConfirm({
   /** what the count counts */
   unit?: string;
   plan: BackupPlan;
+  /** what else this backup means (how long it takes seen signed out) */
+  note?: string;
   onStart(): void;
   onClose(): void;
 }) {
@@ -42,6 +45,7 @@ export function BackupConfirm({
         {plan.bytes !== undefined ? `About ${formatBytes(plan.bytes)} (an estimate from the posts loaded so far).` : "No size estimate yet."}
       </p>
       <p className="muted">Every photo and video goes into {folder}. A later backup saves only what is new.</p>
+      {note && <p>{note}</p>}
       {plan.resumes && <p>An earlier backup stopped before the end; this one goes on from there.</p>}
       {plan.large && <p className="error-text">This holds more than 1,000 posts. Backing it up may take many hours, and Instagram may ask TurboDL to slow down.</p>}
       {tooBig && <p className="error-text">That is more than the free space on this drive ({formatBytes(plan.freeBytes ?? 0)} free).</p>}
