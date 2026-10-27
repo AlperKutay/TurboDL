@@ -33,6 +33,14 @@ describe("InstagramPacer", () => {
     expect(p.held()).toBe(false);
   });
 
+  it("holds every request for 2 minutes when told to, as a slow-down does", () => {
+    const { p, advance } = pacer();
+    p.hold();
+    expect(p.held()).toBe(true);
+    advance(2 * 60_000);
+    expect(p.held()).toBe(false);
+  });
+
   it("doesn't hold after other failures", async () => {
     const { p } = pacer();
     await expect(p.ask(async () => Promise.reject(new SavedError("http", 500)))).rejects.toThrow();

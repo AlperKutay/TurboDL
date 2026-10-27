@@ -182,12 +182,31 @@ describe("Instagram link jobs", () => {
     expect(c.manager.list()).toHaveLength(downloads);
   });
 
-  it("fails notFound when the link shows nothing, and signInRequired when Instagram shows it only signed in", async () => {
+  it("fails notFound when the link shows nothing, and signInRequired when the page asks a session to sign in again", async () => {
     const so = fakeSignedOut({});
     so.deps.find = async (link) => (link.kind === "post" && link.code === "Chidden" ? { type: "signedOut" } : { type: "nothing" });
     const c = await start(so.deps);
     expect(await run(c, { url: POST })).toMatchObject({ state: "failed", reason: "notFound", error: "Instagram showed nothing at this link." });
+    // with a session, a page landing on sign-in means the session expired
+    c.instagramSession.take(SESSION);
     expect(await run(c, { url: "https://www.instagram.com/p/Chidden/" })).toMatchObject({ state: "failed", reason: "signInRequired", error: "Sign in to Instagram to read this link." });
+    expect(c["pacer"].held()).toBe(false);
+  });
+
+  it("ends rateLimited and holds the account when a link read without a session lands on Instagram's login wall", async () => {
+    const so = fakeSignedOut({ "17900000000000009": [item("b")] });
+    const find = so.deps.find;
+    so.deps.find = async (link, cookies, signal) => {
+      await find(link, cookies, signal);
+      return { type: "signedOut" };
+    };
+    const c = await start(so.deps);
+    const highlight = "https://www.instagram.com/stories/highlights/17900000000000009/";
+    expect(await run(c, { url: highlight })).toMatchObject({ kind: "instagramHighlight", state: "failed", reason: "rateLimited", error: SLOW_DOWN });
+    expect(c["pacer"].held()).toBe(true);
+    // the next link loads no page while it holds
+    expect(await run(c, { url: POST })).toMatchObject({ state: "failed", reason: "rateLimited", error: SLOW_DOWN });
+    expect(so.read).toEqual(["17900000000000009"]);
   });
 
   it("spaces the pages jobs read 3–6 s apart", async () => {
