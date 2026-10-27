@@ -90,6 +90,8 @@ export function BackupPanel({ backup, onSignedIn }: { backup: BackupView; onSign
         <span className="muted">
           Done {backup.done} · Left {backup.left ?? "?"} · Failed {backup.failed} · New {backup.saved}
         </span>
+        {backup.signInOnly ? <span className="muted">{backup.signInOnly} shown only to signed-in visitors</span> : null}
+        {backup.warning && <span className="muted">{backup.warning}</span>}
         {running && <progress max={1} value={backup.progress} />}
         {error && <span className="error-text">{error}</span>}
       </div>
