@@ -237,8 +237,9 @@ export class ProfileService {
     const key = username.toLowerCase();
     const profile = this.profiles.get(key);
     // a tray that may have more pages isn't counted
-    const open = this.current?.key === key ? this.current.source : null;
-    const count = open?.limited && open.trayCursor !== undefined ? undefined : this.trays.get(key)?.length;
+    // (the open page's own tray: it grows as a backup pages it)
+    const open = this.current?.key === key ? this.current.source : this.backupKey === key ? this.backupSource : null;
+    const count = open?.limited && open.trayCursor !== undefined ? undefined : (open?.highlights ?? this.trays.get(key))?.length;
     return this.deps.backups.plan(profile ? `highlights-${profile.id}` : "", count, [], this.highlightsFolder(profile?.username ?? username));
   }
 
@@ -264,7 +265,9 @@ export class ProfileService {
     // a tray that may have more pages has no known count
     const counted = !(source.limited && source.trayCursor !== undefined);
     let trayPages = 0;
-    const moreTray = () => source.limited && source.trayCursor !== undefined && trayPages < TRAY_PAGES;
+    // a page that came back empty with more to come: the tray isn't read to its end
+    let stalled = false;
+    const moreTray = () => source.limited && source.trayCursor !== undefined && trayPages < TRAY_PAGES && !stalled;
     // the page stays open for the tray's next pages only
     if (!moreTray() || tray.length === 0) this.letGo(source);
     if (tray.length === 0) return { ok: false, error: "This profile has no highlights.", reason: "empty" };
@@ -277,14 +280,17 @@ export class ProfileService {
         dir: this.highlightsFolder(profile.username),
         allowsEarlyStop: false,
         pageGap: [3000, 6000],
-        endNote: () => (source.limited && source.trayCursor !== undefined && trayPages >= TRAY_PAGES ? "Instagram has more highlights than TurboDL read in one run." : undefined),
+        endNote: () => (source.limited && source.trayCursor !== undefined && (trayPages >= TRAY_PAGES || stalled) ? "Instagram has more highlights than TurboDL read in one run." : undefined),
       },
       async (cursor, signal) => {
         const index = cursor ? Number(cursor) : 0;
         while (!tray[index] && moreTray()) {
           trayPages++;
           const more = await this.readTrayPage(source, signal);
-          if (!more || more.length === 0) break;
+          if (!more || more.length === 0) {
+            stalled = true;
+            break;
+          }
           tray.push(...more);
         }
         const highlight = tray[index];

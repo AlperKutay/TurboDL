@@ -1539,6 +1539,24 @@ describe("Instagram signed out, and a folder per account", () => {
     expect(view).not.toHaveProperty("left");
   });
 
+  it("counts a highlights backup's plan from the tray its page has read, with no reload", async () => {
+    const so = fakeSignedOut({ [H2.id]: [item("a")], [H3.id]: [item("c")], [H4.id]: [item("d")] }, { tray: [[H2], [H3], [H4]] });
+    const c = await start({}, null, so.deps);
+    await c.profileLoad("sample.user");
+    expect(await c.highlightsBackupPlan("sample.user")).not.toHaveProperty("count");
+    expect(await c.startHighlightsBackup("sample.user")).toEqual({ ok: true });
+    expect(await backupEnds(c)).toMatchObject({ state: "finished", done: 3 });
+    expect(await c.highlightsBackupPlan("sample.user")).toMatchObject({ count: 3 });
+  });
+
+  it("warns when a tray page comes back empty while the tray has more", async () => {
+    const so = fakeSignedOut({ [H2.id]: [item("a")] }, { tray: [[H2], [], [H4]] });
+    const c = await start({}, null, so.deps);
+    expect(await c.startHighlightsBackup("sample.user")).toEqual({ ok: true });
+    expect(await backupEnds(c)).toMatchObject({ state: "finished", done: 1, warning: "Instagram has more highlights than TurboDL read in one run." });
+    expect(so.trayAsked).toHaveLength(1);
+  });
+
   it("pages no tray for a posts backup", async () => {
     const so = fakeSignedOut(OWN(), { listing: LISTING(), tray: [[H2], [H3]] });
     const c = await start({}, null, so.deps);
