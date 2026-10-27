@@ -1503,6 +1503,42 @@ describe("Instagram signed out, and a folder per account", () => {
     expect(so.trayAsked).toHaveLength(1);
   });
 
+  it("goes through the whole tray again after a login wall mid-tray, with no reload between, and on a second backup", async () => {
+    const so = fakeSignedOut({ [H2.id]: [item("a")], [H3.id]: [item("c")], [H4.id]: [item("d")] }, { tray: [[H2], [H3], [H4]] });
+    const find = so.deps.find;
+    let wall = true;
+    so.deps.find = async (link, cookies, signal) => {
+      const found = await find(link, cookies, signal);
+      if (wall && link.kind === "highlight" && link.id === H3.id) {
+        wall = false;
+        return { type: "signedOut" };
+      }
+      return found;
+    };
+    const c = await start({}, null, so.deps);
+    await c.profileLoad("sample.user");
+    expect(await c.startHighlightsBackup("sample.user")).toEqual({ ok: true });
+    expect(await backupEnds(c)).toMatchObject({ state: "rateLimited", done: 1 });
+    await so.deps.wait!(2 * 60_000);
+    expect(await c.continueBackup()).toEqual({ ok: true });
+    expect(await backupEnds(c)).toMatchObject({ state: "finished", done: 3, failed: 0 });
+    expect(so.read.slice(2)).toEqual([H2.id, H3.id, H4.id]);
+    const readBefore = so.read.length;
+    expect(await c.startHighlightsBackup("sample.user")).toEqual({ ok: true });
+    expect(await backupEnds(c)).toMatchObject({ state: "finished", done: 3 });
+    expect(so.read.slice(readBefore)).toEqual([H2.id, H3.id, H4.id]);
+  });
+
+  it("leaves the count of a highlights backup unset while its tray may have more, and warns when the 20-page cap stops it", async () => {
+    const tray = Array.from({ length: 30 }, (_, k) => [{ id: `1790000000000${String(k).padStart(4, "0")}`, title: `h${k}` }]);
+    const so = fakeSignedOut({}, { tray });
+    const c = await start({}, null, so.deps);
+    expect(await c.startHighlightsBackup("sample.user")).toEqual({ ok: true });
+    const view = await backupEnds(c);
+    expect(view).toMatchObject({ state: "finished", warning: "Instagram has more highlights than TurboDL read in one run." });
+    expect(view).not.toHaveProperty("left");
+  });
+
   it("pages no tray for a posts backup", async () => {
     const so = fakeSignedOut(OWN(), { listing: LISTING(), tray: [[H2], [H3]] });
     const c = await start({}, null, so.deps);

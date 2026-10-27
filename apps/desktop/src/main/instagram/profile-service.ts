@@ -214,7 +214,7 @@ export class ProfileService {
   /** One highlight's stories, from its own page, in the account's pace; remembered for picks. */
   async loadHighlight(id: string): Promise<HighlightResult> {
     try {
-      // signed in or not, a highlight's page is a page read: the read slot, in the account's pace
+      // a highlight's page is a page read in the account's pace; signed out it takes the read slot too
       const found = await this.readHighlight(id);
       this.stories.set(id, found);
       return found && found.length > 0 ? { type: "stories", count: found.length } : { type: "nothing" };
@@ -236,7 +236,9 @@ export class ProfileService {
   highlightsPlan(username: string): Promise<BackupPlan> {
     const key = username.toLowerCase();
     const profile = this.profiles.get(key);
-    const count = this.trays.get(key)?.length;
+    // a tray that may have more pages isn't counted
+    const open = this.current?.key === key ? this.current.source : null;
+    const count = open?.limited && open.trayCursor !== undefined ? undefined : this.trays.get(key)?.length;
     return this.deps.backups.plan(profile ? `highlights-${profile.id}` : "", count, [], this.highlightsFolder(profile?.username ?? username));
   }
 
@@ -257,7 +259,10 @@ export class ProfileService {
       return refused;
     }
     // the tray as the page listed it; a signed-out tray with more pages is read on, page by page, while the backup runs
-    const tray = [...(this.trays.get(key) ?? [])];
+    const tray = [...source.highlights];
+    this.trays.set(key, source.highlights);
+    // a tray that may have more pages has no known count
+    const counted = !(source.limited && source.trayCursor !== undefined);
     let trayPages = 0;
     const moreTray = () => source.limited && source.trayCursor !== undefined && trayPages < TRAY_PAGES;
     // the page stays open for the tray's next pages only
@@ -268,10 +273,11 @@ export class ProfileService {
         id: `highlights-${profile.id}`,
         kind: "highlights",
         name: `${profile.username} · Highlights`,
-        count: tray.length,
+        ...(counted ? { count: tray.length } : {}),
         dir: this.highlightsFolder(profile.username),
         allowsEarlyStop: false,
         pageGap: [3000, 6000],
+        endNote: () => (source.limited && source.trayCursor !== undefined && trayPages >= TRAY_PAGES ? "Instagram has more highlights than TurboDL read in one run." : undefined),
       },
       async (cursor, signal) => {
         const index = cursor ? Number(cursor) : 0;
@@ -322,8 +328,12 @@ export class ProfileService {
   /** The open profile's page and profile, a running backup's, or a page of its own for a backup (without a session too). */
   private async pageFor(key: string): Promise<{ profile: InstagramProfile; source: ProfileSource } | Refusal> {
     const known = this.profiles.get(key);
-    if (this.current?.key === key && known) return { profile: known, source: this.current.source };
-    if (this.backupKey === key && this.backupSource && known) return { profile: known, source: this.backupSource };
+    const reused = this.current?.key === key ? this.current.source : this.backupKey === key ? this.backupSource : null;
+    if (reused && known) {
+      // the tray as that page has read it so far
+      this.trays.set(key, reused.highlights);
+      return { profile: known, source: reused };
+    }
     if (!this.deps.session.signedIn()) {
       // a signed-out page load in the account's pace (not the read slot: a job starting a backup already holds it)
       await this.deps.pacer.pace();

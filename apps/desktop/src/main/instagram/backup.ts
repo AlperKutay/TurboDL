@@ -21,6 +21,8 @@ export interface BackupTarget {
   pageGap?: [number, number];
   /** the listing's end counts only when it listed at least 90% of `count` (a profile seen signed out may list fewer) */
   checkCount?: boolean;
+  /** a note for the run's warning when its listing ends, asked then (a listing that stopped before everything was read) */
+  endNote?(): string | undefined;
 }
 
 export interface BackupDeps {
@@ -278,6 +280,8 @@ export class BackupRun {
         // Instagram's end of the listing; checked against the count where a listing may end short
         const short = target.checkCount === true && target.count !== undefined && listed < target.count * LISTED_ENOUGH;
         if (short) this.warning = `Instagram listed ${listed} of ${target.count} posts.`;
+        const note = target.endNote?.();
+        if (note && !this.warning) this.warning = note;
         reachedEnd = !short;
         // a whole listing met every post still there: the others left for a sign-in are gone, or were saved
         if (!short) for (const id of signInPosts) if (!met.has(id)) signInPosts.delete(id);
