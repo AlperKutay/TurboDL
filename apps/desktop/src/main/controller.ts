@@ -474,8 +474,9 @@ export class AppController {
   }
 
   /**
-   * Reads the link's items from its page, signed in when a session is kept; without one, public posts and reels still
-   * read (stories, highlights and hidden posts answer signedOut). A new read calls off the picker's previous one.
+   * Reads the link's items from its page, signed in when a session is kept; without one, public posts, reels and
+   * highlights still read (a story link answers signedOut without loading its page, and so does a post Instagram shows
+   * only to signed-in visitors). A new read calls off the picker's previous one.
    */
   async findInstagram(pendingId: string): Promise<InstagramFindResult> {
     const p = this.pending.get(pendingId);
@@ -484,6 +485,8 @@ export class AppController {
     const known = this.instagramItems.get(pendingId);
     if (known) return { type: "items", items: known };
     if (p.link.kind === "saved" || p.link.kind === "profile") return { type: "gone" };
+    // stories show only to signed-in visitors: no page is loaded for nothing
+    if (p.link.kind === "story" && !this.instagramSession.signedIn()) return { type: "signedOut" };
     this.instagramSearches.get(pendingId)?.abort();
     const search = new AbortController();
     this.instagramSearches.set(pendingId, search);
@@ -499,9 +502,8 @@ export class AppController {
     if (outcome.type === "items") this.instagramItems.set(pendingId, outcome.items);
     if (outcome.type === "signedOut" && outcome.at) this.instagramChecks.set(pendingId, outcome.at);
     else this.instagramChecks.delete(pendingId);
-    // a post shown only to signed-in visitors asks the picker to sign in, like a hidden one always did; so does a story
-    // link read without a session (its page shows nothing signed out)
-    if (outcome.type === "signInOnly" || (outcome.type === "nothing" && p.link.kind === "story" && !this.instagramSession.signedIn())) return { type: "signedOut" };
+    // a post shown only to signed-in visitors asks the picker to sign in, like a hidden one always did
+    if (outcome.type === "signInOnly") return { type: "signedOut" };
     return outcome;
   }
 

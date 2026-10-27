@@ -509,13 +509,15 @@ describe("Instagram links", () => {
     expect(ig.signIns()).toBe(1);
   });
 
-  it("asks a signed-out picker to sign in for a story link, where the page showed nothing", async () => {
+  it("asks a signed-out picker to sign in for a story link, loading no page for it", async () => {
     const ig = fakeInstagram(() => ({ type: "nothing" }));
     const c = await start({}, null, ig.deps);
     await c.handleDownloadRequest({ url: "https://www.instagram.com/stories/someone/3800000000000000001/", source: "manual" });
     expect(await c.findInstagram(ui.opened[0].pendingId)).toEqual({ type: "signedOut" });
+    expect(ig.finds).toEqual([]);
     await c.handleDownloadRequest({ url: "https://www.instagram.com/stories/highlights/17900000000000002/", source: "manual" });
     expect(await c.findInstagram(ui.opened[1].pendingId)).toEqual({ type: "nothing" });
+    expect(ig.finds.map((f) => f.code)).toEqual(["highlight"]);
   });
 
   it("calls the page off when its picker is closed", async () => {
