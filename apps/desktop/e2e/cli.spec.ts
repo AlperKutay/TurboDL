@@ -135,13 +135,32 @@ test("backs up a demo profile and its highlights", async () => {
   });
 });
 
-test("saves a signed-out profile's first posts and exits 3", async () => {
+/** demo.public's posts other than DP5, which Instagram shows only to signed-in visitors: two photos each. */
+const READABLE = ["DP1", "DP2", "DP3", "DP4", "DP6", "DP7"].flatMap((code) => [`${code}-1.png`, `${code}-2.png`]);
+const SIGN_IN_ONLY_WARNING = "warning: 1 post is shown only to signed-in visitors; sign in to save them.";
+
+test("backs up a profile seen signed out, exiting 3 only for its post shown to signed-in visitors", async () => {
   await withApp({}, async ({ userData, baseDir }) => {
     const r = await turbodl(userData, ["get", "https://www.instagram.com/demo.public/"]);
     expect(r.code, r.stderr).toBe(3);
-    const saved = readdirSync(path.join(baseDir, "Instagram", "demo.public"));
-    expect(saved.length).toBeGreaterThan(0);
-    expect(saved.every((f) => /^DP\d-\d\.png$/.test(f))).toBe(true);
+    expect(r.stderr).toContain(SIGN_IN_ONLY_WARNING);
+    expect(readdirSync(path.join(baseDir, "Instagram", "demo.public")).sort()).toEqual(READABLE);
+  });
+});
+
+test("backs up a profile and its highlights without signing in", async () => {
+  await withApp({ TURBODL_INSTAGRAM_DEMO_SIGNED_OUT: "1" }, async ({ userData, baseDir }) => {
+    const status = await turbodl(userData, ["instagram", "status"]);
+    expect(status.stdout).toContain("signedIn: false");
+    const r = await turbodl(userData, ["get", "https://www.instagram.com/demo.public/", "--highlights"]);
+    expect(r.code, r.stderr).toBe(3);
+    expect(r.stderr).toContain(SIGN_IN_ONLY_WARNING);
+    const root = path.join(baseDir, "Instagram", "demo.public");
+    expect(readdirSync(root).filter((f) => f.endsWith(".png")).sort()).toEqual(READABLE);
+    // the second highlight comes from the tray's next page
+    expect(readdirSync(path.join(root, "Highlights")).sort()).toEqual(["h17900000000000005-1.png", "h17900000000000005-2.png", "h17900000000000006-1.png", "h17900000000000006-2.png"]);
+    for (const printed of lines(r.stdout)) expect(existsSync(printed)).toBe(true);
+    expect(lines(r.stdout)).toHaveLength(16);
   });
 });
 

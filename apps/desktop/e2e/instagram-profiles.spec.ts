@@ -5,11 +5,14 @@ import { expect, test, type Page } from "@playwright/test";
 import { startTestServer } from "../test/fixtures/test-server";
 import { launchApp } from "./helpers";
 
-/** The demo Instagram (TURBODL_INSTAGRAM_DEMO_BASE): demo.person has 6 posts on 2 pages, the first pinned; demo.locked is private. */
-async function demo() {
+/**
+ * The demo Instagram (TURBODL_INSTAGRAM_DEMO_BASE): demo.person has 6 posts on 2 pages, the first pinned; demo.locked is
+ * private; demo.public is seen signed out (7 posts on 3 pages, DP5 shown only to signed-in visitors).
+ */
+async function demo(env: Record<string, string> = {}) {
   const server = await startTestServer();
   [0, 1, 2].forEach((n) => server.setFile(`/ig/${n}.png`, { data: randomBytes(3000), contentType: "image/png" }));
-  const launched = await launchApp({}, { TURBODL_INSTAGRAM_DEMO_BASE: server.url("").replace(/\/$/, "") });
+  const launched = await launchApp({}, { TURBODL_INSTAGRAM_DEMO_BASE: server.url("").replace(/\/$/, ""), ...env });
   return { server, ...launched };
 }
 
@@ -215,16 +218,21 @@ test("profiles: each side keeps its picks when switching between Posts and Highl
   }
 });
 
-test("profiles: a public profile opens signed out, and picked posts are read from their own pages", async () => {
-  const { server, app, userData, baseDir } = await demo();
+test("profiles: a public profile opens signed out; picks and a backup read each post from its own page, and a highlight opens", async () => {
+  const { server, app, userData, baseDir } = await demo({ TURBODL_INSTAGRAM_DEMO_SIGNED_OUT: "1" });
   try {
     const main = await app.firstWindow();
     await openProfile(main, "demo.public");
-    await expect(main.getByText("Not signed in")).toBeVisible({ timeout: 15_000 });
-    await expect(main.getByRole("button", { name: /^Post \d+$/ })).toHaveCount(3);
+    await expect(main.getByText("Seen signed out")).toBeVisible({ timeout: 15_000 });
+    await expect(main.getByText("Sign in to Instagram to see this profile's posts.")).toHaveCount(0);
+    // the grid pages on signed out, to the profile's end, as the grid's end comes into view
+    const tiles = main.getByRole("button", { name: /^Post \d+$/ });
+    await expect(async () => {
+      await main.locator(".saved-end").scrollIntoViewIfNeeded();
+      expect(await tiles.count()).toBe(7);
+    }).toPass({ timeout: 15_000 });
     await expect(main.getByRole("button", { name: "Post 1", exact: true })).toContainText("Carousel");
     await expect(main.getByRole("button", { name: "Post 2", exact: true })).toContainText("Video");
-    await expect(main.getByRole("button", { name: "Back up this profile" })).toHaveCount(0);
     await main.getByRole("button", { name: "Post 1", exact: true }).click();
     await main.getByRole("button", { name: "Post 2", exact: true }).click();
     const dialogOpened = app.waitForEvent("window");
@@ -235,7 +243,33 @@ test("profiles: a public profile opens signed out, and picked posts are read fro
     await download.click();
     await main.getByRole("button", { name: "All downloads" }).click();
     await expect(main.locator("tr[data-status='completed']")).toHaveCount(4, { timeout: 30_000 });
-    expect(readdirSync(path.join(baseDir, "Instagram", "demo.public")).sort()).toEqual(["DP1-1.png", "DP1-2.png", "DP2-1.png", "DP2-2.png"]);
+    const folder = path.join(baseDir, "Instagram", "demo.public");
+    expect(readdirSync(folder).sort()).toEqual(["DP1-1.png", "DP1-2.png", "DP2-1.png", "DP2-2.png"]);
+
+    // backed up signed out: the post shown only to signed-in visitors (DP5) is skipped and counted, the picked ones already there
+    await main.getByRole("button", { name: "Profiles", exact: true }).click();
+    await main.getByRole("button", { name: "Back up this profile" }).click();
+    const confirm = main.getByRole("dialog", { name: "Back up @demo.public" });
+    await expect(confirm).toContainText("Instagram doesn't say how many posts it holds.");
+    await confirm.getByRole("button", { name: "Start backup" }).click();
+    const panel = main.getByRole("region", { name: "Backup" });
+    await expect(panel).toContainText("Backup finished", { timeout: 30_000 });
+    await expect(panel).toContainText("Done 6");
+    await expect(panel).toContainText("New 8");
+    await expect(panel).toContainText("1 shown only to signed-in visitors");
+    expect(readdirSync(folder).sort()).toEqual(["DP1", "DP2", "DP3", "DP4", "DP6", "DP7"].flatMap((code) => [`${code}-1.png`, `${code}-2.png`]));
+
+    await main.getByRole("tab", { name: "Highlights" }).click();
+    await main.getByRole("button", { name: "Trips", exact: true }).click();
+    const storiesOpened = app.waitForEvent("window");
+    await main.getByRole("button", { name: "Next (1)" }).click();
+    const stories = await storiesOpened;
+    const save = stories.getByRole("button", { name: /^Download (all )?\d+$/ });
+    await expect(save).toHaveText("Download all 2", { timeout: 15_000 });
+    await save.click();
+    await main.getByRole("button", { name: "All downloads" }).click();
+    await expect(main.locator("tr[data-status='completed']")).toHaveCount(6, { timeout: 30_000 });
+    expect(readdirSync(path.join(folder, "Highlights")).sort()).toEqual(["h17900000000000005-1.png", "h17900000000000005-2.png"]);
   } finally {
     await app.close();
     await server.close();

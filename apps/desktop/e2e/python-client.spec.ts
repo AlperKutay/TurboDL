@@ -85,22 +85,26 @@ test("gets a file and returns its path", async () => {
   });
 });
 
-test("raises SignInRequired for a signed-out profile, with the saved files on the job", async () => {
+test("raises SignInRequired for a profile's post shown only to signed-in visitors, with every readable post saved on the job", async () => {
   await withApp(async ({ userData }) => {
     const r = await runPython(
       userData,
       [
+        "import os",
         "from turbodl_client import TurboDL, SignInRequired",
         "try:",
         '    TurboDL().get("https://www.instagram.com/demo.public/")',
         "except SignInRequired as e:",
-        '    print("SIGNIN", len(e.job.files))',
+        '    print("SIGNIN", ",".join(sorted(os.path.basename(f) for f in e.job.files)))',
+        '    print("WHY", e)',
         "",
       ].join("\n"),
     );
     expect(r.code, r.stderr).toBe(0);
-    const m = /SIGNIN (\d+)/.exec(r.stdout);
+    const m = /SIGNIN (\S+)/.exec(r.stdout);
     expect(m, r.stdout).not.toBeNull();
-    expect(Number(m![1])).toBeGreaterThan(0);
+    // every post but DP5, two photos each
+    expect(m![1].split(",")).toEqual(["DP1", "DP2", "DP3", "DP4", "DP6", "DP7"].flatMap((code) => [`${code}-1.png`, `${code}-2.png`]));
+    expect(r.stdout).toContain("WHY 1 post is shown only to signed-in visitors; sign in to save them.");
   });
 });

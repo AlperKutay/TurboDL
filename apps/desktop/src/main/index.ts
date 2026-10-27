@@ -22,6 +22,8 @@ import { WindowManager } from "./windows";
 if (process.env.TURBODL_USER_DATA) app.setPath("userData", process.env.TURBODL_USER_DATA);
 /** A made-up Instagram for the e2e tests; only with an isolated profile. */
 const instagramDemoBase = process.env.TURBODL_USER_DATA ? process.env.TURBODL_INSTAGRAM_DEMO_BASE : undefined;
+/** The demo started without its session, as signed-out visitors see Instagram; only with an isolated profile. */
+const instagramDemoSignedOut = Boolean(instagramDemoBase) && process.env.TURBODL_INSTAGRAM_DEMO_SIGNED_OUT === "1";
 /** A local stand-in for Instagram's pages, read by the real hidden pages, for the e2e tests; only with an isolated profile. */
 const instagramTestSite = process.env.TURBODL_USER_DATA ? process.env.TURBODL_INSTAGRAM_SITE : undefined;
 if (instagramTestSite) allowTestSite(instagramTestSite);
@@ -112,8 +114,8 @@ async function start(): Promise<void> {
           agent: chromeAgent(app.userAgentFallback),
         },
   });
-  // test runs: the demo, or the real pages against a stand-in site, start signed in
-  if (instagramDemoBase || instagramTestSite) c.instagramSession.take([DEMO_COOKIE]);
+  // test runs: the demo (unless asked to start signed out), or the real pages against a stand-in site, start signed in
+  if ((instagramDemoBase && !instagramDemoSignedOut) || instagramTestSite) c.instagramSession.take([DEMO_COOKIE]);
   controller = c;
   registerIpc(c);
   // let the extension start TurboDL; test runs (TURBODL_USER_DATA) must not touch the real browser registration
