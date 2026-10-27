@@ -266,6 +266,18 @@ describe("BackupRun over a profile seen signed out", () => {
     expect(run.view()).toMatchObject({ state: "finished", done: 3, failed: 0, left: 0, saved: 4 });
   });
 
+  it("says while it runs that it reads each post from its own page, and never when the posts come with their items", async () => {
+    const signedOut = setup({ pages: COVERS, read: reader() });
+    await signedOut.run.start();
+    const running = signedOut.views.filter((v) => v.state === "running");
+    expect(running.length).toBeGreaterThan(0);
+    expect(running.every((v) => v.reading === true)).toBe(true);
+    expect(signedOut.run.view().reading).toBeUndefined();
+    const signedIn = setup({ id: "103" });
+    await signedIn.run.start();
+    expect(signedIn.views.every((v) => v.reading === undefined)).toBe(true);
+  });
+
   it("reads no post's page on a re-run of a finished backup, and stops at the first page", async () => {
     await setup({ pages: COVERS, read: reader() }).run.start();
     const again = setup({ pages: COVERS, read: reader() });

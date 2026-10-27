@@ -399,6 +399,29 @@ describe("Instagram profile jobs", () => {
     expect(so.asked).toHaveLength(2);
   });
 
+  /** A profile job run to its end, with the note of each progress it reported. */
+  async function progressNotes(c: AppController) {
+    const { id } = c.jobs.create({ url: PROFILE_URL });
+    const seen: (string | undefined)[] = [];
+    c.jobs.subscribe(id, (e) => e.type === "progress" && seen.push(e.progress.note));
+    const job = (await c.jobs.ended(id))!;
+    return { seen, job };
+  }
+
+  it("says in its progress, while it does, that a signed-out backup reads each post from its own page", async () => {
+    const { seen, job } = await progressNotes(await start(fakeSignedOut(PUBLIC_POSTS(), { listing: THREE_PAGES() }).deps));
+    expect(job.state).toBe("done");
+    expect(seen).toContain("Signed out: reading each post from its own page");
+    expect(job.progress.note).toBeUndefined();
+  });
+
+  it("has no note in its progress signed in, where the posts come with their items", async () => {
+    const { seen, job } = await progressNotes(await signedIn(fakeProfiles({ "sample.user": SAMPLE() }).deps));
+    expect(job.state).toBe("done");
+    expect(seen.length).toBeGreaterThan(0);
+    expect(seen.every((note) => note === undefined)).toBe(true);
+  });
+
   it("backs a signed-out profile's highlights up too", async () => {
     const so = fakeSignedOut({ ...PUBLIC_POSTS(), "17900000000000002": [item("s1", "sample.user")] });
     const c = await start(so.deps);

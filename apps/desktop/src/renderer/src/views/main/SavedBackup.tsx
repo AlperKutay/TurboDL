@@ -87,6 +87,7 @@ export function BackupPanel({ backup, onSignedIn }: { backup: BackupView; onSign
           {STATES[backup.state]}
           {backup.state === "failed" && backup.error ? `: ${backup.error}` : ""}
         </span>
+        {backup.reading && <span className="muted">Signed out: reading each post from its own page</span>}
         <span className="muted">
           Done {backup.done} · Left {backup.left ?? "?"} · Failed {backup.failed} · New {backup.saved}
         </span>

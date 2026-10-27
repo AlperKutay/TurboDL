@@ -39,6 +39,8 @@ const POST_SIGN_IN_ONLY = "Instagram shows this post only to signed-in visitors.
 const NO_HIGHLIGHTS = "This profile has no highlights.";
 const SIGN_IN_TO_SAVED = "Sign in to Instagram to back up Saved.";
 const STOPPED = "The backup was stopped in TurboDL.";
+/** a signed-out backup's progress while it reads posts from their own pages */
+const READING = "Signed out: reading each post from its own page";
 /** what a start called off in the lane answers (the lane reads it as "cancelled") */
 const CALLED_OFF: Refusal = { ok: false, error: "Cancelled.", reason: "error" };
 
@@ -355,7 +357,7 @@ class BackupFollower {
 
   private see(view: BackupView): void {
     this.last = view;
-    this.job.progress({ done: view.done, ...(view.left !== undefined ? { total: view.done + view.failed + view.left } : {}) });
+    this.job.progress({ done: view.done, ...(view.left !== undefined ? { total: view.done + view.failed + view.left } : {}), ...(view.reading ? { note: READING } : {}) });
     for (; this.counted < view.failed; this.counted++) this.job.failItem();
   }
 }

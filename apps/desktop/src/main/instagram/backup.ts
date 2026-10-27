@@ -94,6 +94,8 @@ export class BackupRun {
       progress: this.progress,
       ...(this.signInOnly > 0 ? { signInOnly: this.signInOnly } : {}),
       ...(this.warning ? { warning: this.warning } : {}),
+      // seen signed out, each post's items come from its own page
+      ...(this.state === "running" && this.deps.read ? { reading: true as const } : {}),
     };
   }
 

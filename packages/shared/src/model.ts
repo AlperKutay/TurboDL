@@ -235,6 +235,8 @@ export interface BackupView {
   signInOnly?: number;
   /** something the person should know about this backup, when it isn't an error */
   warning?: string;
+  /** set while a run seen signed out reads each post from its own page */
+  reading?: true;
 }
 
 /** What the Instagram picker shows: the items, a sign-in to do, nothing found, or a request already closed. */

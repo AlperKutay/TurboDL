@@ -46,13 +46,14 @@ function jsonOutput(o: OutputOptions): Output {
   };
 }
 
-/** "3/12  1.5 MB / 10 MB  2.0 MB/s"; empty when nothing is known yet. */
+/** "3/12  1.5 MB / 10 MB  2.0 MB/s", then the job's note if any; empty when nothing is known yet. */
 function progressText(p: JobProgress): string {
   const parts: string[] = [];
   if (p.total !== undefined) parts.push(`${p.done}/${p.total}`);
   else if (p.done > 0) parts.push(String(p.done));
   if (p.bytes !== undefined) parts.push(p.totalBytes ? `${formatBytes(p.bytes)} / ${formatBytes(p.totalBytes)}` : formatBytes(p.bytes));
   if (p.speed) parts.push(formatSpeed(p.speed));
+  if (p.note) parts.push(p.note);
   return parts.join("  ");
 }
 

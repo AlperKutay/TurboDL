@@ -38,6 +38,8 @@ export interface JobProgress {
   bytes?: number;
   totalBytes?: number;
   speed?: number;
+  /** what the job is doing, in words, when the counts don't say it */
+  note?: string;
 }
 
 export interface Job {
