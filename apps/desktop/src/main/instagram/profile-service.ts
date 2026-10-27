@@ -213,7 +213,7 @@ export class ProfileService {
     return result;
   }
 
-  /** A running backup's page stays open until the backup ends. */
+  /** A running backup's page stays open until the backup ends; the screen's, seen signed out before a sign-in meanwhile, is then let go at its next load. */
   private keepUntilSettled(source: ProfileSource, key: string): void {
     this.backupSource = source;
     this.backupKey = key;
@@ -221,6 +221,7 @@ export class ProfileService {
       if (this.backupSource !== source) return;
       this.backupSource = null;
       if (this.current?.source !== source) source.close();
+      else if (source.limited && this.deps.session.signedIn()) this.current.stale = true;
     });
   }
 

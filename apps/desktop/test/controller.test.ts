@@ -1413,6 +1413,14 @@ describe("Instagram signed out, and a folder per account", () => {
     release();
     expect(await backupEnds(c)).toMatchObject({ state: "finished", done: 3 });
     expect(so.opened).toHaveLength(1);
+    // once that backup ends, the screen's next load opens the profile afresh with the session
+    expect(so.closed).toEqual([]);
+    await c.profileLoad("sample.user");
+    expect(so.closed).toEqual(["sample.user"]);
+    expect(so.opened).toEqual([
+      { username: "sample.user", cookies: [] },
+      { username: "sample.user", cookies: ["sessionid"] },
+    ]);
   });
 
   it("opens no picker with part of the picks when Instagram pushes back partway", async () => {
