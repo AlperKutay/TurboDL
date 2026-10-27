@@ -1,6 +1,6 @@
 import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import type { SavedPost } from "@turbodl/shared";
+import type { InstagramItem, SavedPost } from "@turbodl/shared";
 
 /** What a collection's backups saved so far: item ids only, never addresses (Instagram's expire). */
 export interface BackupLedger {
@@ -17,10 +17,15 @@ export interface BackupLedger {
 
 const empty = (): BackupLedger => ({ saved: [], failedPosts: [], reachedEnd: false, donePosts: [], signInPosts: [] });
 
-/** A post is done when the ledger has it as done, or every one of its items is saved (a post with none never is). */
-export function isDone(ledger: BackupLedger, post: SavedPost): boolean {
-  if (ledger.donePosts.includes(post.id)) return true;
-  return post.items.length > 0 && post.items.every((item) => ledger.saved.includes(item.mediaId ?? post.id));
+/** A post is done when it is among the done posts, or every one of its items is saved (a post with none never is). */
+export function postDone(post: SavedPost, donePosts: ReadonlySet<string>, saved: ReadonlySet<string>): boolean {
+  if (donePosts.has(post.id)) return true;
+  return post.items.length > 0 && post.items.every((item) => saved.has(itemId(post, item)));
+}
+
+/** A carousel child's id, or the post's own for a single photo or video: what the ledger saves it under. */
+export function itemId(post: SavedPost, item: InstagramItem): string {
+  return item.mediaId ?? post.id;
 }
 
 /** Only after a complete pass with nothing left failed may a run stop at the first page it already has. */

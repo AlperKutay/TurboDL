@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { SavedPost } from "@turbodl/shared";
-import { LedgerStore, allowsEarlyStop, isDone, type BackupLedger } from "../../src/main/instagram/ledger";
+import { LedgerStore, allowsEarlyStop, postDone, type BackupLedger } from "../../src/main/instagram/ledger";
 
 const EMPTY: BackupLedger = { saved: [], failedPosts: [], reachedEnd: false, donePosts: [], signInPosts: [] };
 
@@ -59,15 +59,18 @@ describe("the ledger's rules", () => {
 
   it("counts a post done when every one of its items is saved", () => {
     const post: SavedPost = { id: "1", items: [{ kind: "image", url: "https://x/1.jpg", mediaId: "11" }, { kind: "video", url: "https://x/2.mp4", mediaId: "12" }] };
-    expect(isDone({ ...EMPTY, saved: ["11"] }, post)).toBe(false);
-    expect(isDone({ ...EMPTY, saved: ["11", "12"] }, post)).toBe(true);
+    expect(postDone(post, new Set(), new Set(["11"]))).toBe(false);
+    expect(postDone(post, new Set(), new Set(["11", "12"]))).toBe(true);
+    // a single photo without an id of its own is saved under the post's
+    const single: SavedPost = { id: "5", items: [{ kind: "image", url: "https://x/5.jpg" }] };
+    expect(postDone(single, new Set(), new Set(["5"]))).toBe(true);
   });
 
   it("counts a post done by its id, before its items are read", () => {
     const cover: SavedPost = { id: "9", code: "C9", items: [], unread: true };
-    expect(isDone({ ...EMPTY, donePosts: ["9"] }, cover)).toBe(true);
-    expect(isDone({ ...EMPTY, donePosts: ["8"] }, cover)).toBe(false);
+    expect(postDone(cover, new Set(["9"]), new Set())).toBe(true);
+    expect(postDone(cover, new Set(["8"]), new Set())).toBe(false);
     // nothing to save is never done by its items
-    expect(isDone({ ...EMPTY, saved: ["9"] }, cover)).toBe(false);
+    expect(postDone(cover, new Set(), new Set(["9"]))).toBe(false);
   });
 });

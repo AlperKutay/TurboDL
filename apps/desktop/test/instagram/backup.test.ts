@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { SavedError, type BackupView, type InstagramItem, type SavedPost } from "@turbodl/shared";
 import { BackupRun, type BackupTarget } from "../../src/main/instagram/backup";
 import { LedgerStore, type BackupLedger } from "../../src/main/instagram/ledger";
@@ -215,6 +215,17 @@ describe("BackupRun", () => {
     await run.start();
     expect(run.view()).toMatchObject({ state: "finished", done: 2, failed: 1 });
     expect(ledgers.load("102")).toMatchObject({ saved: ["11", "2"], failedPosts: ["9"] });
+  });
+
+  it("records the posts an older ledger knows only by their items once per page, not once per post", async () => {
+    const pages = [[post("1", item("11")), post("2", item("2")), post("3", item("3")), post("4", item("4")), post("5", item("5"))]];
+    const { run, ledgers } = setup({ pages, count: 5, ledger: { saved: ["11", "2", "3", "4", "5"] } });
+    const save = vi.spyOn(ledgers, "save");
+    await run.start();
+    expect(run.view()).toMatchObject({ state: "finished", done: 5, saved: 0 });
+    // once for the page, once at the listing's end
+    expect(save).toHaveBeenCalledTimes(2);
+    expect(ledgers.load("102").donePosts).toEqual(["1", "2", "3", "4", "5"]);
   });
 
   it("waits the target's own gap before each next page", async () => {

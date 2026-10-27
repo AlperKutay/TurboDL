@@ -3,7 +3,7 @@ import path from "node:path";
 import { SavedError, sanitizeFilename, type BackupView, type InstagramItem, type SavedPage, type SavedPost } from "@turbodl/shared";
 import type { fetchMedia } from "./fetch-media";
 import { instagramExtension } from "./files";
-import { allowsEarlyStop, type LedgerStore } from "./ledger";
+import { allowsEarlyStop, itemId, postDone, type LedgerStore } from "./ledger";
 
 /** What a backup goes through: one of the account's collections, or a profile. */
 export interface BackupTarget {
@@ -160,7 +160,7 @@ export class BackupRun {
     const record = () =>
       deps.ledgers.save(target.id, { saved: [...saved], failedPosts: [...failedPosts], reachedEnd, donePosts: [...donePosts], signInPosts: [...signInPosts] });
     // a post with nothing to save (a highlight whose page showed nothing) is done only by its id
-    const isDone = (post: SavedPost) => donePosts.has(post.id) || (post.items.length > 0 && post.items.every((item) => saved.has(itemId(post, item))));
+    const isDone = (post: SavedPost) => postDone(post, donePosts, saved);
     /** the post is done: neither failed nor waiting for a sign-in any more; true when that is news for the ledger */
     const finish = (post: SavedPost): boolean => {
       const failedBefore = failedPosts.delete(post.id);
@@ -199,12 +199,15 @@ export class BackupRun {
         return;
       }
       listed += page.posts.length;
+      // posts found done before any read (an older ledger knew them only by their items) are written once for the page;
+      // a run stopped midway finds them again the same way
+      let dirty = false;
       for (const listedPost of page.posts) {
         if (signal.aborted) return;
         let post = listedPost;
         if (isDone(post)) {
           this.done++;
-          if (finish(post)) record();
+          if (finish(post)) dirty = true;
           this.report();
           continue;
         }
@@ -278,6 +281,7 @@ export class BackupRun {
         this.report();
         if (asked) await this.pause(POST_GAP[0] + random() * (POST_GAP[1] - POST_GAP[0]), signal);
       }
+      if (dirty) record();
       if (!page.next) {
         // Instagram's end of the listing; checked against the count where a listing may end short
         const short = target.checkCount === true && target.count !== undefined && listed < target.count * LISTED_ENOUGH;
@@ -335,9 +339,4 @@ export class BackupRun {
     this.lastReport = Date.now();
     this.onChange(this.view());
   }
-}
-
-/** A carousel child's id, or the post's own for a single photo or video. */
-function itemId(post: SavedPost, item: InstagramItem): string {
-  return item.mediaId ?? post.id;
 }
