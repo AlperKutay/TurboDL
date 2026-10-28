@@ -88,7 +88,7 @@ describe("StreamTask", () => {
     });
     const rec = record({ type: "hls", url: server.url("/hls/master.m3u8"), variant: "320x240@700000" });
     await new StreamTask(rec, options((r, signal) => resolveHls(r.stream!.origin as { url: string; variant: string | null }, r.headers, signal))).start();
-    expect(rec.status).toBe("completed");
+    expect({ status: rec.status, error: rec.error }).toEqual({ status: "completed", error: undefined });
     expect(streamsOf(path.join(dir, "Clip.mp4"))).toEqual(["Video: h264", "Audio: aac"]);
     expect(readdirSync(dir)).toEqual(["Clip.mp4"]);
   });

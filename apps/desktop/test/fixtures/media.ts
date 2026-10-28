@@ -1,4 +1,4 @@
-import { execFileSync, spawnSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import { mkdirSync, readFileSync, readdirSync } from "node:fs";
 import { createRequire } from "node:module";
 import path from "node:path";
@@ -6,8 +6,12 @@ import type { TestServer } from "./test-server";
 
 export const FFMPEG = createRequire(__filename)("ffmpeg-static") as string;
 
-function ff(args: string[]): void {
-  execFileSync(FFMPEG, ["-hide_banner", "-loglevel", "error", "-y", ...args], { windowsHide: true });
+/** Runs the bundled ffmpeg; a failure carries its exit status, signal and stderr (execFileSync's message drops them). */
+export function ff(args: string[]): void {
+  const res = spawnSync(FFMPEG, ["-hide_banner", "-loglevel", "error", "-y", ...args], { windowsHide: true, encoding: "utf8" });
+  if (res.status !== 0) {
+    throw new Error(`ffmpeg ${args.join(" ")} failed (status ${res.status}, signal ${res.signal}): ${res.stderr || res.error}`);
+  }
 }
 
 const VIDEO = ["-f", "lavfi", "-i", "testsrc=size=320x240:rate=25"];

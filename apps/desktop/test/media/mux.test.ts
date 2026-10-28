@@ -1,10 +1,9 @@
-import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { canSkipMux, mux, muxArgs } from "../../src/main/media/mux";
-import { FFMPEG, makeClips, streamsOf, type Clips } from "../fixtures/media";
+import { FFMPEG, ff, makeClips, streamsOf, type Clips } from "../fixtures/media";
 
 let dir: string;
 let clips: Clips;
@@ -57,7 +56,7 @@ describe("mux with the bundled ffmpeg", () => {
 
   it("remuxes a TS track to mp4", async () => {
     const ts = path.join(dir, "joined.ts");
-    execFileSync(FFMPEG, ["-hide_banner", "-loglevel", "error", "-y", "-i", path.join(clips.hls.av, "index.m3u8"), "-c", "copy", ts]);
+    ff(["-i", path.join(clips.hls.av, "index.m3u8"), "-c", "copy", ts]);
     const out = path.join(dir, "ts.turbodl-mux");
     expect(await mux(FFMPEG, [{ path: ts, role: "av", ext: "ts" }], out, "mp4", signal())).toBe("mp4");
     expect(streamsOf(out)).toEqual(["Video: h264", "Audio: aac"]);
@@ -75,7 +74,7 @@ describe("mux with the bundled ffmpeg", () => {
     const v = path.join(dir, "v3.mp4");
     writeFileSync(v, clips.video);
     const wav = path.join(dir, "adpcm.wav");
-    execFileSync(FFMPEG, ["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "sine", "-t", "1", "-c:a", "adpcm_ima_wav", wav]);
+    ff(["-f", "lavfi", "-i", "sine", "-t", "1", "-c:a", "adpcm_ima_wav", wav]);
     const out = path.join(dir, "odd.turbodl-mux");
     expect(await mux(FFMPEG, [{ path: v, role: "video", ext: "mp4" }, { path: wav, role: "audio", ext: "wav" }], out, "mp4", signal())).toBe("mkv");
     expect(streamsOf(out)).toEqual(["Video: h264", "Audio: adpcm_ima_wav"]);
