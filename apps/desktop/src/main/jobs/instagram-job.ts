@@ -13,6 +13,7 @@ import type { DownloadManager } from "../manager";
 import { followDownloads } from "./follow-downloads";
 import { SLOWED_DOWN, type InstagramLane } from "./instagram-lane";
 import type { JobRecord } from "./job-record";
+import { runPostsJob } from "./posts-job";
 
 /** What an Instagram job needs from the app. */
 export interface InstagramJobDeps {
@@ -34,8 +35,8 @@ type Refusal = Extract<StartResult, { ok: false }>;
 type PageRead<T> = { read: T } | "held" | "calledOff";
 
 const IGNORED = "Instagram downloads go to TurboDL's Instagram folders; dir and name are ignored.";
-const SIGN_IN_TO_READ = "Sign in to Instagram to read this link.";
-const POST_SIGN_IN_ONLY = "Instagram shows this post only to signed-in visitors.";
+export const SIGN_IN_TO_READ = "Sign in to Instagram to read this link.";
+export const POST_SIGN_IN_ONLY = "Instagram shows this post only to signed-in visitors.";
 const NO_HIGHLIGHTS = "This profile has no highlights.";
 const SIGN_IN_TO_SAVED = "Sign in to Instagram to back up Saved.";
 const STOPPED = "The backup was stopped in TurboDL.";
@@ -50,6 +51,7 @@ const CALLED_OFF: Refusal = { ok: false, error: "Cancelled.", reason: "error" };
  * for the jobs' read slot and the account's pace; nothing is asked while Instagram's slow-down holds.
  */
 export async function runInstagramJob(job: JobRecord, link: InstagramLink, deps: InstagramJobDeps): Promise<void> {
+  if (job.request.options?.postsOnly) return runPostsJob(job, link, deps);
   if (deps.pacer.held()) return fail(job, deps, "rateLimited", SLOW_DOWN);
   if (job.request.dir || job.request.name) job.warn(IGNORED);
   if (link.kind === "profile") return profileJob(job, link.username, deps);
@@ -278,7 +280,7 @@ function refused(job: JobRecord, deps: InstagramJobDeps, refusal: Refusal): void
 }
 
 /** Ends the job failed; Instagram's slow-down ends the jobs waiting in the lane with it. */
-function fail(job: JobRecord, deps: InstagramJobDeps, reason: JobReason, error: string): void {
+export function fail(job: JobRecord, deps: InstagramJobDeps, reason: JobReason, error: string): void {
   if (reason === "rateLimited") deps.lane.slowDown();
   job.end({ state: "failed", reason, error });
 }

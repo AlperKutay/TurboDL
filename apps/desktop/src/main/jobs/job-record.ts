@@ -1,4 +1,4 @@
-import { isJobEnded, type Job, type JobEvent, type JobEventBody, type JobKind, type JobProgress, type JobReason, type JobRequest } from "@turbodl/shared";
+import { isJobEnded, type InstagramPostInfo, type Job, type JobEvent, type JobEventBody, type JobKind, type JobProgress, type JobReason, type JobRequest } from "@turbodl/shared";
 
 /** How a job finished. */
 export type JobOutcome =
@@ -72,6 +72,18 @@ export class JobRecord {
     if (this.isEnded()) return;
     this.job.warnings.push(message);
     this.emit({ type: "warning", message });
+  }
+
+  /** One post of a posts-only list, told to the followers as it is read. */
+  post(post: InstagramPostInfo): void {
+    if (this.isEnded()) return;
+    this.job.progress = { ...this.job.progress, done: this.job.progress.done + 1 };
+    this.emit({ type: "post", post });
+  }
+
+  /** How many clients follow the job's events right now. */
+  get followers(): number {
+    return this.listeners.size;
   }
 
   failItem(): void {

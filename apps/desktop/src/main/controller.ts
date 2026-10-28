@@ -67,6 +67,7 @@ import { InstagramSession, type Crypt } from "./instagram/session";
 import { probe } from "./engine/probe";
 import { Gate } from "./jobs/gate";
 import { runInstagramJob } from "./jobs/instagram-job";
+import { POSTS_UNSUPPORTED } from "./jobs/posts-job";
 import { InstagramLane } from "./jobs/instagram-lane";
 import { Jobs } from "./jobs/jobs";
 import { jobKindOf } from "./jobs/kind";
@@ -944,6 +945,11 @@ export class AppController {
   private async runJob(job: JobRecord): Promise<void> {
     const { url } = job.request;
     const link = jobKindOf(url) === "file" ? null : parseInstagramLink(url);
+    // a post list never reaches the web job, which would download the link
+    if (!link && job.request.options?.postsOnly) {
+      job.end({ state: "failed", reason: "unsupported", error: POSTS_UNSUPPORTED });
+      return;
+    }
     if (link) {
       await runInstagramJob(job, link, {
         session: this.instagramSession,
