@@ -25,6 +25,7 @@ turbodl get https://www.instagram.com/someone/ --highlights # ... and its highli
 turbodl get https://www.instagram.com/someone/ --highlights-only
 turbodl get https://www.instagram.com/someone/saved/ --collection "Travel"   # a Saved collection (repeat the option, or use --all-collections)
 turbodl get https://x.com/someone/status/123 --dir D:\Videos   # an X link into a folder
+turbodl posts https://www.instagram.com/someone/ --since 2026-01-01 --limit 20   # list a profile's posts, save nothing
 turbodl add https://example.com/a.zip https://example.com/b.zip   # queue and return at once; prints the job ids
 turbodl wait <id> [<id>...]                                 # wait until queued jobs finish
 turbodl list                                                # all jobs
@@ -37,6 +38,7 @@ Other options for `get` and `add`: `--name <file>` (one link only), `--audio`, `
 
 - Instagram downloads always go to TurboDL's Instagram folders, whatever `--dir` says.
 - Profiles and highlights work without signing in, more slowly (each post is read from its own page). Posts Instagram shows only to signed-in visitors are skipped: the rest are saved, and the command ends with exit code 3. Saved, story links and private profiles need `turbodl instagram login`.
+- `turbodl posts <link>` lists an Instagram profile's or post's posts without saving anything: one line per post with its code, time and item count (`pinned`, `sign-in only` or `known` follow when they apply). `--since <ISO time>` (`2026-01-01`, read as UTC, or a time ending in `Z` or `+02:00`) stops at the first post taken at or before it; `--limit <n>` caps the posts listed. Tagged users are read signed out too.
 - `--json` prints one JSON object per line, for scripts.
 - Ctrl+C in `get` or `wait` cancels the jobs it is waiting for; a second Ctrl+C gives up at once.
 
@@ -53,7 +55,15 @@ Other options for `get` and `add`: `--name <file>` (one link only), `--audio`, `
 
 ### Local API
 
-Other programs can use the same engine. While TurboDL runs it writes `api.json` in its user data folder (`%APPDATA%\TurboDL` on Windows, `~/Library/Application Support/TurboDL` on macOS) with the port and an access token. Send requests to `127.0.0.1` on that port with the header `Authorization: Bearer <token>`: `POST /v1/jobs` starts a job, and `GET /v1/jobs/<id>/events` streams its progress as newline-delimited JSON. The API listens on this computer only; keep the token private.
+Other programs can use the same engine. While TurboDL runs it writes `api.json` in its user data folder (`%APPDATA%\TurboDL` on Windows, `~/Library/Application Support/TurboDL` on macOS) with the port and an access token. Send requests to `127.0.0.1` on that port with the header `Authorization: Bearer <token>`: `POST /v1/jobs` starts a job, and `GET /v1/jobs/<id>/events` streams its progress as newline-delimited JSON. The API listens on this computer only; keep the token private. `GET /v1/info` lists `"features": ["posts"]` when the app can list posts.
+
+**Post lists.** `POST /v1/jobs` with `options.postsOnly: true` lists a profile's or a post or reel link's posts and saves nothing. Optional `since` (`YYYY-MM-DD` as UTC, or a date-time with `Z` or `±HH:MM`), `limit` (1 to 100000) and `known` (up to 10000 shortcodes, sent back as stubs without being read). `postsOnly` can't be combined with `highlights`, `highlightsOnly`, `collections` or `allCollections` (400). Each post is an event:
+
+```json
+{"type":"post","post":{"code":"…","url":"…","takenAt":"2026-01-02T03:04:05.000Z","pinned":false,"owner":"…","caption":"…","taggedUsers":[],"items":[{"kind":"video","url":"…","mediaId":"…","width":1080,"height":1920,"duration":12.5}]}}
+```
+
+`takenAt` is an ISO time or `null`; `caption`, `signInOnly` and `known` appear only when they apply; an item's `mediaId`, `width`, `height` and `duration` can be missing (reels signed out often have no `duration`). The list stops at the first post taken at or before `since` after the first 3 positions (signed out, Instagram shows no pinned mark, so up to 3 old posts at the top are sent). It ends with `done`; `done` with `limited` and a warning when some posts are shown only to signed-in visitors; or `failed` with `rateLimited`, `private`, `unsupported` (stories, highlights, Saved and other sites) or `error`. A list nobody follows for 60 seconds is cancelled.
 
 ## Python
 
@@ -78,12 +88,16 @@ for event in job.events():           # dicts, as the API sends them
     print(event)
 job.wait()
 
+for post in tdl.posts("https://www.instagram.com/nasa/", since="2026-01-01", limit=20):
+    print(post.code, post.taken_at, len(post.items))    # lists posts, saves nothing
+
 tdl.jobs(); tdl.job(job.id); tdl.cancel(job.id)
 tdl.instagram_login(); tdl.instagram_logout(); tdl.info()
 ```
 
 - Options are the command's, in snake_case: `dir`, `name`, `audio`, `max_height`, `highlights`, `highlights_only`, `collections`, `all_collections`. A relative `dir` is resolved against the process's current working directory.
 - `get()` and `Job.wait()` return the `Job` when it ends `done` and raise otherwise; a `limited` job (a profile saved without signing in, all but the posts Instagram shows only to signed-in visitors) ends `done` but still raises `SignInRequired`. The exceptions for how a job ended, and `AppNotReachable` when TurboDL quits during `get()`, `wait()` or `events()`, carry the job as `e.job`, with the files already saved. All derive from `TurboDLError`.
+- `posts(url, since=None, limit=None, known=None)` is eager: it checks the app and starts the list when called, then yields `Post` objects: `code`, `url`, `taken_at` (aware UTC or `None`), `pinned`, `owner`, `caption`, `tagged_users`, `sign_in_only`, `known` and `items`, a list of `PostItem` (`kind`, `url`, `media_id`, `width`, `height`, `duration`). It doesn't reconnect: a stream that breaks raises `AppNotReachable`. The exceptions below are raised at the end (`SignInRequired` after all posts when some were shown only to signed-in visitors). Closing the iterator early or Ctrl+C cancels the job. An app older than 0.8.0 raises `TurboDLError("Update TurboDL to 0.8.0 or newer to list posts.")`.
 - `wait(timeout=...)` raises the built-in `TimeoutError` when the time is up and leaves the job running; `get()` waits as long as the job runs.
 
 | Exception | Raised when |
