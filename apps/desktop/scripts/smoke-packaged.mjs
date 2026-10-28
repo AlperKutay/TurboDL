@@ -296,10 +296,15 @@ if (linux) {
     const pkg = spawnSync("dpkg-deb", ["-f", deb, "Package"], { encoding: "utf8" });
     const list = spawnSync("dpkg-deb", ["-c", deb], { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
     const names = (list.stdout ?? "").split("\n").map((l) => l.trim().split(/\s+/).slice(5).join(" ").split(" -> ")[0]);
-    const wanted = ["./opt/TurboDL/turbodl-app", "./opt/TurboDL/resources/cli/turbodl.cjs", "./usr/share/applications/turbodl-app.desktop"];
+    const wanted = [
+      "./opt/TurboDL/turbodl-app",
+      "./opt/TurboDL/resources/cli/turbodl.cjs",
+      "./opt/TurboDL/resources/ffmpeg/ffmpeg",
+      "./usr/share/applications/turbodl-app.desktop",
+    ];
     const missing = wanted.filter((w) => !names.includes(w));
     const name = (pkg.stdout ?? "").trim();
-    report(name === "turbodl" && missing.length === 0, "deb contents", name !== "turbodl" ? `Package is "${name}"` : missing.length ? `missing ${missing.join(", ")}` : "turbodl-app, turbodl.cjs, desktop entry");
+    report(name === "turbodl" && missing.length === 0, "deb contents", name !== "turbodl" ? `Package is "${name}"` : missing.length ? `missing ${missing.join(", ")}` : "turbodl-app, turbodl.cjs, ffmpeg, desktop entry");
   }
 }
 

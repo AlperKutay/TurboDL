@@ -5,7 +5,7 @@ import { API_FILE, API_VERSION, type ApiFile, type ApiLaunch } from "@turbodl/sh
 
 import { appLocation } from "./app-location";
 
-const TOKEN =/^[0-9a-f]{64}$/;
+const TOKEN = /^[0-9a-f]{64}$/;
 /** more tries of the rename while a client reading api.json holds it (Windows), and ms between them */
 const RENAME_RETRIES = 3;
 const RENAME_GAP = 50;
