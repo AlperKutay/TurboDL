@@ -3,13 +3,13 @@
 import os
 import time
 from datetime import datetime, timezone
-from typing import Any, Callable, Dict, Generator, Iterable, Iterator, List, Optional, Set, Union
+from typing import Any, Callable, Dict, Generator, Iterable, List, Optional, Set, Union
 
 from . import _discover
 from ._http import request, stream_lines
-from .errors import AppNotReachable, TurboDLError
+from .errors import TurboDLError
 from .job import Job
-from .posts import Post
+from .posts import PostList
 
 API_VERSION = 1
 # When an events stream closes without `end`, how long the app gets to answer again before it counts as quit.
@@ -118,14 +118,15 @@ class TurboDL:
         return job.wait(on_event=on_event)
 
     def posts(self, url: str, since: Union[datetime, str, None] = None, limit: Optional[int] = None,
-              known: Optional[Iterable[str]] = None) -> Iterator[Post]:
-        """The posts of an Instagram profile or post, as TurboDL finds them.
+              known: Optional[Iterable[str]] = None) -> PostList:
+        """The posts of an Instagram profile or post, as TurboDL finds them: a PostList, an iterator of Post.
 
-        The app is checked and the list started when this is called (an old app raises TurboDLError here); the
-        returned iterator reads the posts. `since` is a datetime (naive means UTC) or an ISO 8601 string; `known` holds post codes to report as
-        details-free stubs. When the list ends it raises as `Job.wait()` does (SignInRequired after the posts it
-        could get, RateLimited, JobFailed, Cancelled); a stream that breaks raises AppNotReachable. Leaving early
-        or Ctrl+C cancels the list."""
+        The app is checked, the list started and its events stream opened when this is called (an old app, or a
+        stream that won't open, raises here); the PostList reads the posts, and its `job` follows the list
+        (`job.failed_items` counts the posts whose page showed nothing). `since` is a datetime (naive means UTC) or an
+        ISO 8601 string; `known` holds post codes to report as details-free stubs. When the list ends it raises as
+        `Job.wait()` does (SignInRequired after the posts it could get, RateLimited, JobFailed, Cancelled); a stream
+        that breaks raises AppNotReachable. `close()`, leaving early or Ctrl+C cancels the list."""
         if "posts" not in (self.info().get("features") or []):
             raise TurboDLError("Update TurboDL to 0.8.0 or newer to list posts.")
         options = {"postsOnly": True}  # type: Dict[str, Any]
@@ -136,31 +137,7 @@ class TurboDL:
         if known is not None:
             options["known"] = list(known)
         job = Job(self._call("POST", "/v1/jobs", {"url": url, "options": options})["job"], self)
-        return self._follow_posts(job)
-
-    def _follow_posts(self, job: Job) -> Iterator[Post]:
-        """The posts of a list job's single events stream (no reconnect); see `posts()` for how it ends."""
-        seen = []  # type: List[str]
-        stream = self._stream(job.id, None)
-        try:
-            for event in stream:
-                if event.get("type") == "post" and isinstance(event.get("post"), dict):
-                    yield Post.from_api(event["post"])
-                    continue
-                job._apply(event, seen)
-                if event.get("type") == "end":
-                    job._finish()
-                    return
-            raise AppNotReachable("Lost TurboDL while listing posts.", job)
-        except (GeneratorExit, KeyboardInterrupt):
-            if not job.ended:
-                try:
-                    self._cancel_raw(job.id)
-                except TurboDLError:
-                    pass
-            raise
-        finally:
-            stream.close()
+        return PostList(self, job)
 
     def instagram_login(self) -> Dict[str, Any]:
         """Opens TurboDL's Instagram sign-in and waits for it: {"signed_in": bool, "username": Optional[str]}."""

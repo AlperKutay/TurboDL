@@ -58,6 +58,7 @@ class StubApi:
         self.instagram = {"signedIn": True, "username": "alper"}
         self.features = ["posts"]  # type: List[str]
         self.events_requests = 0  # how many times a client opened an /events stream
+        self.snapshot = False  # set: each /events stream starts with the job's snapshot, as the app sends it
         self.fail_add = None  # type: Optional[str]
         # (status, body) for /events instead of the stream
         self.events_error = None  # type: Optional[Tuple[int, Dict[str, Any]]]
@@ -78,6 +79,12 @@ class StubApi:
                 self.send_header("Content-Length", str(len(raw)))
                 self.end_headers()
                 self.wfile.write(raw)
+
+            def chunk(self, event: Dict[str, Any]) -> None:
+                """One NDJSON line of an /events stream, as a chunk."""
+                data = (json.dumps(event, ensure_ascii=False) + "\n").encode("utf-8")
+                self.wfile.write(b"%x\r\n" % len(data) + data + b"\r\n")
+                self.wfile.flush()
 
             def route(self, post: bool) -> None:
                 if stub.gone is not None:
@@ -127,6 +134,8 @@ class StubApi:
                         self.send_header("Content-Type", "application/x-ndjson")
                         self.send_header("Transfer-Encoding", "chunked")
                         self.end_headers()
+                        if stub.snapshot:
+                            self.chunk({"type": "job", "jobId": job["id"], "job": dict(job)})
                         while True:
                             ev = q.get()
                             if ev is None:
@@ -134,9 +143,7 @@ class StubApi:
                                 self.wfile.flush()
                                 self.close_connection = True
                                 return
-                            data = (json.dumps(ev, ensure_ascii=False) + "\n").encode("utf-8")
-                            self.wfile.write(b"%x\r\n" % len(data) + data + b"\r\n")
-                            self.wfile.flush()
+                            self.chunk(ev)
                 self.send(404, {"error": "Not found"})
 
             def do_GET(self) -> None:

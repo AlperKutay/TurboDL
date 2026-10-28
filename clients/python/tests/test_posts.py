@@ -1,9 +1,11 @@
+import _thread
+import gc
 import time
 from datetime import datetime, timedelta, timezone
 
-from turbodl_client import AppNotReachable, Post, RateLimited, SignInRequired, TurboDLError
+from turbodl_client import AppNotReachable, Post, PostList, RateLimited, SignInRequired, TurboDLError
 from tests.stub import make_job
-from tests.test_jobs import JobCase
+from tests.test_jobs import JobCase, readers
 
 URL = "https://www.instagram.com/someone/"
 
@@ -27,6 +29,11 @@ def wait_for(test, condition, seconds: float = 3.0) -> None:
 
 
 class PostsTests(JobCase):
+    def serve(self, **kw):
+        t = super().serve(**kw)
+        self.stub.snapshot = True  # as the app does, each stream starts with the job
+        return t
+
     def test_yields_posts_with_their_fields(self) -> None:
         t = self.serve()
         self.script({"type": "state", "jobId": "j1", "state": "running"},
@@ -102,6 +109,54 @@ class PostsTests(JobCase):
         posts.close()
         self.assertEqual(self.stub.cancelled, ["j1"])
 
+    def test_close_before_iterating_cancels_the_job(self) -> None:
+        t = self.serve()
+        posts = t.posts(URL)
+        posts.close()
+        self.assertEqual(self.stub.cancelled, ["j1"])
+        self.assertEqual(list(posts), [])
+
+    def test_leaving_the_loop_early_cancels_the_job(self) -> None:
+        t = self.serve()
+        self.script(post("AAA"), post("BBB"))
+        for p in t.posts(URL):
+            break
+        gc.collect()
+        self.assertEqual(self.stub.cancelled, ["j1"])
+
+    def test_ctrl_c_while_waiting_for_a_post_cancels_the_list(self) -> None:
+        t = self.serve()
+        posts = t.posts(URL)  # then nothing arrives
+        self.later(0.3, _thread.interrupt_main)
+        with self.assertRaises(KeyboardInterrupt):
+            next(posts)
+        self.assertEqual(self.stub.cancelled, ["j1"])
+        self.assertEqual(readers(), [])
+
+    def test_the_list_keeps_its_job_up_to_date(self) -> None:
+        t = self.serve()
+        skipped = "1 post showed nothing and was skipped."
+        self.script(post("AAA"), {"type": "warning", "jobId": "j1", "message": skipped}, post("BBB"),
+                    end("done", reason="done", failedItems=1, warnings=[skipped]))
+        posts = t.posts(URL)
+        self.assertIsInstance(posts, PostList)
+        self.assertIs(iter(posts), posts)
+        self.assertEqual((posts.job.id, posts.job.state), ("j1", "queued"))
+        warned = []
+        for p in posts:
+            warned.append((p.code, list(posts.job.warnings)))
+        self.assertEqual(warned, [("AAA", []), ("BBB", [skipped])])
+        self.assertEqual((posts.job.state, posts.job.failed_items, posts.job.warnings), ("done", 1, [skipped]))
+        self.assertEqual(self.stub.cancelled, [])
+
+    def test_a_stream_that_wont_open_raises_at_the_call_and_cancels_the_job(self) -> None:
+        t = self.serve()
+        self.stub.events_error = (500, {"error": "Busy."})
+        with self.assertRaises(TurboDLError) as cm:
+            t.posts(URL)
+        self.assertEqual(str(cm.exception), "Busy.")
+        self.assertEqual(self.stub.cancelled, ["j1"])
+
     def test_a_finished_list_is_not_cancelled(self) -> None:
         t = self.serve()
         self.script(post("AAA"), end("done", reason="done"))
@@ -128,10 +183,12 @@ class PostsTests(JobCase):
         self.assertEqual(str(cm.exception), "Update TurboDL to 0.8.0 or newer to list posts.")
         self.assertEqual(self.stub.posted, [])
 
-    def test_the_job_is_created_when_posts_is_called(self) -> None:
+    def test_the_job_is_created_and_followed_when_posts_is_called(self) -> None:
         t = self.serve()
         it = t.posts(URL)
         self.assertEqual(len(self.stub.posted), 1)
         self.assertTrue(self.stub.posted[0]["options"]["postsOnly"])
+        # the stream is open before any next(): the app reads nothing for a list nobody follows
+        self.assertEqual(self.stub.events_requests, 1)
         self.script(post("AAA"), end("done", reason="done"))
         self.assertEqual([p.code for p in it], ["AAA"])

@@ -1,10 +1,14 @@
-"""Instagram posts, as `TurboDL.posts()` yields them."""
+"""Instagram posts, as `TurboDL.posts()` lists them."""
 
 import re
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Generator, Iterator, List, Optional
+
+from .errors import AppNotReachable, TurboDLError
+from .job import Job
 
 _TIME = re.compile(r"^(\d{4}-\d\d-\d\dT\d\d:\d\d(?::\d\d)?)(?:\.(\d+))?(Z|[+-]\d\d:\d\d)?$")
+LOST = "Lost TurboDL while listing posts."
 
 
 def _opt_int(value: Any) -> Optional[int]:
@@ -86,3 +90,86 @@ class Post:
 
     def __repr__(self) -> str:
         return "Post(code=%r, items=%d)" % (self.code, len(self.items))
+
+
+class PostList(Iterator[Post]):
+    """The posts of a list job as they arrive; `job` is the Job followed, kept up to date as its events come in.
+
+    `TurboDL.posts()` makes it with the job's events stream already open (the app reads nothing for a list nobody
+    follows). Once the posts are read, `job.warnings` and `job.failed_items` (posts whose page showed nothing) tell what
+    was left out. When the list ends other than `done`, iterating raises as `Job.wait()` does; a stream that breaks
+    raises AppNotReachable (no reconnect). `close()`, leaving the loop early or Ctrl+C cancels a list that hasn't
+    ended."""
+
+    def __init__(self, client: Any, job: Job) -> None:
+        self.job = job
+        self._client = client
+        self._open = False
+        self._seen = []  # type: List[str]
+        self._pending = None  # type: Optional[Dict[str, Any]]  # an event read ahead, not yet handled
+        self._stream = client._stream(job.id, None)  # type: Generator[Dict[str, Any], None, None]
+        self._open = True
+        try:
+            first = next(self._stream, None)  # the job's snapshot: the stream is followed from here on
+            if first is None:
+                raise AppNotReachable(LOST, job)
+            if first.get("type") == "job":
+                job._apply(first, self._seen)
+            else:
+                self._pending = first
+        except BaseException:
+            self.close()
+            raise
+
+    def __iter__(self) -> "PostList":
+        return self
+
+    def __next__(self) -> Post:
+        if not self._open:
+            raise StopIteration
+        try:
+            while True:
+                event = self._next_event()
+                if event is None:
+                    self._stop_reading()
+                    raise AppNotReachable(LOST, self.job)
+                if event.get("type") == "post" and isinstance(event.get("post"), dict):
+                    return Post.from_api(event["post"])
+                self.job._apply(event, self._seen)
+                if event.get("type") == "end":
+                    self._stop_reading()
+                    self.job._finish()
+                    raise StopIteration
+        except KeyboardInterrupt:
+            self.close()
+            raise
+
+    def close(self) -> None:
+        """Stops reading; a list that hasn't ended is cancelled."""
+        if not self._open:
+            return
+        self._stop_reading()
+        if not self.job.ended:
+            try:
+                self._client._cancel_raw(self.job.id)
+            except TurboDLError:
+                pass
+
+    def __del__(self) -> None:
+        try:
+            self.close()
+        except Exception:
+            pass
+
+    def _next_event(self) -> Optional[Dict[str, Any]]:
+        if self._pending is not None:
+            event, self._pending = self._pending, None
+            return event
+        return next(self._stream, None)
+
+    def _stop_reading(self) -> None:
+        self._open = False
+        self._stream.close()
+
+    def __repr__(self) -> str:
+        return "PostList(job=%r)" % (self.job,)
