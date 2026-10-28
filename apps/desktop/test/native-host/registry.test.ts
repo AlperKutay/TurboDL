@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -50,6 +50,12 @@ describe("launcherScript", () => {
     const script = launcherScript("win32", "D:\\100%\\Ærø\\TurboDL.exe", "D:\\h.cjs", [], {});
     expect(script).toContain('"D:\\100%%\\Ærø\\TurboDL.exe"');
     expect(script.split("\r\n")[1]).toBe("chcp 65001 >nul");
+  });
+
+  it("puts the AppImage flag right after the script, before launch arguments", () => {
+    expect(launcherScript("linux", "/a.AppImage", "/h.cjs", ["/dev app"], {}, true)).toBe(
+      `#!/bin/sh\nELECTRON_RUN_AS_NODE=1 exec '/a.AppImage' '/h.cjs' '--no-sandbox' '--launch-arg=/dev app' "$@"\n`,
+    );
   });
 
   it("quotes paths for /bin/sh on macOS, including apostrophes", () => {
@@ -132,6 +138,71 @@ describe("registerNativeHost", () => {
     expect(chrome.path.endsWith("turbodl-host.sh")).toBe(true);
     expect(existsSync(path.join(support, "BraveSoftware"))).toBe(false);
     if (process.platform !== "win32") expect(statSync(chrome.path).mode & 0o111).not.toBe(0);
+  });
+
+  it("puts the manifest into the NativeMessagingHosts folder of installed browsers on Linux", async () => {
+    mkdirSync(path.join(root, ".config", "google-chrome"), { recursive: true });
+    mkdirSync(path.join(root, ".config", "BraveSoftware", "Brave-Browser"), { recursive: true });
+    mkdirSync(path.join(root, ".mozilla"), { recursive: true });
+    const result = await registerNativeHost({
+      platform: "linux",
+      userDataDir: path.join(root, "user"),
+      homeDir: root,
+      execPath: "/opt/TurboDL/turbodl-app",
+      hostScript: "/opt/TurboDL/resources/native-host/host.cjs",
+      env: {},
+    });
+    expect(result.registered).toEqual(["Chrome", "Brave", "Firefox"]);
+    const chrome = JSON.parse(readFileSync(path.join(root, ".config", "google-chrome", "NativeMessagingHosts", "com.turbodl.host.json"), "utf8"));
+    expect(chrome.allowed_origins).toEqual([ORIGIN]);
+    expect(chrome.path.endsWith("turbodl-host.sh")).toBe(true);
+    const brave = JSON.parse(readFileSync(path.join(root, ".config", "BraveSoftware", "Brave-Browser", "NativeMessagingHosts", "com.turbodl.host.json"), "utf8"));
+    expect(brave.allowed_origins).toEqual([ORIGIN]);
+    expect(brave.path.endsWith("turbodl-host.sh")).toBe(true);
+    const firefox = JSON.parse(readFileSync(path.join(root, ".mozilla", "native-messaging-hosts", "com.turbodl.host.json"), "utf8"));
+    expect(firefox.allowed_extensions).toEqual(["turbodl@turbodl.app"]);
+    expect(existsSync(path.join(root, ".config", "chromium"))).toBe(false);
+    expect(readFileSync(chrome.path, "utf8")).toBe(
+      `#!/bin/sh\nELECTRON_RUN_AS_NODE=1 exec '/opt/TurboDL/turbodl-app' '/opt/TurboDL/resources/native-host/host.cjs' "$@"\n`,
+    );
+  });
+
+  it("follows XDG_CONFIG_HOME and finds Firefox installed from Snap", async () => {
+    const cfg = path.join(root, "cfg");
+    mkdirSync(path.join(cfg, "vivaldi"), { recursive: true });
+    mkdirSync(path.join(root, "snap", "firefox", "common", ".mozilla"), { recursive: true });
+    const result = await registerNativeHost({
+      platform: "linux",
+      userDataDir: path.join(root, "user"),
+      homeDir: root,
+      execPath: "/opt/TurboDL/turbodl-app",
+      hostScript: "/opt/TurboDL/resources/native-host/host.cjs",
+      env: { XDG_CONFIG_HOME: cfg },
+    });
+    expect(result.registered).toEqual(["Vivaldi", "Firefox"]);
+    expect(existsSync(path.join(cfg, "vivaldi", "NativeMessagingHosts", "com.turbodl.host.json"))).toBe(true);
+    expect(existsSync(path.join(root, ".mozilla", "native-messaging-hosts", "com.turbodl.host.json"))).toBe(true);
+    expect(existsSync(path.join(root, ".config"))).toBe(false);
+  });
+
+  it("runs a copy of host.cjs through the AppImage file, with the flag after the script", async () => {
+    const hostScript = path.join(root, "host-original.cjs");
+    writeFileSync(hostScript, "// host");
+    mkdirSync(path.join(root, ".config", "google-chrome"), { recursive: true });
+    const userData = path.join(root, "user");
+    await registerNativeHost({
+      platform: "linux",
+      userDataDir: userData,
+      homeDir: root,
+      execPath: "/tmp/.mount_x/turbodl-app",
+      hostScript,
+      env: { APPIMAGE: "/home/a/My Apps/TurboDL.AppImage", APPDIR: "/tmp/.mount_x" },
+    });
+    const copy = path.join(userData, "native-host", "host.cjs");
+    expect(readFileSync(copy, "utf8")).toBe("// host");
+    expect(readFileSync(path.join(userData, "native-host", "turbodl-host.sh"), "utf8")).toBe(
+      `#!/bin/sh\nELECTRON_RUN_AS_NODE=1 exec '/home/a/My Apps/TurboDL.AppImage' '${copy}' '--no-sandbox' "$@"\n`,
+    );
   });
 });
 
