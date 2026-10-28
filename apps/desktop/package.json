@@ -5,6 +5,8 @@
   "private": true,
   "description": "TurboDL download manager",
   "author": "TurboDL",
+  "homepage": "https://github.com/AlperKutay/TurboDL",
+  "desktopName": "turbodl-app.desktop",
   "main": "./out/main/index.js",
   "scripts": {
     "dev": "electron-vite dev",

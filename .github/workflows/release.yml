@@ -1,6 +1,6 @@
 name: Release
 
-# Pushing a tag like v0.3.0 builds the Windows and macOS installers and the Firefox add-on
+# Pushing a tag like v0.3.0 builds the Windows, macOS and Linux installers and the Firefox add-on
 # and publishes them as a GitHub release. Run by hand, it only builds them (a dry run, nothing published).
 on:
   push:
@@ -22,6 +22,10 @@ jobs:
             files: apps/desktop/release/*.dmg
           - os: macos-15-intel # Intel .dmg
             files: apps/desktop/release/*.dmg
+          - os: ubuntu-latest # x64 .deb and AppImage
+            files: |
+              apps/desktop/release/*.deb
+              apps/desktop/release/*.AppImage
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -62,6 +66,15 @@ jobs:
           CSC_KEY_PASSWORD: ${{ runner.os == 'macOS' && secrets.MAC_CERT_PASSWORD || '' }}
           APPLE_API_KEY_ID: ${{ runner.os == 'macOS' && secrets.APPLE_API_KEY_ID || '' }}
           APPLE_API_ISSUER: ${{ runner.os == 'macOS' && secrets.APPLE_API_ISSUER || '' }}
+      # Linux: the .deb's contents, and the AppImage's Node mode, bridge and api.json (no e2e on any platform here)
+      - name: Check the Linux packages
+        if: runner.os == 'Linux'
+        continue-on-error: true
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb
+          sudo apt-get install -y libfuse2t64 || sudo apt-get install -y libfuse2
+          xvfb-run -a pnpm --filter @turbodl/desktop smoke:packaged
       - name: Check the Mac app's signature, notarization and Gatekeeper
         if: runner.os == 'macOS' && env.APPLE_API_KEY != ''
         run: |

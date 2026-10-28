@@ -41,6 +41,18 @@ module.exports = {
       : { identity: "-", hardenedRuntime: false }),
     gatekeeperAssess: false,
   },
+  linux: {
+    target: [
+      { target: "deb", arch: ["x64"] },
+      { target: "AppImage", arch: ["x64"] },
+    ],
+    icon: "build/icon.png",
+    category: "Network",
+    // not "turbodl": the deb links /usr/bin/<executable>, which would shadow or impersonate the CLI
+    executableName: "turbodl-app",
+    artifactName: "TurboDL-${version}-${arch}.${ext}",
+  },
+  deb: { packageName: "turbodl", maintainer: "AlperKutay <alperkozbek@gmail.com>" },
   dmg: {
     artifactName: "TurboDL-${version}-${arch}.${ext}",
   },
