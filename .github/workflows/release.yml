@@ -70,10 +70,10 @@ jobs:
           CSC_KEY_PASSWORD: ${{ runner.os == 'macOS' && secrets.MAC_CERT_PASSWORD || '' }}
           APPLE_API_KEY_ID: ${{ runner.os == 'macOS' && secrets.APPLE_API_KEY_ID || '' }}
           APPLE_API_ISSUER: ${{ runner.os == 'macOS' && secrets.APPLE_API_ISSUER || '' }}
-      # Linux: the .deb's contents, and the AppImage's Node mode, bridge and api.json (no e2e on any platform here)
+      # Linux: the .deb's contents, the packaged ffmpeg (HLS join, http://localhost), and the AppImage's Node mode, bridge
+      # and api.json (no e2e on any platform here). A failure fails the job, so the release does not publish.
       - name: Check the Linux packages
         if: runner.os == 'Linux'
-        continue-on-error: true
         run: |
           sudo apt-get update
           sudo apt-get install -y xvfb
