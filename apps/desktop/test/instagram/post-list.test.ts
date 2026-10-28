@@ -9,7 +9,8 @@ import { FakeUi, SESSION, startApp } from "../fixtures/instagram-app";
 import { PUBLIC_PROFILE, fakeProfiles, fakeSignedOut, signedOutCover, type DetailedPage } from "../fixtures/instagram-fakes";
 
 const SLOW_DOWN = "Instagram asked TurboDL to slow down. Try again in a few minutes.";
-const DONE = { type: "done", signInOnly: 0 };
+const DONE = { type: "done", signInOnly: 0, empty: 0 };
+const PAGES_CHANGED = { type: "refused", reason: "error", error: "Instagram changed its post pages; TurboDL couldn't read them." };
 
 let root: string;
 let controller: AppController | null;
@@ -264,18 +265,62 @@ describe("ProfileService.listPosts", () => {
     answering(so.deps, "C2", "signInOnly");
     const c = await start(so.deps);
     const { posts, outcome } = await list(c);
-    expect(outcome).toEqual({ type: "done", signInOnly: 1 });
+    expect(outcome).toEqual({ type: "done", signInOnly: 1, empty: 0 });
     expect(posts.map((p) => p.code)).toEqual(["C1", "C2", "C3"]);
     expect(posts[1]).toEqual({ code: "C2", url: postUrl("C2"), takenAt: null, pinned: false, owner: "sample.user", taggedUsers: [], signInOnly: true, items: [] });
   });
 
-  it("sends a post whose page showed nothing without items or time, and goes on", async () => {
+  it("skips a post whose page shows nothing and counts it", async () => {
     const so = fakeSignedOut(pagesOn({ C1: 20, C3: 18 }), { listing: [covers("C1", "C2", "C3")] });
     const c = await start(so.deps);
-    const { posts, outcome } = await list(c, { since: day(10) });
-    expect(outcome).toEqual(DONE);
-    expect(posts[1]).toEqual({ code: "C2", url: postUrl("C2"), takenAt: null, pinned: false, owner: "sample.user", taggedUsers: [], items: [] });
-    expect(posts.map((p) => p.code)).toEqual(["C1", "C2", "C3"]);
+    const { codes, outcome } = await list(c);
+    expect(outcome).toEqual({ type: "done", signInOnly: 0, empty: 1 });
+    expect(codes).toEqual(["C1", "C3"]);
+    expect(so.read).toEqual(["C1", "C2", "C3"]);
+  });
+
+  it("counts a post whose page shows nothing towards neither the limit nor the pinned places", async () => {
+    // C1 shows nothing: C2–C4 take the first 3 places, so the old C5 ends the list
+    const so = fakeSignedOut(pagesOn({ C2: 1, C3: 2, C4: 3, C5: 4, C6: 20 }), { listing: [covers("C1", "C2", "C3", "C4", "C5", "C6")] });
+    const c = await start(so.deps);
+    expect(await list(c, { since: day(10) })).toMatchObject({ codes: ["C2", "C3", "C4"], outcome: { type: "done", signInOnly: 0, empty: 1 } });
+    expect(so.read).toEqual(["C1", "C2", "C3", "C4", "C5"]);
+    expect(await list(c, { limit: 2 })).toMatchObject({ codes: ["C2", "C3"], outcome: { type: "done", signInOnly: 0, empty: 1 } });
+  });
+
+  /** A post's own page with its items but no time. */
+  const timeless = (code: string): DetailedPage => ({ items: [photo(code)], details: { owner: "sample.user", taggedUsers: [] } });
+
+  it("ends with an error after 3 post pages in a row show nothing or carry no time", async () => {
+    // C2 and C4 show nothing, C3 has no time
+    const so = fakeSignedOut({ ...pagesOn({ C1: 20, C5: 18, C6: 17 }), C3: timeless("C3") }, { listing: [covers("C1", "C2", "C3"), covers("C4", "C5", "C6")] });
+    const c = await start(so.deps);
+    const { posts, outcome } = await list(c);
+    expect(outcome).toEqual(PAGES_CHANGED);
+    expect(posts.map((p) => [p.code, p.takenAt])).toEqual([
+      ["C1", iso(20)],
+      ["C3", null],
+    ]);
+    expect(so.read).toEqual(["C1", "C2", "C3", "C4"]);
+    expect(so.closed).toEqual(["sample.user"]);
+  });
+
+  it("a post with a time resets the guard", async () => {
+    const so = fakeSignedOut({ ...pagesOn({ C3: 20, C6: 18 }), C5: timeless("C5") }, { listing: [covers("C1", "C2", "C3", "C4", "C5", "C6")] });
+    const c = await start(so.deps);
+    expect(await list(c)).toMatchObject({ codes: ["C3", "C5", "C6"], outcome: { type: "done", signInOnly: 0, empty: 3 } });
+    expect(so.read).toEqual(["C1", "C2", "C3", "C4", "C5", "C6"]);
+  });
+
+  it("counts neither known stubs nor posts shown only to signed-in visitors for the guard, nor lets them reset it", async () => {
+    const so = fakeSignedOut(pagesOn({ C2: 20, C6: 18 }), { listing: [covers("C1", "C2", "C3", "C4", "C5", "C6", "C7")] });
+    answering(so.deps, "C2", "signInOnly");
+    const c = await start(so.deps);
+    // C1 shows nothing, C2 is sign-in only, C3 known, C4 and C5 show nothing: the third read without a time is C5
+    const { codes, outcome } = await list(c, { known: new Set(["C3"]) });
+    expect(outcome).toEqual(PAGES_CHANGED);
+    expect(codes).toEqual(["C2", "C3"]);
+    expect(so.read).toEqual(["C1", "C2", "C4", "C5"]);
   });
 
   it("ends rateLimited on the login wall mid-list, keeping what it sent, and holds the pacer", async () => {
@@ -330,11 +375,11 @@ describe("ProfileService.listPosts", () => {
     expect(so.closed).toEqual(["sample.user"]);
   });
 
-  it("answers notFound for a profile Instagram doesn't show", async () => {
+  it("ends with an error, not notFound, for a profile Instagram doesn't show (it may only have been slow)", async () => {
     const ig = fakeProfiles({});
     const c = await start(ig.deps);
     const { outcome } = await list(c, {}, "Nobody.Here");
-    expect(outcome).toEqual({ type: "refused", reason: "notFound", error: "Instagram shows no profile named Nobody.Here." });
+    expect(outcome).toEqual({ type: "refused", reason: "error", error: "Instagram didn't show the profile Nobody.Here; it may not exist, or the page was too slow." });
     expect(ig.closed).toEqual(["nobody.here"]);
   });
 

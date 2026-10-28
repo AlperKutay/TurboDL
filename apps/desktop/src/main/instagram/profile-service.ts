@@ -75,9 +75,9 @@ export interface PostListOptions {
   onPost(post: InstagramPostInfo): void;
 }
 
-/** How a list ended; what it sent before stays sent. */
+/** How a list ended; what it sent before stays sent. `empty`: posts left out because their page showed nothing. */
 export type PostListOutcome =
-  | { type: "done"; signInOnly: number }
+  | { type: "done"; signInOnly: number; empty: number }
   | { type: "refused"; error: string; reason: "private" | "notFound" | "signInRequired" | "rateLimited" | "error" }
   | { type: "cancelled" };
 
@@ -94,6 +94,10 @@ const LIST_SLOWED_DOWN: ListRefusal = { type: "refused", error: SLOW_DOWN, reaso
 const LIST_CANCELLED: PostListOutcome = { type: "cancelled" };
 /** posts Instagram lets a profile pin to its top */
 const MOST_PINNED = 3;
+/** post pages in a row that show nothing or no time before a list takes Instagram's pages to have changed */
+const UNREADABLE_RUN = 3;
+/** a list ended by that many: it would otherwise read the whole profile, nothing ever ending it at `since` */
+const PAGES_CHANGED: ListRefusal = { type: "refused", error: "Instagram changed its post pages; TurboDL couldn't read them.", reason: "error" };
 
 /**
  * Profiles in the main process: one hidden page per open profile (it holds the request its posts are paged with),
@@ -182,8 +186,9 @@ export class ProfileService {
   /**
    * A profile's posts in the order its page shows them, each with its details and items, saving nothing. It reads
    * through a page of its own, closed when the list ends (the screen's and a backup's pages are left alone). A post in
-   * `known` is sent as a stub, its page not read; seen signed out, every other post is read from its own page; signed
-   * in, the feed's items and details are sent as they are. Every page it loads, its profile's included, takes the jobs'
+   * `known` is sent as a stub, its page not read; seen signed out, every other post is read from its own page (one that
+   * shows nothing is left out, counted in `done.empty`); signed in, the feed's items and details are sent as they are.
+   * Every page it loads, its profile's included, takes the jobs'
    * read slot here, in the account's pace: unlike a backup's start (`pageFor`), it must not be called from inside the
    * read slot (`deps.read`), which would wait for itself.
    */
@@ -198,8 +203,10 @@ export class ProfileService {
       opened = await this.paced(() => this.openOwn(username.toLowerCase()), signal, true);
     } catch (err) {
       if (signal.aborted) return LIST_CANCELLED;
-      // the feed gives up on a page that never shows the profile
-      if (err instanceof SavedError && err.kind === "badAnswer") return { type: "refused", error: `Instagram shows no profile named ${username}.`, reason: "notFound" };
+      // the feed gives up on a page that never shows the profile: no such profile, or a page too slow to tell
+      if (err instanceof SavedError && err.kind === "badAnswer") {
+        return { type: "refused", error: `Instagram didn't show the profile ${username}; it may not exist, or the page was too slow.`, reason: "error" };
+      }
       return listRefusal(err, "Sign in to Instagram again.");
     }
     const { profile, source } = opened;
@@ -245,8 +252,12 @@ export class ProfileService {
     const marked = !source.limited;
     let sent = 0;
     let signInOnly = 0;
+    let empty = 0;
+    /** the place in the list of the post at hand; posts left out take none */
     let position = 0;
-    const ended = (): PostListOutcome => (signal.aborted ? LIST_CANCELLED : { type: "done", signInOnly });
+    /** post pages read in a row that showed nothing or no time */
+    let unreadable = 0;
+    const ended = (): PostListOutcome => (signal.aborted ? LIST_CANCELLED : { type: "done", signInOnly, empty });
     const full = () => limit !== undefined && sent >= limit;
     const send = (post: InstagramPostInfo) => {
       o.onPost(post);
@@ -261,23 +272,34 @@ export class ProfileService {
       for (const entry of page.posts) {
         if (full()) return ended();
         if (signal.aborted) return LIST_CANCELLED;
-        position++;
         const { code } = entry;
         if (!code) continue;
         const pinned = entry.pinned === true;
         if (known?.has(code)) {
+          position++;
           send({ ...postInfo(code, [], NO_DETAILS, pinned, profile.username), known: true });
           continue;
         }
         const read = entry.unread ? await this.readDetails(code, signal) : { items: entry.items, details: feedDetails(entry) };
         if (signal.aborted) return LIST_CANCELLED;
         if (read === "signInOnly") {
+          position++;
           signInOnly++;
           send({ ...postInfo(code, [], NO_DETAILS, pinned, profile.username), signInOnly: true });
           continue;
         }
-        // a page that showed nothing: the post is sent without items or time, and the list goes on
-        const { items, details } = read ?? { items: [], details: NO_DETAILS };
+        // with no times nothing would end it: a few pages in a row without one end the list instead (a time starts the count again)
+        if (entry.unread) {
+          unreadable = read === null || read.details.takenAt === undefined ? unreadable + 1 : 0;
+          if (unreadable >= UNREADABLE_RUN) return PAGES_CHANGED;
+        }
+        // a page that showed nothing: the post isn't sent and takes no place, and the list goes on
+        if (read === null) {
+          empty++;
+          continue;
+        }
+        position++;
+        const { items, details } = read;
         const post = postInfo(code, items, details, pinned || details.pinned === true, profile.username);
         // the first old post that isn't pinned ends the list unsent; without marks, Instagram's pinned places are spared
         const old = since !== undefined && details.takenAt !== undefined && details.takenAt <= since;
