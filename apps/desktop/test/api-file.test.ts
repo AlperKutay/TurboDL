@@ -124,6 +124,25 @@ describe("clientLaunch", () => {
     });
   });
 
+  it("starts a packaged AppImage by its file", () => {
+    expect(
+      clientLaunch({
+        platform: "linux",
+        execPath: "/tmp/.mount_TurboDabc/turbodl-app",
+        isPackaged: true,
+        appPath: "x",
+        env: { APPIMAGE: "/home/a/Apps/TurboDL.AppImage", APPDIR: "/tmp/.mount_TurboDabc" }
+      })
+    ).toEqual({ file: "/home/a/Apps/TurboDL.AppImage", args: ["--hidden"] });
+  });
+
+  it("starts the .deb by its executable", () => {
+    expect(clientLaunch({ platform: "linux", execPath: "/opt/TurboDL/turbodl-app", isPackaged: true, appPath: "x", env: {} })).toEqual({
+      file: "/opt/TurboDL/turbodl-app",
+      args: ["--hidden"]
+    });
+  });
+
   it("passes the app path when running unpackaged", () => {
     const appPath = String.raw`D:\app`;
     expect(clientLaunch({ platform: "win32", execPath: "electron.exe", isPackaged: false, appPath })).toEqual({

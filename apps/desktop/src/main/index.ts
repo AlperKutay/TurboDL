@@ -77,7 +77,7 @@ async function start(): Promise<void> {
   windows = wm;
   const c = new AppController({
     version: app.getVersion(),
-    launch: clientLaunch({ platform: process.platform, execPath: process.execPath, isPackaged: app.isPackaged, appPath: app.getAppPath() }),
+    launch: clientLaunch({ platform: process.platform, execPath: process.execPath, isPackaged: app.isPackaged, appPath: app.getAppPath(), env: process.env }),
     userDataDir: app.getPath("userData"),
     downloadsDir: app.getPath("downloads"),
     documentsDir: app.getPath("documents"),

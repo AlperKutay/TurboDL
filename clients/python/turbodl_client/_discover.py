@@ -20,7 +20,8 @@ PORT_GRACE = 5.0
 
 
 def user_data_dir(user_data: Optional[str] = None) -> str:
-    """The argument, TURBODL_USER_DATA, else %APPDATA%\\TurboDL, ~/Library/Application Support/TurboDL or ~/.config/TurboDL."""
+    """The argument, TURBODL_USER_DATA, else %APPDATA%\\TurboDL, ~/Library/Application Support/TurboDL, or on Linux
+    $XDG_CONFIG_HOME/TurboDL when that is set and non-empty, else ~/.config/TurboDL."""
     if user_data:
         return user_data
     env = os.environ.get("TURBODL_USER_DATA")
@@ -31,7 +32,7 @@ def user_data_dir(user_data: Optional[str] = None) -> str:
         return os.path.join(os.environ.get("APPDATA") or os.path.join(home, "AppData", "Roaming"), "TurboDL")
     if sys.platform == "darwin":
         return os.path.join(home, "Library", "Application Support", "TurboDL")
-    return os.path.join(home, ".config", "TurboDL")
+    return os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.join(home, ".config"), "TurboDL")
 
 
 def read_api_file(folder: str) -> Optional[Dict[str, Any]]:

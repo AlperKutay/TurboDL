@@ -7,7 +7,7 @@ type Decoded = { done: false } | { done: true; message: unknown } | { done: true
 interface HostModule {
   encode(message: unknown): Buffer;
   decode(buf: Buffer): Decoded;
-  launchSpec(platform: string, execPath: string, launchArgs: string[]): { file: string; args: string[] };
+  launchSpec(platform: string, execPath: string, launchArgs: string[], env?: Record<string, string | undefined>): { file: string; args: string[] };
   launchArgsFrom(argv: string[]): string[];
 }
 
@@ -44,6 +44,17 @@ describe("launchSpec", () => {
       file: "open",
       args: ["-g", "-a", "/Applications/Turbo DL.app", "--args", "--hidden"],
     });
+  });
+
+  it("starts the AppImage file, since its mount goes away when this host exits", () => {
+    expect(host.launchSpec("linux", "/tmp/.mount_x/turbodl-app", [], { APPIMAGE: "/home/a/T.AppImage", APPDIR: "/tmp/.mount_x" })).toEqual({
+      file: "/home/a/T.AppImage",
+      args: ["--hidden"],
+    });
+  });
+
+  it("starts the .deb executable directly", () => {
+    expect(host.launchSpec("linux", "/opt/TurboDL/turbodl-app", [], {})).toEqual({ file: "/opt/TurboDL/turbodl-app", args: ["--hidden"] });
   });
 
   it("reads launch arguments placed before the browser's own arguments", () => {

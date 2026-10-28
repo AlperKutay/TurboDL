@@ -37,8 +37,14 @@ function decode(buf) {
  * @param {string} platform
  * @param {string} execPath the TurboDL executable (the host runs inside it in Node mode)
  * @param {string[]} launchArgs extra arguments before --hidden (development and tests)
+ * @param {Record<string, string | undefined>} [env] the host's environment (the AppImage rule below)
  */
-function launchSpec(platform, execPath, launchArgs) {
+function launchSpec(platform, execPath, launchArgs, env = {}) {
+  // Linux AppImage: its /tmp/.mount_* folder goes away when the host exits, so start the AppImage file.
+  // Keep in sync with appLocation in src/main/app-location.ts (this file cannot import it).
+  if (platform === "linux" && env.APPIMAGE && env.APPDIR && execPath.startsWith(`${env.APPDIR}/`)) {
+    return { file: env.APPIMAGE, args: [...launchArgs, "--hidden"] };
+  }
   const bundle = platform === "darwin" ? /^(.*\.app)\/Contents\/MacOS\/[^/]+$/.exec(execPath) : null;
   // `open` hands the app to launchd, so it outlives the browser and this host
   if (bundle) return { file: "open", args: ["-g", "-a", bundle[1], "--args", "--hidden"] };
@@ -51,7 +57,7 @@ function launchArgsFrom(argv) {
 }
 
 function launch() {
-  const spec = launchSpec(process.platform, process.execPath, launchArgsFrom(process.argv));
+  const spec = launchSpec(process.platform, process.execPath, launchArgsFrom(process.argv), process.env);
   const env = { ...process.env };
   delete env.ELECTRON_RUN_AS_NODE;
   return new Promise((resolve) => {

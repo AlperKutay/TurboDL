@@ -3,7 +3,9 @@ import { readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { API_FILE, API_VERSION, type ApiFile, type ApiLaunch } from "@turbodl/shared";
 
-const TOKEN = /^[0-9a-f]{64}$/;
+import { appLocation } from "./app-location";
+
+const TOKEN =/^[0-9a-f]{64}$/;
 /** more tries of the rename while a client reading api.json holds it (Windows), and ms between them */
 const RENAME_RETRIES = 3;
 const RENAME_GAP = 50;
@@ -70,8 +72,15 @@ export async function writeApiFile(o: {
 }
 
 /** How clients start this app in the background (the same rule as host.cjs's launchSpec). */
-export function clientLaunch(o: { platform: NodeJS.Platform; execPath: string; isPackaged: boolean; appPath: string }): ApiLaunch {
-  const bundle = o.platform === "darwin" && o.isPackaged ? /^(.*\.app)\/Contents\/MacOS\/[^/]+$/.exec(o.execPath) : null;
+export function clientLaunch(o: {
+  platform: NodeJS.Platform;
+  execPath: string;
+  isPackaged: boolean;
+  appPath: string;
+  env?: NodeJS.ProcessEnv;
+}): ApiLaunch {
+  const execPath = appLocation({ platform: o.platform, execPath: o.execPath, env: o.env ?? {} }).file;
+  const bundle = o.platform === "darwin" && o.isPackaged ? /^(.*\.app)\/Contents\/MacOS\/[^/]+$/.exec(execPath) : null;
   if (bundle) return { file: "open", args: ["-g", "-a", bundle[1], "--args", "--hidden"] };
-  return { file: o.execPath, args: o.isPackaged ? ["--hidden"] : [o.appPath, "--hidden"] };
+  return { file: execPath, args: o.isPackaged ? ["--hidden"] : [o.appPath, "--hidden"] };
 }

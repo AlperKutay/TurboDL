@@ -3,12 +3,14 @@ import fs from "node:fs";
 import path from "node:path";
 import { API_FILE, type ApiFile, type ApiLaunch } from "@turbodl/shared";
 
-/** TURBODL_USER_DATA, else %APPDATA%\TurboDL, ~/Library/Application Support/TurboDL, or ~/.config/TurboDL. */
+import { linuxConfigHome } from "../main/app-location";
+
+/** TURBODL_USER_DATA, else %APPDATA%\TurboDL, ~/Library/Application Support/TurboDL, or $XDG_CONFIG_HOME/TurboDL (~/.config) on Linux. */
 export function userDataDir(env: NodeJS.ProcessEnv, platform: NodeJS.Platform, home: string): string {
   if (env.TURBODL_USER_DATA) return env.TURBODL_USER_DATA;
   if (platform === "win32") return path.join(env.APPDATA || path.join(home, "AppData", "Roaming"), "TurboDL");
   if (platform === "darwin") return path.join(home, "Library", "Application Support", "TurboDL");
-  return path.join(home, ".config", "TurboDL");
+  return path.join(linuxConfigHome(env, home), "TurboDL");
 }
 
 /** The parsed api.json in `dir`, or null when it is missing or unreadable. */

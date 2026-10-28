@@ -13,6 +13,11 @@ describe("userDataDir", () => {
     expect(userDataDir({ APPDATA: "C:\\A" }, "win32", "C:\\H")).toBe(path.join("C:\\A", "TurboDL"));
     expect(userDataDir({}, "win32", "C:\\H")).toBe(path.join("C:\\H", "AppData", "Roaming", "TurboDL"));
   });
+  it("follows XDG_CONFIG_HOME on Linux, as the app does", () => {
+    expect(userDataDir({ XDG_CONFIG_HOME: "/x/cfg" }, "linux", "/home/a")).toBe(path.join("/x/cfg", "TurboDL"));
+    expect(userDataDir({ XDG_CONFIG_HOME: "" }, "linux", "/home/a")).toBe(path.join("/home/a", ".config", "TurboDL"));
+    expect(userDataDir({ XDG_CONFIG_HOME: "/x/cfg" }, "darwin", "/Users/a")).toBe(path.join("/Users/a", "Library", "Application Support", "TurboDL"));
+  });
   it("uses Application Support on macOS and ~/.config on Linux", () => {
     expect(userDataDir({}, "darwin", "/Users/a")).toBe(path.join("/Users/a", "Library", "Application Support", "TurboDL"));
     expect(userDataDir({}, "linux", "/home/a")).toBe(path.join("/home/a", ".config", "TurboDL"));
