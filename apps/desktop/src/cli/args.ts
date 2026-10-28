@@ -39,7 +39,8 @@ Options (get and add):
   --all-collections      Download every Saved collection
 
 Options (posts):
-  --since <time>         Only posts taken at or after this ISO 8601 time
+  --since <time>         Stop at the first post taken at or before this ISO 8601
+                         time (up to 3 older posts at the top are still listed)
   --limit <n>            At most this many posts (1 to 100000)
 
 Options (every command):

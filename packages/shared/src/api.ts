@@ -24,7 +24,7 @@ export interface JobOptions {
   maxHeight?: number;
   /** a profile: list its posts instead of downloading them */
   postsOnly?: boolean;
-  /** a profile: only posts taken at or after this time (ISO 8601) */
+  /** a profile: the list stops at the first post taken at or before this time (ISO 8601); up to 3 older posts at the top are still listed, as they may be pinned */
   since?: string;
   /** a profile: at most this many posts */
   limit?: number;
