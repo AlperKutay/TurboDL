@@ -10,7 +10,8 @@ import { PUBLIC_PROFILE, fakeProfiles, fakeSignedOut, signedOutCover, type Detai
 
 const SLOW_DOWN = "Instagram asked TurboDL to slow down. Try again in a few minutes.";
 const DONE = { type: "done", signInOnly: 0, empty: 0 };
-const PAGES_CHANGED = { type: "refused", reason: "error", error: "Instagram changed its post pages; TurboDL couldn't read them." };
+const PAGES_CHANGED = { type: "refused", reason: "error", error: "TurboDL couldn't read 3 posts in a row from their pages; Instagram may have changed them, or is slow." };
+const STALLED = { type: "refused", reason: "error", error: "Instagram kept answering the same posts; TurboDL stopped the list." };
 
 let root: string;
 let controller: AppController | null;
@@ -70,6 +71,24 @@ const person = (o: Partial<InstagramProfile> = {}): InstagramProfile => ({ id: "
 const feedPost = (code: string, d: number, o: Partial<SavedPost> = {}): SavedPost => ({ id: `id-${code}`, code, cover: `https://cdn.example/${code}.jpg`, items: [photo(code)], takenAt: day(d), taggedUsers: [], ...o });
 const feed = (pages: SavedPost[][], profile = person()) => fakeProfiles({ "sample.user": { profile, pages } });
 
+/** A signed-in feed whose pages are `pages[cursor]` ("" for the first), cursors as given; it gives up after 10 pages. */
+function cursored(pages: Record<string, { posts: SavedPost[]; next?: string }>) {
+  const ig = feed([]);
+  const open = ig.deps.openProfile!;
+  ig.deps.openProfile = (username, cookies) => {
+    const source = open(username, cookies);
+    return {
+      ...source,
+      page: async (cursor, signal) => {
+        await source.page(cursor, signal);
+        if (ig.asked.length > 10) throw new Error("Asked too many pages.");
+        return pages[cursor ?? ""] ?? { posts: [] };
+      },
+    };
+  };
+  return ig;
+}
+
 /** The post pages the app asks the finder for, by code. */
 function postPagesRead(deps: InstagramDeps): string[] {
   const read: string[] = [];
@@ -112,16 +131,16 @@ describe("ProfileService.listPosts", () => {
     expect(so.asked.map((a) => a.cursor)).toEqual([undefined, "1"]);
   });
 
-  it("ends at the first old unpinned post and doesn't read it", async () => {
-    // signed in, the feed carries every post's time: nothing is read to find the old one
-    const ig = feed([[feedPost("C1", 20), feedPost("C2", 15), feedPost("C3", 5)], [feedPost("C4", 4)]]);
+  it("ends at the first old unpinned post after the first 3 and doesn't read it", async () => {
+    // signed in, the feed carries every post's time: nothing is read to find the old one; C3 holds the 3rd place
+    const ig = feed([[feedPost("C1", 20), feedPost("C2", 15), feedPost("C3", 5)], [feedPost("C4", 4)], [feedPost("C5", 3)]]);
     const read = postPagesRead(ig.deps);
     const c = await signedIn(ig.deps);
     const { codes, outcome } = await list(c, { since: day(10) });
     expect(outcome).toEqual(DONE);
-    expect(codes).toEqual(["C1", "C2"]);
+    expect(codes).toEqual(["C1", "C2", "C3"]);
     expect(read).toEqual([]);
-    expect(ig.asked).toHaveLength(1);
+    expect(ig.asked.map((a) => a.cursor)).toEqual([undefined, "1"]);
   });
 
   it("signed out, reads the first old post's page for its time, doesn't send it, and asks nothing after it", async () => {
@@ -185,10 +204,17 @@ describe("ProfileService.listPosts", () => {
     expect(so.read).toEqual(["C1", "C2", "C3", "C4", "C5"]);
   });
 
-  it("with the feed's pinned mark, ends at an old unmarked post even at the top", async () => {
-    const ig = feed([[feedPost("C1", 1), feedPost("C2", 20)]]);
+  it("signed in too, sends an old unmarked post among the first 3 and ends at the first old one after them", async () => {
+    // the feed's pinned mark may be missing: the first 3 places are spared, marked or not
+    const ig = feed([[feedPost("C1", 1), feedPost("C2", 20), feedPost("C3", 2), feedPost("C4", 3), feedPost("C5", 19)]]);
     const c = await signedIn(ig.deps);
-    expect(await list(c, { since: day(10) })).toMatchObject({ codes: [], outcome: DONE });
+    const { posts, outcome } = await list(c, { since: day(10) });
+    expect(outcome).toEqual(DONE);
+    expect(posts.map((p) => [p.code, p.pinned])).toEqual([
+      ["C1", false],
+      ["C2", false],
+      ["C3", false],
+    ]);
   });
 
   it("sends a profile topped by 3 old posts with nothing new, and ends at the next old one, asking no further page", async () => {
@@ -206,6 +232,44 @@ describe("ProfileService.listPosts", () => {
     const signed = await signedIn(ig.deps);
     expect(await list(signed, { since: day(10) })).toMatchObject({ codes: ["C1", "C2", "C3"], outcome: DONE });
     expect(ig.asked.map((a) => a.cursor)).toEqual([undefined, "1"]);
+  });
+
+  it("ends with an error when the listing cursor stops moving", async () => {
+    const ig = cursored({ "": { posts: [feedPost("C1", 20)], next: "a" }, a: { posts: [feedPost("C2", 19)], next: "a" } });
+    const c = await signedIn(ig.deps);
+    const { codes, outcome } = await list(c);
+    expect(outcome).toEqual(STALLED);
+    expect(codes).toEqual(["C1", "C2"]);
+    expect(ig.asked.map((a) => a.cursor)).toEqual([undefined, "a"]);
+    expect(ig.closed).toEqual(["sample.user"]);
+  });
+
+  it("ends with an error when a next page brings no new posts", async () => {
+    const ig = cursored({
+      "": { posts: [feedPost("C1", 20), feedPost("C2", 19)], next: "a" },
+      a: { posts: [feedPost("C2", 19), feedPost("C1", 20)], next: "b" },
+      b: { posts: [feedPost("C3", 18)] },
+    });
+    const c = await signedIn(ig.deps);
+    const { codes, outcome } = await list(c);
+    expect(outcome).toEqual(STALLED);
+    expect(codes).toEqual(["C1", "C2"]);
+    expect(ig.asked.map((a) => a.cursor)).toEqual([undefined, "a"]);
+  });
+
+  it("ends done at an empty last page", async () => {
+    const ig = cursored({ "": { posts: [feedPost("C1", 20)], next: "a" }, a: { posts: [] } });
+    const c = await signedIn(ig.deps);
+    expect(await list(c)).toMatchObject({ codes: ["C1"], outcome: DONE });
+  });
+
+  it("skips a post code it already took", async () => {
+    const so = fakeSignedOut(pagesOn({ C1: 20, C2: 19, C3: 18 }), { listing: [covers("C1", "C1", "C2"), covers("C2", "C3")] });
+    const c = await start(so.deps);
+    const { codes, outcome } = await list(c, { known: new Set(["C2"]) });
+    expect(outcome).toEqual(DONE);
+    expect(codes).toEqual(["C1", "C2", "C3"]);
+    expect(so.read).toEqual(["C1", "C3"]);
   });
 
   it("sends known posts as stubs without reading their pages, and they don't end the list", async () => {
@@ -270,13 +334,31 @@ describe("ProfileService.listPosts", () => {
     expect(posts[1]).toEqual({ code: "C2", url: postUrl("C2"), takenAt: null, pinned: false, owner: "sample.user", taggedUsers: [], signInOnly: true, items: [] });
   });
 
-  it("skips a post whose page shows nothing and counts it", async () => {
+  it("skips a post whose page shows nothing twice and counts it", async () => {
     const so = fakeSignedOut(pagesOn({ C1: 20, C3: 18 }), { listing: [covers("C1", "C2", "C3")] });
     const c = await start(so.deps);
     const { codes, outcome } = await list(c);
     expect(outcome).toEqual({ type: "done", signInOnly: 0, empty: 1 });
     expect(codes).toEqual(["C1", "C3"]);
-    expect(so.read).toEqual(["C1", "C2", "C3"]);
+    expect(so.read).toEqual(["C1", "C2", "C2", "C3"]);
+  });
+
+  it("reads a page that showed nothing once more, in the read slot, and sends the post when it shows then", async () => {
+    const so = fakeSignedOut(pagesOn({ C1: 20, C2: 19, C3: 18 }), { listing: [covers("C1", "C2", "C3")] });
+    // C2's page is slow the first time
+    const reads: number[] = [];
+    const find = so.deps.find;
+    so.deps.find = async (link, cookies, signal) => {
+      const found = await find(link, cookies, signal);
+      if (link.kind !== "post" || link.code !== "C2") return found;
+      reads.push(so.deps.now!());
+      return reads.length === 1 ? { type: "nothing" } : found;
+    };
+    const c = await start(so.deps);
+    expect(await list(c)).toMatchObject({ codes: ["C1", "C2", "C3"], outcome: DONE });
+    expect(so.read).toEqual(["C1", "C2", "C2", "C3"]);
+    expect(reads[1] - reads[0]).toBeGreaterThanOrEqual(3000);
+    expect(reads[1] - reads[0]).toBeLessThanOrEqual(6000);
   });
 
   it("counts a post whose page shows nothing towards neither the limit nor the pinned places", async () => {
@@ -284,7 +366,7 @@ describe("ProfileService.listPosts", () => {
     const so = fakeSignedOut(pagesOn({ C2: 1, C3: 2, C4: 3, C5: 4, C6: 20 }), { listing: [covers("C1", "C2", "C3", "C4", "C5", "C6")] });
     const c = await start(so.deps);
     expect(await list(c, { since: day(10) })).toMatchObject({ codes: ["C2", "C3", "C4"], outcome: { type: "done", signInOnly: 0, empty: 1 } });
-    expect(so.read).toEqual(["C1", "C2", "C3", "C4", "C5"]);
+    expect(so.read).toEqual(["C1", "C1", "C2", "C3", "C4", "C5"]);
     expect(await list(c, { limit: 2 })).toMatchObject({ codes: ["C2", "C3"], outcome: { type: "done", signInOnly: 0, empty: 1 } });
   });
 
@@ -301,7 +383,7 @@ describe("ProfileService.listPosts", () => {
       ["C1", iso(20)],
       ["C3", null],
     ]);
-    expect(so.read).toEqual(["C1", "C2", "C3", "C4"]);
+    expect(so.read).toEqual(["C1", "C2", "C2", "C3", "C4", "C4"]);
     expect(so.closed).toEqual(["sample.user"]);
   });
 
@@ -309,7 +391,8 @@ describe("ProfileService.listPosts", () => {
     const so = fakeSignedOut({ ...pagesOn({ C3: 20, C6: 18 }), C5: timeless("C5") }, { listing: [covers("C1", "C2", "C3", "C4", "C5", "C6")] });
     const c = await start(so.deps);
     expect(await list(c)).toMatchObject({ codes: ["C3", "C5", "C6"], outcome: { type: "done", signInOnly: 0, empty: 3 } });
-    expect(so.read).toEqual(["C1", "C2", "C3", "C4", "C5", "C6"]);
+    // each empty post is read twice, and counts once
+    expect(so.read).toEqual(["C1", "C1", "C2", "C2", "C3", "C4", "C4", "C5", "C6"]);
   });
 
   it("counts neither known stubs nor posts shown only to signed-in visitors for the guard, nor lets them reset it", async () => {
@@ -320,7 +403,7 @@ describe("ProfileService.listPosts", () => {
     const { codes, outcome } = await list(c, { known: new Set(["C3"]) });
     expect(outcome).toEqual(PAGES_CHANGED);
     expect(codes).toEqual(["C2", "C3"]);
-    expect(so.read).toEqual(["C1", "C2", "C4", "C5"]);
+    expect(so.read).toEqual(["C1", "C1", "C2", "C4", "C4", "C5", "C5"]);
   });
 
   it("ends rateLimited on the login wall mid-list, keeping what it sent, and holds the pacer", async () => {

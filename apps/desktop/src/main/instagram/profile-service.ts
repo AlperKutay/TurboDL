@@ -65,7 +65,7 @@ export interface ProfileServiceDeps {
 type Refusal = Extract<StartResult, { ok: false }>;
 
 export interface PostListOptions {
-  /** unix seconds: the list ends at the first post taken at or before it that isn't pinned */
+  /** unix seconds: the list ends at the first post taken at or before it that isn't pinned, after the first 3 places (they may hold pinned posts) */
   since?: number;
   /** at most this many posts are sent, known and pinned ones included */
   limit?: number;
@@ -75,7 +75,7 @@ export interface PostListOptions {
   onPost(post: InstagramPostInfo): void;
 }
 
-/** How a list ended; what it sent before stays sent. `empty`: posts left out because their page showed nothing. */
+/** How a list ended; what it sent before stays sent. `empty`: posts left out because their page showed nothing, read twice. */
 export type PostListOutcome =
   | { type: "done"; signInOnly: number; empty: number }
   | { type: "refused"; error: string; reason: "private" | "notFound" | "signInRequired" | "rateLimited" | "error" }
@@ -94,10 +94,12 @@ const LIST_SLOWED_DOWN: ListRefusal = { type: "refused", error: SLOW_DOWN, reaso
 const LIST_CANCELLED: PostListOutcome = { type: "cancelled" };
 /** posts Instagram lets a profile pin to its top */
 const MOST_PINNED = 3;
-/** post pages in a row that show nothing or no time before a list takes Instagram's pages to have changed */
+/** posts in a row whose page shows nothing (read twice) or no time before a list takes Instagram's pages to have changed */
 const UNREADABLE_RUN = 3;
 /** a list ended by that many: it would otherwise read the whole profile, nothing ever ending it at `since` */
-const PAGES_CHANGED: ListRefusal = { type: "refused", error: "Instagram changed its post pages; TurboDL couldn't read them.", reason: "error" };
+const PAGES_CHANGED: ListRefusal = { type: "refused", error: "TurboDL couldn't read 3 posts in a row from their pages; Instagram may have changed them, or is slow.", reason: "error" };
+/** a list whose next page names its own cursor again, or brings only posts it already took: it would read on forever */
+const LISTING_STALLED: ListRefusal = { type: "refused", error: "Instagram kept answering the same posts; TurboDL stopped the list.", reason: "error" };
 
 /**
  * Profiles in the main process: one hidden page per open profile (it holds the request its posts are paged with),
@@ -187,10 +189,10 @@ export class ProfileService {
    * A profile's posts in the order its page shows them, each with its details and items, saving nothing. It reads
    * through a page of its own, closed when the list ends (the screen's and a backup's pages are left alone). A post in
    * `known` is sent as a stub, its page not read; seen signed out, every other post is read from its own page (one that
-   * shows nothing is left out, counted in `done.empty`); signed in, the feed's items and details are sent as they are.
-   * Every page it loads, its profile's included, takes the jobs'
-   * read slot here, in the account's pace: unlike a backup's start (`pageFor`), it must not be called from inside the
-   * read slot (`deps.read`), which would wait for itself.
+   * shows nothing twice is left out, counted in `done.empty`); signed in, the feed's items and details are sent as they
+   * are. A code met again is skipped. Every page it loads, its profile's included, takes the jobs' read slot here, in
+   * the account's pace: unlike a backup's start (`pageFor`), it must not be called from inside the read slot
+   * (`deps.read`), which would wait for itself.
    */
   async listPosts(username: string, o: PostListOptions): Promise<PostListOutcome> {
     const { signal } = o;
@@ -248,15 +250,15 @@ export class ProfileService {
   /** `listPosts` from the profile's loaded page on: its pages as a backup pages them, its posts in page order. */
   private async listed(source: ProfileSource, profile: InstagramProfile, o: PostListOptions): Promise<PostListOutcome> {
     const { signal, since, limit, known } = o;
-    // signed in, the feed marks the pinned posts; signed out nothing does, so any of the first few may be pinned
-    const marked = !source.limited;
     let sent = 0;
     let signInOnly = 0;
     let empty = 0;
     /** the place in the list of the post at hand; posts left out take none */
     let position = 0;
-    /** post pages read in a row that showed nothing or no time */
+    /** posts read in a row whose page showed nothing (read twice) or no time */
     let unreadable = 0;
+    /** the codes this list has taken, sent or not: one met again is skipped */
+    const taken = new Set<string>();
     const ended = (): PostListOutcome => (signal.aborted ? LIST_CANCELLED : { type: "done", signInOnly, empty });
     const full = () => limit !== undefined && sent >= limit;
     const send = (post: InstagramPostInfo) => {
@@ -269,19 +271,28 @@ export class ProfileService {
       const at = cursor;
       // signed out, a next page takes the read slot too
       const page = await (source.limited && at !== undefined ? this.deps.read(() => this.paged(source, at, signal), signal) : this.paged(source, at, signal));
+      // a next page with nothing new would have the list ask on forever; an empty last page is the profile's end
+      const brought = page.posts.some((entry) => entry.code && !taken.has(entry.code));
+      if (at !== undefined && !brought && (page.posts.length > 0 || page.next)) return LISTING_STALLED;
       for (const entry of page.posts) {
         if (full()) return ended();
         if (signal.aborted) return LIST_CANCELLED;
         const { code } = entry;
-        if (!code) continue;
+        if (!code || taken.has(code)) continue;
+        taken.add(code);
         const pinned = entry.pinned === true;
         if (known?.has(code)) {
           position++;
           send({ ...postInfo(code, [], NO_DETAILS, pinned, profile.username), known: true });
           continue;
         }
-        const read = entry.unread ? await this.readDetails(code, signal) : { items: entry.items, details: feedDetails(entry) };
+        let read = entry.unread ? await this.readDetails(code, signal) : { items: entry.items, details: feedDetails(entry) };
         if (signal.aborted) return LIST_CANCELLED;
+        // a slow page shows nothing too: it is read once more (in the read slot and the pace) before the post counts as empty
+        if (read === null) {
+          read = await this.readDetails(code, signal);
+          if (signal.aborted) return LIST_CANCELLED;
+        }
         if (read === "signInOnly") {
           position++;
           signInOnly++;
@@ -293,7 +304,7 @@ export class ProfileService {
           unreadable = read === null || read.details.takenAt === undefined ? unreadable + 1 : 0;
           if (unreadable >= UNREADABLE_RUN) return PAGES_CHANGED;
         }
-        // a page that showed nothing: the post isn't sent and takes no place, and the list goes on
+        // a page that showed nothing twice: the post isn't sent and takes no place, and the list goes on
         if (read === null) {
           empty++;
           continue;
@@ -301,12 +312,14 @@ export class ProfileService {
         position++;
         const { items, details } = read;
         const post = postInfo(code, items, details, pinned || details.pinned === true, profile.username);
-        // the first old post that isn't pinned ends the list unsent; without marks, Instagram's pinned places are spared
+        // the first old post that isn't pinned ends the list unsent; Instagram's pinned places are spared, as nothing
+        // marks pinned posts signed out and a signed-in feed's mark may be missing
         const old = since !== undefined && details.takenAt !== undefined && details.takenAt <= since;
-        if (old && !post.pinned && (marked || position > MOST_PINNED)) return ended();
+        if (old && !post.pinned && position > MOST_PINNED) return ended();
         send(post);
       }
       if (full() || !page.next) return ended();
+      if (page.next === at) return LISTING_STALLED;
       cursor = page.next;
     }
   }
