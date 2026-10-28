@@ -37,6 +37,10 @@ jobs:
           node-version: 24
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      # Linux: BtbN's ffmpeg, which uses the system's glibc (ffmpeg-static's crashes there); the unit tests use it too
+      - name: Linux ffmpeg
+        if: runner.os == 'Linux'
+        run: node apps/desktop/scripts/fetch-ffmpeg-linux.mjs
       - name: Unit tests
         run: pnpm test
         continue-on-error: true
