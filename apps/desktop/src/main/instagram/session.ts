@@ -9,6 +9,31 @@ export interface Crypt {
   decrypt(data: Buffer): string;
 }
 
+export interface SafeStorageLike {
+  isEncryptionAvailable(): boolean;
+  getSelectedStorageBackend?(): string;
+  encryptString(text: string): Buffer;
+  decryptString(data: Buffer): string;
+}
+
+/** Electron's safeStorage as a Crypt; on Linux, Chromium's "basic_text" fallback (a fixed, public key) counts as unavailable. */
+export function systemCrypt(platform: NodeJS.Platform, s: SafeStorageLike): Crypt {
+  return {
+    available: () => {
+      if (!s.isEncryptionAvailable()) return false;
+      if (platform !== "linux") return true;
+      try {
+        const backend = s.getSelectedStorageBackend?.();
+        return backend !== undefined && backend !== "basic_text";
+      } catch {
+        return false;
+      }
+    },
+    encrypt: (text) => s.encryptString(text),
+    decrypt: (data) => s.decryptString(data),
+  };
+}
+
 function isInstagram(domain: string): boolean {
   const host = domain.replace(/^\.+/, "").toLowerCase();
   return host === "instagram.com" || host.endsWith(".instagram.com");

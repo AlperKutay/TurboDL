@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { BrowserCookie } from "@turbodl/shared";
-import { InstagramSession, type Crypt } from "../../src/main/instagram/session";
+import { InstagramSession, systemCrypt, type Crypt, type SafeStorageLike } from "../../src/main/instagram/session";
 
 /** Reversible and unreadable enough to show the file never holds the cookies as written. */
 const crypt: Crypt = {
@@ -87,5 +87,37 @@ describe("InstagramSession", () => {
     s.clear();
     expect(s.signedIn()).toBe(false);
     expect(existsSync(file)).toBe(false);
+  });
+});
+
+describe("systemCrypt", () => {
+  const store = (backend: string | (() => string), available = true): SafeStorageLike => ({
+    isEncryptionAvailable: () => available,
+    getSelectedStorageBackend: typeof backend === "string" ? () => backend : backend,
+    encryptString: (text) => Buffer.from(text),
+    decryptString: (data) => data.toString(),
+  });
+
+  it("keeps the session in memory on Linux when only Chromium's built-in key is there", () => {
+    const c = systemCrypt("linux", store("basic_text"));
+    expect(c.available()).toBe(false);
+    const s = new InstagramSession(file, c);
+    expect(s.take([session])).toBe(true);
+    expect(existsSync(file)).toBe(false);
+  });
+
+  it("uses the keyring on Linux", () => {
+    expect(systemCrypt("linux", store("gnome_libsecret")).available()).toBe(true);
+    expect(systemCrypt("linux", store("kwallet5")).available()).toBe(true);
+  });
+
+  it("asks nothing more on Windows and macOS", () => {
+    const throwing = (): string => {
+      throw new Error("not on this platform");
+    };
+    for (const platform of ["win32", "darwin"] as const) {
+      expect(systemCrypt(platform, store(throwing)).available()).toBe(true);
+      expect(systemCrypt(platform, store(throwing, false)).available()).toBe(false);
+    }
   });
 });

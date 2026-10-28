@@ -12,6 +12,7 @@ import { loadCollections } from "./instagram/collections";
 import { ProfileFeed } from "./instagram/profile-feed";
 import { ElectronInstagramPage, allowTestSite, instagramSession } from "./instagram/page";
 import { signInToInstagram } from "./instagram/signin";
+import { systemCrypt } from "./instagram/session";
 import { EVENT_CHANNEL, broadcast, registerIpc } from "./ipc";
 import { writeCliLauncher } from "./cli-install";
 import { isBackgroundLaunch, registerNativeHost } from "./native-host";
@@ -121,11 +122,7 @@ async function start(): Promise<void> {
           signOut: () => instagramSession().clearStorageData(),
           openProfile: (username, cookies) =>
             new ProfileFeed(new ElectronInstagramPage(cookies), username, { site: instagramTestSite, signedIn: cookies.some((c) => c.name === "sessionid" && c.value) }),
-          crypt: {
-            available: () => safeStorage.isEncryptionAvailable(),
-            encrypt: (text) => safeStorage.encryptString(text),
-            decrypt: (data) => safeStorage.decryptString(data),
-          },
+          crypt: systemCrypt(process.platform, safeStorage),
           agent: chromeAgent(app.userAgentFallback),
         },
   });
