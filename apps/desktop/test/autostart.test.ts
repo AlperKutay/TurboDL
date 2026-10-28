@@ -24,7 +24,7 @@ describe("autostart", () => {
     expect(desktopExecArg(arg)).toBe(text);
   });
 
-  it("writes an entry that starts TurboDL hidden", () => {
+  it("writes an entry that starts TurboDL hidden, skipped once its file is gone", () => {
     expect(autostartEntry({ file: "/home/a/My Apps/TurboDL.AppImage", args: ["--hidden"] })).toBe(
       [
         "[Desktop Entry]",
@@ -32,6 +32,7 @@ describe("autostart", () => {
         "Name=TurboDL",
         "Comment=Starts TurboDL in the background",
         'Exec="/home/a/My Apps/TurboDL.AppImage" --hidden',
+        "TryExec=/home/a/My Apps/TurboDL.AppImage",
         "Terminal=false",
         "X-GNOME-Autostart-enabled=true",
         "",

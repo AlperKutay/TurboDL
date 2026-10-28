@@ -25,6 +25,8 @@ export function autostartEntry(launch: ApiLaunch): string {
       "Name=TurboDL",
       "Comment=Starts TurboDL in the background",
       `Exec=${[launch.file, ...launch.args].map(desktopExecArg).join(" ")}`,
+      // the session skips the entry once the file is gone (a removed .deb, a deleted AppImage); a plain path, not Exec-quoted
+      `TryExec=${launch.file}`,
       "Terminal=false",
       "X-GNOME-Autostart-enabled=true",
     ].join("\n") + "\n"
