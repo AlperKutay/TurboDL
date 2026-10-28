@@ -119,10 +119,10 @@ class TurboDL:
 
     def posts(self, url: str, since: Union[datetime, str, None] = None, limit: Optional[int] = None,
               known: Optional[Iterable[str]] = None) -> Iterator[Post]:
-        """The posts of an Instagram profile or post, as TurboDL finds them (a generator: nothing starts before the
-        first `next`).
+        """The posts of an Instagram profile or post, as TurboDL finds them.
 
-        `since` is a datetime (naive means UTC) or an ISO 8601 string; `known` holds post codes to report as
+        The app is checked and the list started when this is called (an old app raises TurboDLError here); the
+        returned iterator reads the posts. `since` is a datetime (naive means UTC) or an ISO 8601 string; `known` holds post codes to report as
         details-free stubs. When the list ends it raises as `Job.wait()` does (SignInRequired after the posts it
         could get, RateLimited, JobFailed, Cancelled); a stream that breaks raises AppNotReachable. Leaving early
         or Ctrl+C cancels the list."""
@@ -136,6 +136,10 @@ class TurboDL:
         if known is not None:
             options["known"] = list(known)
         job = Job(self._call("POST", "/v1/jobs", {"url": url, "options": options})["job"], self)
+        return self._follow_posts(job)
+
+    def _follow_posts(self, job: Job) -> Iterator[Post]:
+        """The posts of a list job's single events stream (no reconnect); see `posts()` for how it ends."""
         seen = []  # type: List[str]
         stream = self._stream(job.id, None)
         try:

@@ -124,6 +124,14 @@ class PostsTests(JobCase):
         t = self.serve()
         self.stub.features = []
         with self.assertRaises(TurboDLError) as cm:
-            list(t.posts(URL))
+            t.posts(URL)  # raises at the call, before any next()
         self.assertEqual(str(cm.exception), "Update TurboDL to 0.8.0 or newer to list posts.")
         self.assertEqual(self.stub.posted, [])
+
+    def test_the_job_is_created_when_posts_is_called(self) -> None:
+        t = self.serve()
+        it = t.posts(URL)
+        self.assertEqual(len(self.stub.posted), 1)
+        self.assertTrue(self.stub.posted[0]["options"]["postsOnly"])
+        self.script(post("AAA"), end("done", reason="done"))
+        self.assertEqual([p.code for p in it], ["AAA"])
