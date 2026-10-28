@@ -119,7 +119,7 @@ Installers for Windows, macOS and Linux and the Firefox add-on are on the [Relea
 
 ### Linux
 
-TurboDL runs on Linux x64 with glibc 2.28 or newer (Ubuntu 20.04+, Debian 10+, and current Fedora and Arch); older systems are not supported. Two files are on the Releases page:
+TurboDL runs on Linux x64. It is built for glibc 2.28 or newer and tested on Ubuntu 22.04 and 24.04; other distributions with glibc 2.28 or newer should work. Older systems are not supported. Two files are on the Releases page:
 
 - **.deb** (Ubuntu, Debian and other .deb systems): `sudo apt install ./TurboDL-<version>-amd64.deb`. It installs to `/opt/TurboDL` and adds TurboDL to the app menu. Remove it with `sudo apt remove turbodl`.
 - **AppImage** (any x64 distribution, no install): `chmod +x TurboDL-<version>-x86_64.AppImage`, then run it. It needs libfuse2 (`libfuse2` on Ubuntu 22.04, `libfuse2t64` on 24.04).
@@ -128,7 +128,7 @@ Notes:
 
 - After moving the AppImage or switching to a newer one, start it once from its new place, so the browser extension, `turbodl` and Launch at login follow.
 - The program is `turbodl-app`; `turbodl` is the command-line tool.
-- The tray uses AppIndicator (on by default on Ubuntu). Without a tray, open TurboDL from the app menu again to show its window.
+- TurboDL shows a tray icon where the desktop has an AppIndicator/StatusNotifier host (on GNOME, the AppIndicator extension). Without one, start TurboDL again (from the app menu for the .deb, or by running the AppImage) to show its window.
 - Firefox or Chromium installed as a Snap may not be able to start TurboDL. Open it yourself then.
 - Opera's Linux folder for the extension's connection to TurboDL has not been confirmed yet.
 - Without a keyring, the Instagram sign-in lasts until TurboDL quits.
