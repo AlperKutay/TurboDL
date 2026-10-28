@@ -49,7 +49,10 @@ interface Followed {
   cancelledHere: boolean;
 }
 
-/** Follows jobs to their end together; Ctrl+C cancels them, a second Ctrl+C gives up at once. */
+/**
+ * Follows jobs to their end together; Ctrl+C cancels them, a second Ctrl+C gives up at once. A stream that closes
+ * before the end is followed again once, on the port api.json names, unless `reconnects` is false.
+ */
 class Follower {
   private readonly followed: Followed[] = [];
   private presses = 0;
@@ -59,7 +62,10 @@ class Follower {
   private giveUp: () => void = () => undefined;
   private readonly gaveUp: Promise<number>;
 
-  constructor(private readonly ctx: Ctx) {
+  constructor(
+    private readonly ctx: Ctx,
+    private readonly reconnects = true,
+  ) {
     this.gaveUp = new Promise((resolve) => {
       this.giveUp = () => resolve(EXIT.interrupted);
     });
@@ -116,7 +122,7 @@ class Follower {
       this.ctx.out.error(`No job ${f.id}.`);
       return EXIT.failed;
     }
-    if (end === undefined && !this.stopped) {
+    if (end === undefined && !this.stopped && this.reconnects) {
       // once: the app may have moved to another port; the stream replays the job first
       const c = await this.reconnect();
       if (c) {
@@ -193,8 +199,8 @@ async function createJobs(ctx: Ctx, cmd: JobsCommand, follower?: Follower): Prom
 }
 
 /** Follows what `start` hands the follower, unless `start` already gives an exit code. */
-async function follow(ctx: Ctx, start: (f: Follower) => Promise<number | undefined>): Promise<number> {
-  const follower = new Follower(ctx);
+async function follow(ctx: Ctx, start: (f: Follower) => Promise<number | undefined>, o: { reconnect?: boolean } = {}): Promise<number> {
+  const follower = new Follower(ctx, o.reconnect ?? true);
   try {
     const code = await start(follower);
     return code ?? (await follower.run());
@@ -212,13 +218,18 @@ async function command(ctx: Ctx, cmd: Exclude<Command, { type: "help" | "version
         return typeof jobs === "number" ? jobs : undefined;
       });
     case "posts":
-      return follow(ctx, async (f) => {
-        const options: JobOptions = { postsOnly: true };
-        if (cmd.since !== undefined) options.since = cmd.since;
-        if (cmd.limit !== undefined) options.limit = cmd.limit;
-        const jobs = await createJobs(ctx, { type: "get", urls: [cmd.url], options, json: cmd.json }, f);
-        return typeof jobs === "number" ? jobs : undefined;
-      });
+      // no reconnect: the stream sends only live events after the job's snapshot, so posts sent while it was cut are gone
+      return follow(
+        ctx,
+        async (f) => {
+          const options: JobOptions = { postsOnly: true };
+          if (cmd.since !== undefined) options.since = cmd.since;
+          if (cmd.limit !== undefined) options.limit = cmd.limit;
+          const jobs = await createJobs(ctx, { type: "get", urls: [cmd.url], options, json: cmd.json }, f);
+          return typeof jobs === "number" ? jobs : undefined;
+        },
+        { reconnect: false },
+      );
     case "wait":
       return follow(ctx, async (f) => {
         for (const id of cmd.ids) f.add(id);

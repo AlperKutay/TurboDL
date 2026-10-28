@@ -491,6 +491,21 @@ describe("turbodl posts", () => {
     expect(c.stdout.text).toBe("");
   });
 
+  it("posts exits 5 when the stream drops instead of reconnecting", async () => {
+    // a reconnect would wait for api.json to name an app that answers
+    let waited = false;
+    const c = cli(["posts", profile], {
+      onSleep: async () => {
+        waited = true;
+      },
+    });
+    await fake.subscribed("job1");
+    await fake.stop();
+    expect(await c.done).toBe(5);
+    expect(c.stderr.text).toBe("turbodl: TurboDL quit.\n");
+    expect(waited).toBe(false);
+  });
+
   it("posts sends postsOnly with since and limit", async () => {
     const c = cli(["posts", profile, "--since", "2026-01-02", "--limit", "5"]);
     await fake.subscribed("job1");
