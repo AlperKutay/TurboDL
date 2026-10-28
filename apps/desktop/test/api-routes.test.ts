@@ -196,6 +196,49 @@ describe("jobs", () => {
     expect(requests).toEqual([]);
   });
 
+  it("accepts a posts-only request with since, limit and known", async () => {
+    const res = await post("/v1/jobs", {
+      url: "https://www.instagram.com/someone/",
+      options: { postsOnly: true, since: "2026-01-02T03:04:05+02:00", limit: 50, known: ["abc", "def"] },
+    });
+    expect(res.status).toBe(201);
+    expect(requests).toEqual([
+      {
+        url: "https://www.instagram.com/someone/",
+        options: { postsOnly: true, since: "2026-01-02T01:04:05.000Z", limit: 50, known: ["abc", "def"] },
+      },
+    ]);
+  });
+
+  it.each([
+    ["a since nobody can read", { postsOnly: true, since: "not a date" }, "since"],
+    ["a non-string since", { postsOnly: true, since: 5 }, "since"],
+    ["a zero limit", { postsOnly: true, limit: 0 }, "limit"],
+    ["a fractional limit", { postsOnly: true, limit: 1.5 }, "limit"],
+    ["a limit over 100000", { postsOnly: true, limit: 100_001 }, "limit"],
+    ["known that is not an array", { postsOnly: true, known: "abc" }, "known"],
+    ["known with an empty code", { postsOnly: true, known: [""] }, "known"],
+    ["known with a code over 64 characters", { postsOnly: true, known: ["a".repeat(65)] }, "known"],
+    ["known with a non-string", { postsOnly: true, known: [1] }, "known"],
+    ["known with over 10000 codes", { postsOnly: true, known: Array.from({ length: 10_001 }, () => "a") }, "known"],
+    ["since without postsOnly", { since: "2026-01-01" }, "since, limit and known need postsOnly"],
+    ["limit without postsOnly", { limit: 5 }, "since, limit and known need postsOnly"],
+    ["known without postsOnly", { known: ["a"] }, "since, limit and known need postsOnly"],
+    ["postsOnly with highlights", { postsOnly: true, highlights: true }, "postsOnly can't be combined with highlights or collections"],
+    ["postsOnly with highlightsOnly", { postsOnly: true, highlightsOnly: true }, "postsOnly can't be combined with highlights or collections"],
+    ["postsOnly with collections", { postsOnly: true, collections: ["a"] }, "postsOnly can't be combined with highlights or collections"],
+    ["postsOnly with allCollections", { postsOnly: true, allCollections: true }, "postsOnly can't be combined with highlights or collections"],
+  ])("answers 400 for %s", async (_name, options, error) => {
+    const res = await post("/v1/jobs", { url: "https://www.instagram.com/someone/", options });
+    expect(res.status).toBe(400);
+    expect(res.json.error).toBe(error);
+    expect(requests).toEqual([]);
+  });
+
+  it("names the features in /v1/info", async () => {
+    expect((await call("/v1/info")).json.features).toContain("posts");
+  });
+
   it("cancels a job and answers the job", async () => {
     await post("/v1/jobs", { url: "https://example.com/a.zip" });
     const res = await post("/v1/jobs/job1/cancel", {});
