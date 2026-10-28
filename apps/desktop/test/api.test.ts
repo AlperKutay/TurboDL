@@ -4,7 +4,7 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { API_VERSION, APP_ID, type ApiFile, type ApiInfo, type AppEvent, type BrowserCookie, type Job, type JobEvent, type PendingItem } from "@turbodl/shared";
+import { API_FEATURES, API_VERSION, APP_ID, type ApiFile, type ApiInfo, type AppEvent, type BrowserCookie, type Job, type JobEvent, type PendingItem } from "@turbodl/shared";
 import { AppController, type ControllerUi, type InstagramDeps } from "../src/main/controller";
 import { startTestServer, type TestServer } from "./fixtures/test-server";
 
@@ -205,9 +205,9 @@ describe("jobs API", () => {
     };
     const c = await start(undefined, instagram);
     const info = async () => (await call("GET", "/v1/info")).json as ApiInfo;
-    expect(await info()).toEqual({ app: APP_ID, version: "0.0.1", api: API_VERSION, instagram: { signedIn: false } });
+    expect(await info()).toEqual({ app: APP_ID, version: "0.0.1", api: API_VERSION, instagram: { signedIn: false }, features: [...API_FEATURES] });
     c.instagramSession.take(SESSION);
-    expect(await info()).toEqual({ app: APP_ID, version: "0.0.1", api: API_VERSION, instagram: { signedIn: true } });
+    expect(await info()).toEqual({ app: APP_ID, version: "0.0.1", api: API_VERSION, instagram: { signedIn: true }, features: [...API_FEATURES] });
     expect(asked).toBe(0);
     await c.savedCollections(true);
     asked = 0;

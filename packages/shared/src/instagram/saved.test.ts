@@ -74,4 +74,11 @@ describe("saved collections", () => {
     expect(found.hasMore).toBe(false);
     expect(savedCollections([collections1]).hasMore).toBe(true);
   });
+
+  it("keeps a saved post's time, caption and tagged users", () => {
+    const page = savedPage(savedPageFixture, 200);
+    expect(page.posts[0].takenAt).toBe(1790000000);
+    expect(page.posts.every((p) => Array.isArray(p.taggedUsers))).toBe(true);
+    expect(page.posts[0].taggedUsers).toEqual([]);
+  });
 });

@@ -1,6 +1,7 @@
 import { existsSync, promises as fsp } from "node:fs";
 import path from "node:path";
 import {
+  API_FEATURES,
   API_VERSION,
   APP_ID,
   type ApiLaunch,
@@ -973,7 +974,7 @@ export class AppController {
       info: async () => {
         const signedIn = this.instagramSession.signedIn();
         const username = signedIn ? this.saved.knownUsername() : undefined;
-        return { app: APP_ID, version: this.o.version, api: API_VERSION, instagram: { signedIn, ...(username ? { username } : {}) } };
+        return { app: APP_ID, version: this.o.version, api: API_VERSION, instagram: { signedIn, ...(username ? { username } : {}) }, features: [...API_FEATURES] };
       },
       createJob: (request) => this.jobs.create(request),
       jobs: () => this.jobs.list(),

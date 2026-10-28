@@ -14,7 +14,7 @@ let jobs: Map<string, Job>;
 let listeners: Map<string, Set<(event: JobEvent) => void>>;
 let requests: JobRequest[];
 
-const info: ApiInfo = { app: "turbodl", version: "1.2.3", api: 1, instagram: { signedIn: false } };
+const info: ApiInfo = { app: "turbodl", version: "1.2.3", api: 1, instagram: { signedIn: false }, features: ["posts"] };
 
 function makeJob(id: string, state: Job["state"] = "running"): Job {
   return { id, url: "https://example.com/a.zip", kind: "file", state, warnings: [], files: [], failedItems: 0, progress: { done: 0 }, createdAt: 1 };

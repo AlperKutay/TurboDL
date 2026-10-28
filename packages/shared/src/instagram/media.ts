@@ -144,6 +144,47 @@ function clean(item: InstagramItem): InstagramItem {
   return Object.fromEntries(Object.entries(item).filter(([, v]) => v !== undefined)) as unknown as InstagramItem;
 }
 
+/** What a post's page says about it beyond its media. */
+export interface PostDetails {
+  /** unix seconds */
+  takenAt?: number;
+  caption?: string;
+  /** everyone tagged in the post or in any of a carousel's items, once each, in page order */
+  taggedUsers: string[];
+  owner?: string;
+  /** set only when the page lists the post among the account's pinned ones (signed-in pages) */
+  pinned?: boolean;
+}
+
+/**
+ * A post's time, caption, owner and tagged users, from its page. Signed-out pages repeat the post's `code` in
+ * several objects; only the full v1 copy carries a time, so the first copy with one wins (else the first with a caption
+ * or tags). The older GraphQL shape
+ * isn't read: no page was seen using it. A post that isn't on the page gives no details.
+ */
+export function postDetails(documents: string[], code: string): PostDetails {
+  const copies = objectsInDocuments(documents, (o) => str(o.code) === code);
+  const post = copies.find((o) => takenAt(o) !== undefined) ?? copies.find((o) => str(dict(o, "caption")?.text) !== undefined || dict(o, "usertags") !== undefined);
+  if (!post) return { taggedUsers: [] };
+  const pinned = Array.isArray(post.timeline_pinned_user_ids) && post.timeline_pinned_user_ids.length > 0;
+  return { ...v1Details(post), ...(pinned ? { pinned } : {}) };
+}
+
+/** A v1 post's time, caption, owner and tagged users (the post's and its carousel items'). */
+export function v1Details(media: Json): Omit<PostDetails, "pinned"> {
+  const time = takenAt(media);
+  const caption = str(dict(media, "caption")?.text);
+  const owner = str(dict(media, "user")?.username);
+  const tags = [media, ...arr(media.carousel_media)].flatMap((m) => arr(dict(m, "usertags")?.in).map((tag) => str(dict(tag, "user")?.username)));
+  const taggedUsers = [...new Set(tags.filter((name): name is string => !!name))];
+  return { ...(time !== undefined ? { takenAt: time } : {}), ...(caption ? { caption } : {}), ...(owner ? { owner } : {}), taggedUsers };
+}
+
+/** `taken_at`, or the caption's `created_at` (within seconds of it) when the post lacks one. */
+function takenAt(media: Json): number | undefined {
+  return int(media.taken_at) ?? int(dict(media, "caption")?.created_at);
+}
+
 /** The signed-out page keeps a post it won't show (age-restricted, private) as an empty `if_not_gated_logged_out`. */
 export function postNeedsSignIn(documents: string[], code: string): boolean {
   return objectsInDocuments(documents, (o) => str(o.code) === code && "if_not_gated_logged_out" in o && o.if_not_gated_logged_out === null).length > 0;

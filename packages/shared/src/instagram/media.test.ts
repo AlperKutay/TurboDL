@@ -1,10 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { objectsInDocuments, parseDocument, str } from "./json";
-import { loggedOutView, postItems, postNeedsSignIn, storyItems } from "./media";
+import { loggedOutView, postDetails, postItems, postNeedsSignIn, storyItems } from "./media";
 import loggedOutReel from "./fixtures/instagram-reel-loggedout.txt?raw";
 import carousel from "./fixtures/instagram-v1-carousel.json";
 import graphSidecar from "./fixtures/instagram-graph-sidecar.json";
 import highlightShare from "./fixtures/instagram-highlight-share.json";
+import postDetailsPage from "./fixtures/instagram-post-details-loggedout.json";
 import reel from "./fixtures/instagram-v1-reel.json";
 import storyReel from "./fixtures/instagram-story-reel.json";
 
@@ -124,5 +125,32 @@ describe("whose items they are", () => {
   it("names the account a post, a story and a highlight belong to", () => {
     expect(postItems([JSON.stringify(carousel)], "C1abcDEF").map((i) => i.owner)).toEqual(["someone", "someone", "someone"]);
     expect(storyItems([JSON.stringify(highlightShare)], { kind: "highlight", id: "17900000000000003" }).map((i) => i.owner)).toEqual(["someone"]);
+  });
+});
+
+describe("postDetails", () => {
+  it("reads a post's time, caption, owner and tagged users from its signed-out page", () => {
+    // the page holds stub copies of the post first; only the full one carries a time
+    expect(postDetails([doc(postDetailsPage)], "P1detail")).toEqual({
+      takenAt: 1790000400,
+      caption: "A synthetic caption #test",
+      owner: "someone",
+      taggedUsers: ["friend_one", "friend_two"],
+    });
+  });
+
+  it("falls back to the caption's time, and leaves the time out without either", () => {
+    const post = (extra: object) => doc({ code: "P2", user: { username: "someone" }, ...extra });
+    expect(postDetails([post({ caption: { text: "hi", created_at: 1790000500 } })], "P2").takenAt).toBe(1790000500);
+    expect(postDetails([post({ caption: { text: "hi" } })], "P2")).toEqual({ caption: "hi", owner: "someone", taggedUsers: [] });
+  });
+
+  it("reads a pinned post's flag when the object carries the pin list", () => {
+    const page = doc({ code: "P3", taken_at: 1790000600, user: { username: "someone" }, timeline_pinned_user_ids: ["1"] });
+    expect(postDetails([page], "P3").pinned).toBe(true);
+  });
+
+  it("gives empty details for a post that isn't on the page", () => {
+    expect(postDetails([doc(postDetailsPage)], "Pmissing")).toEqual({ taggedUsers: [] });
   });
 });

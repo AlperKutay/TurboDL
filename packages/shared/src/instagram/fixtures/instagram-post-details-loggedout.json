@@ -1,0 +1,25 @@
+{
+ "require": [["ScheduledServerJS", "handle", null, [{"__bbox": {"require": [["RelayPrefetchedStreamCache", "next", [], ["adp_PolarisPostRootQueryRelayPreloader", {"__bbox": {"result": {"data": {
+  "a_timeline": {"edges": [{"node": {"code": "P1detail", "pk": "3800000000000000001", "caption": {"text": "stub caption"}, "user": {"username": "someone"}}}]},
+  "b_route": {"params": {"code": "P1detail", "caption": null, "user": {"username": "someone"}}},
+  "c_media": {"code": "P1detail", "pk": "3800000000000000001"},
+  "xig_polaris_media": {"if_not_gated_logged_out": {
+   "code": "P1detail",
+   "pk": "3800000000000000001",
+   "taken_at": 1790000400,
+   "media_type": 8,
+   "caption": {"pk": "3800000000000000099", "text": "A synthetic caption #test", "created_at": 1790000401},
+   "user": {"pk": "1", "username": "someone"},
+   "usertags": {"in": []},
+   "carousel_media": [
+    {"pk": "3800000000000000011", "media_type": 1, "usertags": {"in": [
+     {"position": [0.5, 0.5], "user": {"username": "friend_one"}},
+     {"position": [0.2, 0.2], "user": {"username": "friend_two"}}
+    ]}},
+    {"pk": "3800000000000000012", "media_type": 1, "usertags": null},
+    {"pk": "3800000000000000013", "media_type": 1, "usertags": {"in": [
+     {"position": [0.3, 0.3], "user": {"username": "friend_two"}}
+    ]}}
+   ]
+  }}
+ }}}}]]]}}]]]}

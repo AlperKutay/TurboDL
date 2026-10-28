@@ -22,6 +22,41 @@ export interface JobOptions {
   allCollections?: boolean;
   audio?: boolean;
   maxHeight?: number;
+  /** a profile: list its posts instead of downloading them */
+  postsOnly?: boolean;
+  /** a profile: only posts taken at or after this time (ISO 8601) */
+  since?: string;
+  /** a profile: at most this many posts */
+  limit?: number;
+  /** a profile's posts a client already holds, by code: they are listed as known and not read again */
+  known?: string[];
+}
+
+/** One photo or video of a listed post. */
+export interface InstagramPostItem {
+  kind: "image" | "video";
+  url: string;
+  mediaId?: string;
+  width?: number;
+  height?: number;
+  duration?: number;
+}
+
+/** A profile post as a listing reports it. */
+export interface InstagramPostInfo {
+  code: string;
+  url: string;
+  /** ISO 8601, or null when the page gave no time */
+  takenAt: string | null;
+  pinned: boolean;
+  owner: string | null;
+  caption?: string;
+  taggedUsers: string[];
+  /** shown only to signed-in visitors */
+  signInOnly?: true;
+  /** one the client listed in `known`: not read again */
+  known?: true;
+  items: InstagramPostItem[];
 }
 
 /** What a client sends to start a job. */
@@ -63,6 +98,7 @@ export type JobEventBody =
   | { type: "state"; state: JobState }
   | { type: "progress"; progress: JobProgress }
   | { type: "file"; path: string; existing?: boolean }
+  | { type: "post"; post: InstagramPostInfo }
   | { type: "warning"; message: string }
   | { type: "end"; job: Job };
 export type JobEvent = JobEventBody & { jobId: string };
@@ -72,7 +108,12 @@ export interface ApiInfo {
   version: string;
   api: number;
   instagram: { signedIn: boolean; username?: string };
+  /** what this app version can do beyond the base API, so clients can tell */
+  features: string[];
 }
+
+/** The features this version reports in `ApiInfo.features`. */
+export const API_FEATURES: readonly string[] = ["posts"];
 
 /** The command that starts the app in the background. */
 export interface ApiLaunch {
