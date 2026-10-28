@@ -63,7 +63,26 @@ module.exports = {
     executableName: "turbodl-app",
     artifactName: "TurboDL-${version}-${arch}.${ext}",
   },
-  deb: { packageName: "turbodl", maintainer: "AlperKutay <alperkozbek@gmail.com>" },
+  deb: {
+    packageName: "turbodl",
+    maintainer: "AlperKutay <alperkozbek@gmail.com>",
+    // electron-builder 26.15.3's defaults (app-builder-lib FpmTarget getDefaultDepends; this list replaces them), plus what
+    // Electron loads at start and minimal systems lack: libgbm and ALSA. ALSA is "libasound2t64" from Ubuntu 24.04 on; a
+    // plain "libasound2" there is a virtual package that apt fills with the OSS4 shim liboss4-salsa-asound2.
+    depends: [
+      "libgtk-3-0",
+      "libnotify4",
+      "libnss3",
+      "libxss1",
+      "libxtst6",
+      "xdg-utils",
+      "libatspi2.0-0",
+      "libuuid1",
+      "libsecret-1-0",
+      "libgbm1",
+      "libasound2t64 | libasound2",
+    ],
+  },
   dmg: {
     artifactName: "TurboDL-${version}-${arch}.${ext}",
   },
