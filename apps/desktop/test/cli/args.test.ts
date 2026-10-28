@@ -122,3 +122,38 @@ describe("HELP", () => {
     }
   });
 });
+
+describe("parseArgs posts", () => {
+  it("parses posts with since and limit", () => {
+    expect(parseArgs(["posts", "https://www.instagram.com/someone/", "--since", "2026-01-02", "--limit", "25", "--json"], cwd)).toEqual({
+      type: "posts",
+      url: "https://www.instagram.com/someone/",
+      since: "2026-01-02T00:00:00.000Z",
+      limit: 25,
+      json: true
+    });
+    expect(parseArgs(["posts", "https://a/x"], cwd)).toEqual({ type: "posts", url: "https://a/x", json: false });
+  });
+
+  it("posts takes exactly one link", () => {
+    expect(err(["posts"])).toEqual({ error: "posts takes one link" });
+    expect(err(["posts", "https://a/x", "https://a/y"])).toEqual({ error: "posts takes one link" });
+  });
+
+  it("rejects a bad --since", () => {
+    for (const since of ["yesterday", "2026-13-01", "2026-01-01T10:00"]) {
+      expect(err(["posts", "https://a/x", "--since", since])).toEqual({ error: "--since needs an ISO time" });
+    }
+  });
+
+  it("rejects a bad --limit", () => {
+    for (const limit of ["0", "-1", "1.5", "abc", "100001"]) {
+      expect(err(["posts", "https://a/x", `--limit=${limit}`])).toEqual({ error: "--limit needs a whole number from 1 to 100000" });
+    }
+  });
+
+  it("lists posts in the help", () => {
+    expect(HELP).toContain("posts <link>");
+    expect(HELP).toContain("--since");
+  });
+});

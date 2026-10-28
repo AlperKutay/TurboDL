@@ -1,4 +1,4 @@
-import { formatBytes, formatSpeed, type InstagramLoginResult, type Job, type JobEvent, type JobProgress } from "@turbodl/shared";
+import { formatBytes, formatSpeed, type InstagramLoginResult, type InstagramPostInfo, type Job, type JobEvent, type JobProgress } from "@turbodl/shared";
 
 /** Everything the turbodl command prints, as text for people or as JSON lines for scripts. */
 export interface Output {
@@ -55,6 +55,15 @@ function progressText(p: JobProgress): string {
   if (p.speed) parts.push(formatSpeed(p.speed));
   if (p.note) parts.push(p.note);
   return parts.join("  ");
+}
+
+/** "CODE	2026-03-01T10:00:00.000Z	2 items	pinned" */
+function postLine(post: InstagramPostInfo): string {
+  const cols = [post.code, post.takenAt ?? "-", plural(post.items.length, "item")];
+  if (post.pinned) cols.push("pinned");
+  if (post.signInOnly) cols.push("sign-in only");
+  if (post.known) cols.push("known");
+  return cols.join("	");
 }
 
 const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
@@ -128,6 +137,9 @@ function textOutput(o: OutputOptions): Output {
           break;
         case "progress":
           progress(e.jobId, e.progress);
+          break;
+        case "post":
+          out(postLine(e.post));
           break;
         case "warning":
           err(`${e.jobId}: warning: ${e.message}`);

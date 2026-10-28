@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { Writable } from "node:stream";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import type { ApiLaunch, JobEvent } from "@turbodl/shared";
+import type { ApiLaunch, InstagramPostInfo, JobEvent } from "@turbodl/shared";
 import { HELP } from "../../src/cli/args";
 import { run, type CliIo } from "../../src/cli/main";
 import { makeJob, startFakeApi, type FakeApi } from "./fake-api";
@@ -432,5 +432,78 @@ describe("turbodl instagram, help and version", () => {
     } finally {
       fs.rmSync(empty, { recursive: true, force: true });
     }
+  });
+});
+
+describe("turbodl posts", () => {
+  const profile = "https://www.instagram.com/someone/";
+  const post = (code: string, patch: Partial<InstagramPostInfo> = {}): InstagramPostInfo => ({
+    code,
+    url: `https://www.instagram.com/p/${code}/`,
+    takenAt: "2026-03-01T10:00:00.000Z",
+    pinned: false,
+    owner: "someone",
+    taggedUsers: [],
+    items: [{ kind: "image", url: "https://cdn.example/a.jpg" }],
+    ...patch
+  });
+
+  it("prints one line per post and exits 0", async () => {
+    const c = cli(["posts", profile]);
+    await fake.subscribed("job1");
+    fake.push("job1", { type: "post", post: post("AAA", { pinned: true, items: [{ kind: "image", url: "u1" }, { kind: "video", url: "u2" }] }) });
+    fake.push("job1", { type: "post", post: post("BBB", { takenAt: null, signInOnly: true }) });
+    fake.push("job1", { type: "post", post: post("CCC", { known: true }) });
+    fake.end("job1", { state: "done" });
+    expect(await c.done).toBe(0);
+    expect(c.stdout.text).toBe(
+      "AAA\t2026-03-01T10:00:00.000Z\t2 items\tpinned\nBBB\t-\t1 item\tsign-in only\nCCC\t2026-03-01T10:00:00.000Z\t1 item\tknown\n"
+    );
+  });
+
+  it("posts --json prints each post event as a JSON line", async () => {
+    const c = cli(["posts", profile, "--json"]);
+    await fake.subscribed("job1");
+    const p = post("AAA");
+    fake.push("job1", { type: "post", post: p });
+    fake.end("job1", { state: "done" });
+    expect(await c.done).toBe(0);
+    const lines = c.stdout.text.trim().split("\n").map((l) => JSON.parse(l) as JobEvent);
+    expect(lines.filter((l) => l.type === "post")).toEqual([{ type: "post", jobId: "job1", post: p }]);
+    expect(lines.at(-1)?.type).toBe("end");
+  });
+
+  it("posts exits 4 when the list is rate limited", async () => {
+    const c = cli(["posts", profile]);
+    await fake.subscribed("job1");
+    fake.push("job1", { type: "post", post: post("AAA") });
+    fake.end("job1", { state: "failed", reason: "rateLimited" });
+    expect(await c.done).toBe(4);
+  });
+
+  it("posts exits 3 when it ended limited, with its warnings on stderr", async () => {
+    const c = cli(["posts", profile]);
+    await fake.subscribed("job1");
+    fake.push("job1", { type: "warning", message: "Some posts need a sign-in." });
+    fake.end("job1", { state: "done", limited: true });
+    expect(await c.done).toBe(3);
+    expect(c.stderr.text).toContain("job1: warning: Some posts need a sign-in.");
+    expect(c.stdout.text).toBe("");
+  });
+
+  it("posts sends postsOnly with since and limit", async () => {
+    const c = cli(["posts", profile, "--since", "2026-01-02", "--limit", "5"]);
+    await fake.subscribed("job1");
+    fake.end("job1", { state: "done" });
+    await c.done;
+    expect(fake.requests).toEqual([{ url: profile, options: { postsOnly: true, since: "2026-01-02T00:00:00.000Z", limit: 5 } }]);
+  });
+
+  it("posts sends only postsOnly without the options", async () => {
+    const c = cli(["posts", profile]);
+    await fake.subscribed("job1");
+    fake.end("job1", { state: "done" });
+    await c.done;
+    expect(fake.requests).toEqual([{ url: profile, options: { postsOnly: true } }]);
   });
 });

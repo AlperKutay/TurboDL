@@ -1,4 +1,4 @@
-import type { ApiLaunch, Job, JobRequest } from "@turbodl/shared";
+import type { ApiLaunch, Job, JobOptions, JobRequest } from "@turbodl/shared";
 import { HELP, parseArgs, type Command } from "./args";
 import { ApiClient, ApiError, ping } from "./client";
 import { connect, readApiFile, userDataDir, type Connection } from "./discover";
@@ -209,6 +209,14 @@ async function command(ctx: Ctx, cmd: Exclude<Command, { type: "help" | "version
     case "get":
       return follow(ctx, async (f) => {
         const jobs = await createJobs(ctx, cmd, f);
+        return typeof jobs === "number" ? jobs : undefined;
+      });
+    case "posts":
+      return follow(ctx, async (f) => {
+        const options: JobOptions = { postsOnly: true };
+        if (cmd.since !== undefined) options.since = cmd.since;
+        if (cmd.limit !== undefined) options.limit = cmd.limit;
+        const jobs = await createJobs(ctx, { type: "get", urls: [cmd.url], options, json: cmd.json }, f);
         return typeof jobs === "number" ? jobs : undefined;
       });
     case "wait":
