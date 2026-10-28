@@ -1,6 +1,6 @@
 # TurboDL
 
-A download manager for Windows and macOS, inspired by IDM. It comes with a browser extension for Chrome, Edge, Brave, Opera, Vivaldi, Arc and Firefox.
+A download manager for Windows, macOS and Linux, inspired by IDM. It comes with a browser extension for Chrome, Edge, Brave, Opera, Vivaldi, Arc and Firefox.
 
 ## Features
 
@@ -12,11 +12,11 @@ A download manager for Windows and macOS, inspired by IDM. It comes with a brows
 - **Queue and scheduler** — start downloads at a set time and shut down or sleep the computer when they finish.
 - **Automatic sorting** — files go into Video, Music, Programs, Archives, Documents, Images and Other folders.
 - **Clipboard** — copying a download link offers to download it.
-- **Notifications** — clicking "Download complete" shows the file in File Explorer or Finder.
+- **Notifications** — clicking "Download complete" shows the file in File Explorer, Finder or your file manager.
 
 ## Command line
 
-The installed app comes with a `turbodl` command. Open **Settings → Command line → Install command line tool** to add it to your PATH (on macOS it asks for an administrator password to link it into `/usr/local/bin`), then open a new terminal. **Remove** takes it away again. TurboDL starts by itself if it is not running.
+The installed app comes with a `turbodl` command. Open **Settings → Command line → Install command line tool** to add it to your PATH (on macOS it asks for an administrator password to link it into `/usr/local/bin`; on Linux it links `turbodl` into `~/.local/bin`, with no password), then open a new terminal. On Linux, if `~/.local/bin` was not on your PATH before, log out and back in, or add `export PATH="$HOME/.local/bin:$PATH"` to `~/.profile`. **Remove** takes it away again. TurboDL starts by itself if it is not running.
 
 ```bash
 turbodl get https://example.com/file.zip                    # download and wait until it finishes
@@ -55,7 +55,7 @@ Other options for `get` and `add`: `--name <file>` (one link only), `--audio`, `
 
 ### Local API
 
-Other programs can use the same engine. While TurboDL runs it writes `api.json` in its user data folder (`%APPDATA%\TurboDL` on Windows, `~/Library/Application Support/TurboDL` on macOS) with the port and an access token. Send requests to `127.0.0.1` on that port with the header `Authorization: Bearer <token>`: `POST /v1/jobs` starts a job, and `GET /v1/jobs/<id>/events` streams its progress as newline-delimited JSON. The API listens on this computer only; keep the token private. `GET /v1/info` lists `"features": ["posts"]` when the app can list posts.
+Other programs can use the same engine. While TurboDL runs it writes `api.json` in its user data folder (`%APPDATA%\TurboDL` on Windows, `~/Library/Application Support/TurboDL` on macOS, `~/.config/TurboDL` on Linux, or `$XDG_CONFIG_HOME/TurboDL` when that is set) with the port and an access token. Send requests to `127.0.0.1` on that port with the header `Authorization: Bearer <token>`: `POST /v1/jobs` starts a job, and `GET /v1/jobs/<id>/events` streams its progress as newline-delimited JSON. The API listens on this computer only; keep the token private. `GET /v1/info` lists `"features": ["posts"]` when the app can list posts.
 
 **Post lists.** `POST /v1/jobs` with `options.postsOnly: true` lists a profile's or a post or reel link's posts and saves nothing. Optional `since` (`YYYY-MM-DD` as UTC, or a date-time with `Z` or `±HH:MM`), `limit` (1 to 100000) and `known` (up to 10000 shortcodes, sent back as stubs without being read). `postsOnly` can't be combined with `highlights`, `highlightsOnly`, `collections` or `allCollections` (400). Each post is an event:
 
@@ -111,11 +111,28 @@ tdl.instagram_login(); tdl.instagram_logout(); tdl.info()
 | `AppNotReachable` | TurboDL is not installed or opened yet, did not start in time, or quit while a job was running |
 
 - Ctrl+C (`KeyboardInterrupt`) inside `get()` or `wait()` cancels the job, then raises again.
-- The package finds TurboDL through `api.json` in its user data folder. Pass `TurboDL(user_data="...")` or set the `TURBODL_USER_DATA` environment variable to use another folder.
+- The package finds TurboDL through `api.json` in its user data folder (`%APPDATA%\TurboDL` on Windows, `~/Library/Application Support/TurboDL` on macOS, `~/.config/TurboDL` on Linux). Pass `TurboDL(user_data="...")` or set the `TURBODL_USER_DATA` environment variable to use another folder.
 
 ## Download
 
-Installers for Windows and macOS and the Firefox add-on are on the [Releases](https://github.com/AlperKutay/TurboDL/releases) page.
+Installers for Windows, macOS and Linux and the Firefox add-on are on the [Releases](https://github.com/AlperKutay/TurboDL/releases) page.
+
+### Linux
+
+TurboDL runs on Linux x64 with glibc 2.28 or newer (Ubuntu 20.04+, Debian 10+, and current Fedora and Arch); older systems are not supported. Two files are on the Releases page:
+
+- **.deb** (Ubuntu, Debian and other .deb systems): `sudo apt install ./TurboDL-<version>-amd64.deb`. It installs to `/opt/TurboDL` and adds TurboDL to the app menu. Remove it with `sudo apt remove turbodl`.
+- **AppImage** (any x64 distribution, no install): `chmod +x TurboDL-<version>-x86_64.AppImage`, then run it. It needs libfuse2 (`libfuse2` on Ubuntu 22.04, `libfuse2t64` on 24.04).
+
+Notes:
+
+- After moving the AppImage or switching to a newer one, start it once from its new place, so the browser extension, `turbodl` and Launch at login follow.
+- The program is `turbodl-app`; `turbodl` is the command-line tool.
+- The tray uses AppIndicator (on by default on Ubuntu). Without a tray, open TurboDL from the app menu again to show its window.
+- Firefox or Chromium installed as a Snap may not be able to start TurboDL. Open it yourself then.
+- Opera's Linux folder for the extension's connection to TurboDL has not been confirmed yet.
+- Without a keyring, the Instagram sign-in lasts until TurboDL quits.
+- TurboDL is not signed and does not update itself; download new versions from Releases.
 
 ## Build from source
 
@@ -126,7 +143,7 @@ pnpm install
 pnpm dist
 ```
 
-The installer is created in `apps/desktop/release/` (`.exe` on Windows, `.dmg` on macOS). The app is not signed, so Windows and macOS show a warning the first time you open it.
+The installer is created in `apps/desktop/release/` (`.exe` on Windows, `.dmg` on macOS, `.deb` and `.AppImage` on Linux, built on Linux). The app is not signed, so Windows and macOS show a warning the first time you open it.
 
 On Linux the build fetches [BtbN's ffmpeg](https://github.com/BtbN/FFmpeg-Builds) (`apps/desktop/scripts/fetch-ffmpeg-linux.mjs`, checked against the release's SHA-256 list), whose glibc is the system's.
 
