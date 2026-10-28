@@ -16,6 +16,8 @@ export class JobRecord {
   readonly ended: Promise<Job>;
   private readonly controller = new AbortController();
   private readonly listeners = new Set<(event: JobEvent) => void>();
+  /** `followed()` calls waiting for the first follower */
+  private readonly awaitingFollower = new Set<() => void>();
   private readonly job: Job;
   private resolveEnded!: (job: Job) => void;
   private lastProgressAt: number | undefined;
@@ -86,6 +88,20 @@ export class JobRecord {
     return this.listeners.size;
   }
 
+  /** Resolves once a client follows the job's events (at once when one does), or when it is cancelled first. */
+  followed(): Promise<void> {
+    if (this.listeners.size > 0 || this.signal.aborted) return Promise.resolve();
+    return new Promise((resolve) => {
+      const done = () => {
+        this.awaitingFollower.delete(done);
+        this.signal.removeEventListener("abort", done);
+        resolve();
+      };
+      this.awaitingFollower.add(done);
+      this.signal.addEventListener("abort", done);
+    });
+  }
+
   failItem(): void {
     if (this.isEnded()) return;
     this.job.failedItems += 1;
@@ -124,6 +140,7 @@ export class JobRecord {
 
   subscribe(listener: (event: JobEvent) => void): () => void {
     this.listeners.add(listener);
+    for (const done of [...this.awaitingFollower]) done();
     return () => this.listeners.delete(listener);
   }
 

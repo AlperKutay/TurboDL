@@ -114,6 +114,26 @@ describe("Jobs", () => {
     expect(record.followers).toBe(0);
   });
 
+  it("tells when a client first follows it, or when it is cancelled first", async () => {
+    const jobs = make(() => new Promise(() => undefined));
+    const record = (id: string) => jobs["records"].get(id)!;
+    const followedJob = record(jobs.create({ url: URL_A }).id);
+    let followed = false;
+    const waiting = followedJob.followed().then(() => (followed = true));
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(followed).toBe(false);
+    jobs.subscribe(followedJob.id, () => undefined);
+    await waiting;
+    expect(followed).toBe(true);
+    // a follower already there: at once
+    await followedJob.followed();
+    const cancelled = record(jobs.create({ url: URL_A }).id);
+    const stillWaiting = cancelled.followed();
+    jobs.cancel(cancelled.id);
+    await stillWaiting;
+    expect(cancelled.followers).toBe(0);
+  });
+
   it("ends a job whose runner throws as failed, with the message", async () => {
     const jobs = make(async () => {
       throw new Error("boom");

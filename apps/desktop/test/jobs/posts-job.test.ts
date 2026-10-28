@@ -111,10 +111,10 @@ describe("posts-only jobs", () => {
     expect(c.manager.list()).toEqual([]);
   });
 
-  it("a posts-only post link fails notFound when Instagram shows nothing, and signInRequired when it needs a sign-in", async () => {
+  it("a posts-only post link fails with an error, not notFound, when Instagram shows nothing (it may only have been slow), and signInRequired when it needs a sign-in", async () => {
     const so = fakeSignedOut({});
     const c = await start(so.deps);
-    expect((await run(c, POST)).job).toMatchObject({ state: "failed", reason: "notFound", error: "Instagram showed nothing at this link." });
+    expect((await run(c, POST)).job).toMatchObject({ state: "failed", reason: "error", error: "Instagram showed nothing at this link; it may not exist, or the page was too slow." });
     answering(so.deps, "C9", "signInOnly");
     expect((await run(c, POST)).job).toMatchObject({ state: "failed", reason: "signInRequired", error: "Instagram shows this post only to signed-in visitors." });
   });
@@ -160,10 +160,10 @@ describe("posts-only jobs", () => {
     expect(postCodes(events)).toEqual(["C1", "C2", "C3"]);
   });
 
-  it("warns about posts that showed nothing, the sign-in warning first", async () => {
+  it("warns about posts that showed nothing and counts them as failed items, the sign-in warning first", async () => {
     const so = fakeSignedOut(pagesOn({ C1: 20 }), { listing: [covers("C1", "C2")] });
     const c = await start(so.deps);
-    expect((await run(c, PROFILE)).job).toMatchObject({ state: "done", warnings: ["1 post showed nothing and was skipped; it's read again next time."] });
+    expect((await run(c, PROFILE)).job).toMatchObject({ state: "done", failedItems: 1, warnings: ["1 post showed nothing and was skipped."] });
     await controller?.shutdown();
     const so2 = fakeSignedOut(pagesOn({ C1: 20 }), { listing: [covers("C1", "C2", "C3", "C4")] });
     answering(so2.deps, "C3", "signInOnly");
@@ -171,7 +171,8 @@ describe("posts-only jobs", () => {
     expect((await run(c2, PROFILE)).job).toMatchObject({
       state: "done",
       limited: true,
-      warnings: ["1 post is shown only to signed-in visitors; sign in to save them.", "2 posts showed nothing and were skipped; they're read again next time."],
+      failedItems: 2,
+      warnings: ["1 post is shown only to signed-in visitors; sign in to save them.", "2 posts showed nothing and were skipped."],
     });
   });
 
@@ -209,6 +210,44 @@ describe("posts-only jobs", () => {
     expect(read).toEqual(["C1"]);
     await vi.advanceTimersByTimeAsync(10_000);
     expect(read).toEqual(["C1"]);
+  });
+
+  it("doesn't read anything until someone follows", async () => {
+    const so = fakeSignedOut(pagesOn({ C1: 20, C9: 12 }), { listing: [covers("C1")] });
+    const c = await start(so.deps);
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"] });
+    const profile = new JobRecord("j1", { url: PROFILE, options: { postsOnly: true } }, "instagramProfile", Date.now);
+    const post = new JobRecord("j2", { url: POST, options: { postsOnly: true } }, "instagramPost", Date.now);
+    const running = [
+      runPostsJob(profile, { kind: "profile", username: "sample.user" } as InstagramLink, depsOf(c), { unfollowedMs: 1000 }),
+      runPostsJob(post, { kind: "post", code: "C9" } as InstagramLink, depsOf(c), { unfollowedMs: 1000 }),
+    ];
+    await vi.advanceTimersByTimeAsync(500);
+    // waiting in running, where the no-follower rule watches it
+    expect([profile.view().state, post.view().state]).toEqual(["running", "running"]);
+    expect(so.opened).toEqual([]);
+    expect(so.read).toEqual([]);
+    // nobody ever came: cancelled 60 s (here 1 s) after it was made, having asked Instagram nothing
+    await vi.advanceTimersByTimeAsync(1000);
+    await Promise.all(running);
+    for (const job of [profile, post]) expect(job.view()).toMatchObject({ state: "cancelled", warnings: ["Nobody followed the list for 60 s; it was stopped."], progress: { done: 0 } });
+    expect(so.opened).toEqual([]);
+    expect(so.read).toEqual([]);
+  });
+
+  it("starts once a follower subscribes", async () => {
+    const so = fakeSignedOut(pagesOn({ C1: 20, C2: 19 }), { listing: [covers("C1", "C2")] });
+    const c = await start(so.deps);
+    const job = new JobRecord("j1", { url: PROFILE, options: { postsOnly: true } }, "instagramProfile", Date.now);
+    const running = runPostsJob(job, { kind: "profile", username: "sample.user" } as InstagramLink, depsOf(c));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(so.opened).toEqual([]);
+    const events: JobEvent[] = [];
+    job.subscribe((e) => events.push(e));
+    await running;
+    expect(job.view()).toMatchObject({ state: "done", progress: { done: 2 } });
+    expect(postCodes(events)).toEqual(["C1", "C2"]);
+    expect(so.read).toEqual(["C1", "C2"]);
   });
 
   it("keeps running while someone follows", async () => {
