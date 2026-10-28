@@ -128,6 +128,8 @@ pnpm dist
 
 The installer is created in `apps/desktop/release/` (`.exe` on Windows, `.dmg` on macOS). The app is not signed, so Windows and macOS show a warning the first time you open it.
 
+On Linux the build fetches [BtbN's ffmpeg](https://github.com/BtbN/FFmpeg-Builds) (`apps/desktop/scripts/fetch-ffmpeg-linux.mjs`, checked against the release's SHA-256 list), whose glibc is the system's.
+
 ### Browser extension
 
 Chrome, Edge, Brave, Opera, Vivaldi and Arc:
@@ -162,7 +164,7 @@ apps/extension     browser extension (Manifest V3)
 
 ## Notes
 
-- yt-dlp and Deno are downloaded on first use. ffmpeg is bundled through [ffmpeg-static](https://github.com/eugeneware/ffmpeg-static). These tools have their own licenses.
+- yt-dlp and Deno are downloaded on first use. ffmpeg is bundled through [ffmpeg-static](https://github.com/eugeneware/ffmpeg-static) on Windows and macOS, and from [BtbN's FFmpeg-Builds](https://github.com/BtbN/FFmpeg-Builds) on Linux. These tools have their own licenses.
 - DRM-protected videos cannot be downloaded. Respect the terms of the sites you download from.
 - Signed in, Instagram features use your own Instagram session (stored encrypted). TurboDL paces its requests and stops when Instagram asks it to slow down, but Instagram may still limit accounts (or, signed out, this computer) that download a lot.
 - TurboDL is not affiliated with Internet Download Manager.

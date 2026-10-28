@@ -9,3 +9,4 @@ coverage/
 .vite/
 test-results/
 playwright-report/
+apps/desktop/build/ffmpeg-linux/
