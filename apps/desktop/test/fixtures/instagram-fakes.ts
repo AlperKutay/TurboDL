@@ -1,5 +1,5 @@
 import { writeFileSync } from "node:fs";
-import { SavedError, type Highlight, type InstagramItem, type InstagramProfile, type SavedPost } from "@turbodl/shared";
+import { SavedError, type Highlight, type InstagramItem, type InstagramProfile, type PostDetails, type SavedPost } from "@turbodl/shared";
 import type { InstagramDeps } from "../../src/main/controller";
 import type { HttpGet } from "../../src/main/instagram/saved-client";
 
@@ -58,11 +58,18 @@ export const PUBLIC_PROFILE: InstagramProfile = { id: "5100000000000000001", use
 /** A post a profile's page shows signed out: only its cover, its items read from its own page. */
 export const signedOutCover = (id: string, code: string): SavedPost => ({ id, code, cover: `https://cdn.example/${id}.jpg`, items: [], unread: true, mediaType: 8 });
 
+/** A post's page that shows its details too, for `fakeSignedOut`. */
+export interface DetailedPage {
+  items: InstagramItem[];
+  details: PostDetails;
+}
+
 /**
  * A public profile seen signed out (covers only: `listing`, page by page; p1 and p2 on one page unless given), and
- * post or highlight pages that show `pages[code or id]`. Its clock moves only when something waits.
+ * post or highlight pages that show `pages[code or id]` (a post's with its details when given). Its clock moves only
+ * when something waits.
  */
-export function fakeSignedOut(pages: Record<string, InstagramItem[]>, o: { listing?: SavedPost[][]; profile?: InstagramProfile; tray?: Highlight[][] } = {}) {
+export function fakeSignedOut(pages: Record<string, InstagramItem[] | DetailedPage>, o: { listing?: SavedPost[][]; profile?: InstagramProfile; tray?: Highlight[][] } = {}) {
   let now = 0;
   const listing = o.listing ?? [[signedOutCover("p1", "C1"), signedOutCover("p2", "C2")]];
   const tray = o.tray ?? [[{ id: "17900000000000002", title: "Summer" }]];
@@ -78,7 +85,8 @@ export function fakeSignedOut(pages: Record<string, InstagramItem[]>, o: { listi
       const key = link.kind === "post" ? link.code : link.kind === "highlight" ? link.id : link.kind;
       read.push(key);
       const found = pages[key];
-      return found ? { type: "items", items: found } : { type: "nothing" };
+      if (!found) return { type: "nothing" };
+      return Array.isArray(found) ? { type: "items", items: found } : { type: "items", items: found.items, details: found.details };
     },
     signIn: async () => null,
     crypt: { available: () => false, encrypt: (t: string) => Buffer.from(t), decrypt: (b: Buffer) => b.toString() },

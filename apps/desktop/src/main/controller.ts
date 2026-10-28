@@ -277,6 +277,12 @@ export class AppController {
         if (outcome.type === "signInOnly") return "signInOnly";
         return outcome.type === "items" ? outcome.items : null;
       },
+      findPostDetails: async (code, signal) => {
+        const outcome = await ig.find({ kind: "post", code }, this.instagramSession.cookies(), signal);
+        if (outcome.type === "signedOut") throw this.wallOrExpired();
+        if (outcome.type === "signInOnly") return "signInOnly";
+        return outcome.type === "items" ? { items: outcome.items, details: outcome.details ?? { taggedUsers: [] } } : null;
+      },
       byAccount: () => this.settings.instagramByAccount,
       pacer: this.pacer,
       backups: this.backups,

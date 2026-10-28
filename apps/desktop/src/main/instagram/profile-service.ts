@@ -6,7 +6,10 @@ import {
   type Highlight,
   type HighlightResult,
   type InstagramItem,
+  type InstagramPostInfo,
+  type InstagramPostItem,
   type InstagramProfile,
+  type PostDetails,
   type ProfileEntry,
   type ProfileResult,
   type SavedPage,
@@ -15,7 +18,7 @@ import {
 } from "@turbodl/shared";
 import type { Backups, StartResult } from "./backups";
 import { accountFolder, highlightsFolder } from "./folders";
-import { SLOW_DOWN, failedPage, type InstagramPacer } from "./pacer";
+import { SLOW_DOWN, failedPage, failureText, type InstagramPacer } from "./pacer";
 import type { ProfileIndex } from "./profile-index";
 import type { InstagramSession } from "./session";
 
@@ -42,6 +45,8 @@ export interface ProfileServiceDeps {
   findHighlight(id: string, signal?: AbortSignal): Promise<InstagramItem[] | null>;
   /** one post's items from its own page (it works signed out for public posts); null when it showed none; "signInOnly" when Instagram shows it only to signed-in visitors */
   findPost(code: string, signal?: AbortSignal): Promise<InstagramItem[] | null | "signInOnly">;
+  /** as `findPost`, with what the same page says of the post: its time, caption, owner, tagged users */
+  findPostDetails(code: string, signal?: AbortSignal): Promise<{ items: InstagramItem[]; details: PostDetails } | null | "signInOnly">;
   /** downloads kept in a folder per account */
   byAccount(): boolean;
   pacer: InstagramPacer;
@@ -59,12 +64,36 @@ export interface ProfileServiceDeps {
 /** A backup that didn't start, and why. */
 type Refusal = Extract<StartResult, { ok: false }>;
 
+export interface PostListOptions {
+  /** unix seconds: the list ends at the first post taken at or before it that isn't pinned */
+  since?: number;
+  /** at most this many posts are sent, known and pinned ones included */
+  limit?: number;
+  /** codes of posts the client already holds: sent as stubs, their pages not read */
+  known?: ReadonlySet<string>;
+  signal: AbortSignal;
+  onPost(post: InstagramPostInfo): void;
+}
+
+/** How a list ended; what it sent before stays sent. */
+export type PostListOutcome =
+  | { type: "done"; signInOnly: number }
+  | { type: "refused"; error: string; reason: "private" | "notFound" | "signInRequired" | "rateLimited" | "error" }
+  | { type: "cancelled" };
+
+type ListRefusal = Extract<PostListOutcome, { type: "refused" }>;
+
 /** posts kept per profile for estimates */
 const SAMPLE = 500;
 /** further pages of a signed-out highlights tray read at most */
 const TRAY_PAGES = 20;
 /** a backup Instagram's slow-down keeps from starting (as `Backups.start` answers it) */
 const SLOWED_DOWN: Refusal = { ok: false, error: SLOW_DOWN, reason: "rateLimited" };
+/** a list Instagram's slow-down (or its login wall) ends */
+const LIST_SLOWED_DOWN: ListRefusal = { type: "refused", error: SLOW_DOWN, reason: "rateLimited" };
+const LIST_CANCELLED: PostListOutcome = { type: "cancelled" };
+/** posts Instagram lets a profile pin to its top */
+const MOST_PINNED = 3;
 
 /**
  * Profiles in the main process: one hidden page per open profile (it holds the request its posts are paged with),
@@ -148,6 +177,121 @@ export class ProfileService {
       if (read) items.push(...read.items);
     }
     return items;
+  }
+
+  /**
+   * A profile's posts in the order its page shows them, each with its details and items, saving nothing. It reads
+   * through a page of its own, closed when the list ends (the screen's and a backup's pages are left alone). A post in
+   * `known` is sent as a stub, its page not read; seen signed out, every other post is read from its own page; signed
+   * in, the feed's items and details are sent as they are. Every page it loads, its profile's included, takes the jobs'
+   * read slot here, in the account's pace: unlike a backup's start (`pageFor`), it must not be called from inside the
+   * read slot (`deps.read`), which would wait for itself.
+   */
+  async listPosts(username: string, o: PostListOptions): Promise<PostListOutcome> {
+    const { signal } = o;
+    if (signal.aborted) return LIST_CANCELLED;
+    // no page is opened for a list that would end at once
+    if (this.deps.pacer.held()) return LIST_SLOWED_DOWN;
+    let opened: { profile: InstagramProfile; source: ProfileSource };
+    try {
+      // the profile's page is a page read like any other, signed in too
+      opened = await this.paced(() => this.openOwn(username.toLowerCase()), signal, true);
+    } catch (err) {
+      if (signal.aborted) return LIST_CANCELLED;
+      // the feed gives up on a page that never shows the profile
+      if (err instanceof SavedError && err.kind === "badAnswer") return { type: "refused", error: `Instagram shows no profile named ${username}.`, reason: "notFound" };
+      return listRefusal(err, "Sign in to Instagram again.");
+    }
+    const { profile, source } = opened;
+    try {
+      if (isLocked(profile)) return { type: "refused", error: "This account is private.", reason: "private" };
+      return await this.listed(source, profile, o);
+    } catch (err) {
+      return signal.aborted ? LIST_CANCELLED : listRefusal(err, "Instagram signed TurboDL out. Sign in to Instagram again.");
+    } finally {
+      source.close();
+    }
+  }
+
+  /**
+   * One post or reel link as a list sends a post, read from its own page in the jobs' read slot (taken here, as
+   * `listPosts` does) and the account's pace: "signInOnly" when Instagram shows it only to signed-in visitors, null when
+   * its page showed nothing. Throws SavedError("rateLimited") while Instagram's slow-down holds and when the page lands
+   * on the login wall (the hold starts then), SavedError("signedOut") when the session expired, and "Cancelled." when
+   * `signal` aborts first.
+   */
+  async readPostInfo(code: string, signal: AbortSignal): Promise<InstagramPostInfo | "signInOnly" | null> {
+    const read = await this.readDetails(code, signal);
+    if (signal.aborted) throw new Error("Cancelled.");
+    if (read === null || read === "signInOnly") return read;
+    return postInfo(code, read.items, read.details, read.details.pinned === true, read.items.find((item) => item.owner)?.owner ?? null);
+  }
+
+  /** The list's own page, its profile loaded; closed again when the load fails. */
+  private async openOwn(key: string): Promise<{ profile: InstagramProfile; source: ProfileSource }> {
+    const source = this.deps.open(key, this.deps.session.cookies());
+    try {
+      return { profile: await this.walled(() => source.profile()), source };
+    } catch (err) {
+      source.close();
+      throw err;
+    }
+  }
+
+  /** `listPosts` from the profile's loaded page on: its pages as a backup pages them, its posts in page order. */
+  private async listed(source: ProfileSource, profile: InstagramProfile, o: PostListOptions): Promise<PostListOutcome> {
+    const { signal, since, limit, known } = o;
+    // signed in, the feed marks the pinned posts; signed out nothing does, so any of the first few may be pinned
+    const marked = !source.limited;
+    let sent = 0;
+    let signInOnly = 0;
+    let position = 0;
+    const ended = (): PostListOutcome => (signal.aborted ? LIST_CANCELLED : { type: "done", signInOnly });
+    const full = () => limit !== undefined && sent >= limit;
+    const send = (post: InstagramPostInfo) => {
+      o.onPost(post);
+      sent++;
+    };
+    let cursor: string | undefined;
+    for (;;) {
+      if (signal.aborted) return LIST_CANCELLED;
+      const at = cursor;
+      // signed out, a next page takes the read slot too
+      const page = await (source.limited && at !== undefined ? this.deps.read(() => this.paged(source, at, signal), signal) : this.paged(source, at, signal));
+      for (const entry of page.posts) {
+        if (full()) return ended();
+        if (signal.aborted) return LIST_CANCELLED;
+        position++;
+        const { code } = entry;
+        if (!code) continue;
+        const pinned = entry.pinned === true;
+        if (known?.has(code)) {
+          send({ ...postInfo(code, [], NO_DETAILS, pinned, profile.username), known: true });
+          continue;
+        }
+        const read = entry.unread ? await this.readDetails(code, signal) : { items: entry.items, details: feedDetails(entry) };
+        if (signal.aborted) return LIST_CANCELLED;
+        if (read === "signInOnly") {
+          signInOnly++;
+          send({ ...postInfo(code, [], NO_DETAILS, pinned, profile.username), signInOnly: true });
+          continue;
+        }
+        // a page that showed nothing: the post is sent without items or time, and the list goes on
+        const { items, details } = read ?? { items: [], details: NO_DETAILS };
+        const post = postInfo(code, items, details, pinned || details.pinned === true, profile.username);
+        // the first old post that isn't pinned ends the list unsent; without marks, Instagram's pinned places are spared
+        const old = since !== undefined && details.takenAt !== undefined && details.takenAt <= since;
+        if (old && !post.pinned && (marked || position > MOST_PINNED)) return ended();
+        send(post);
+      }
+      if (full() || !page.next) return ended();
+      cursor = page.next;
+    }
+  }
+
+  /** A post's page with its details, in the shared read slot and the account's pace, as `readPost` reads one. */
+  private readDetails(code: string, signal?: AbortSignal): Promise<{ items: InstagramItem[]; details: PostDetails } | null | "signInOnly"> {
+    return this.paced(() => this.deps.findPostDetails(code, signal), signal, true);
   }
 
   /**
@@ -408,6 +552,7 @@ export class ProfileService {
     if (pacer.held()) throw new SavedError("rateLimited");
     await pacer.pace(signal);
     if (pacer.held()) throw new SavedError("rateLimited");
+    if (signal?.aborted) throw new Error("Cancelled.");
     return pacer.ask(() => this.walled(() => source.page(cursor, signal)));
   }
 
@@ -467,6 +612,61 @@ export class ProfileService {
       throw err;
     }
   }
+}
+
+/** A post's details when nothing says more of it. */
+const NO_DETAILS: PostDetails = { taggedUsers: [] };
+
+/** A list Instagram pushed back on (its slow-down or login wall; the session gone, said as `signedOut`), or why else it ended. */
+function listRefusal(err: unknown, signedOut: string): ListRefusal {
+  if (err instanceof SavedError && err.kind === "rateLimited") return LIST_SLOWED_DOWN;
+  if (err instanceof SavedError && err.kind === "signedOut") return { type: "refused", error: signedOut, reason: "signInRequired" };
+  return { type: "refused", error: failureText(err), reason: "error" };
+}
+
+/** What a signed-in feed says of a post beyond its items. */
+function feedDetails(post: SavedPost): PostDetails {
+  const owner = post.items.find((item) => item.owner)?.owner;
+  return {
+    ...(post.takenAt !== undefined ? { takenAt: post.takenAt } : {}),
+    ...(post.caption ? { caption: post.caption } : {}),
+    taggedUsers: post.taggedUsers ?? [],
+    ...(owner ? { owner } : {}),
+  };
+}
+
+/** A post as a list sends it: its time in ISO 8601 UTC (null without one), the owner its page names or `owner`. */
+function postInfo(code: string, items: InstagramItem[], details: PostDetails, pinned: boolean, owner: string | null): InstagramPostInfo {
+  return {
+    code,
+    url: `https://www.instagram.com/p/${encodeURIComponent(code)}/`,
+    takenAt: isoTime(details.takenAt),
+    pinned,
+    owner: details.owner ?? owner,
+    ...(details.caption ? { caption: details.caption } : {}),
+    taggedUsers: details.taggedUsers,
+    items: items.map(postItem),
+  };
+}
+
+/** An item as a list sends it: what a client downloads it by, without what only the app's screens use. */
+function postItem(item: InstagramItem): InstagramPostItem {
+  const { kind, url, mediaId, width, height, duration } = item;
+  return {
+    kind,
+    url,
+    ...(mediaId !== undefined ? { mediaId } : {}),
+    ...(width !== undefined ? { width } : {}),
+    ...(height !== undefined ? { height } : {}),
+    ...(duration !== undefined ? { duration } : {}),
+  };
+}
+
+/** Unix seconds as ISO 8601 UTC; null for none (or a time no date has). */
+function isoTime(seconds: number | undefined): string | null {
+  if (seconds === undefined) return null;
+  const date = new Date(seconds * 1000);
+  return Number.isNaN(date.getTime()) ? null : date.toISOString();
 }
 
 /** Why a profile can't be backed up from its page: private and not followed (Instagram shows it to nobody else). */

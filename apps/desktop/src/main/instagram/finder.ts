@@ -1,4 +1,4 @@
-import { isSignInPath, loggedOutView, postItems, postNeedsSignIn, storyItems, type InstagramItem, type InstagramLink } from "@turbodl/shared";
+import { isSignInPath, loggedOutView, postDetails, postItems, postNeedsSignIn, storyItems, type InstagramItem, type InstagramLink, type PostDetails } from "@turbodl/shared";
 
 /** An Instagram page in a hidden window, as the finder needs it (`ElectronInstagramPage`, or a stand-in in tests). */
 export interface PageDriver {
@@ -14,9 +14,10 @@ export interface PageDriver {
 /**
  * `signedOut.at`: the check page (not the sign-in page) Instagram sent the page to, for the sign-in window to open.
  * `signInOnly`: read signed out, the post exists but Instagram shows it only to signed-in visitors.
+ * `details`: a post's time, caption, owner and tagged users, from the same page (post links only).
  */
 export type FindOutcome =
-  | { type: "items"; items: InstagramItem[] }
+  | { type: "items"; items: InstagramItem[]; details?: PostDetails }
   | { type: "signedOut"; at?: string }
   | { type: "signInOnly" }
   | { type: "nothing" };
@@ -89,7 +90,7 @@ export class InstagramFinder {
         if (seen) {
           documents = seen;
           const items = link.kind === "post" ? postItems(documents, link.code) : link.kind === "story" || link.kind === "highlight" ? storyItems(documents, link) : [];
-          if (items.length > 0) return { type: "items", items };
+          if (items.length > 0) return link.kind === "post" ? { type: "items", items, details: postDetails(documents, link.code) } : { type: "items", items };
           // the signed-out page keeps a post it won't show as an empty field: no need to wait for it
           if (link.kind === "post" && postNeedsSignIn(documents, link.code)) return this.o.signedIn === false ? { type: "signInOnly" } : { type: "signedOut" };
         }
