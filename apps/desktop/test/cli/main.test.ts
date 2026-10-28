@@ -158,11 +158,11 @@ describe("turbodl get", () => {
   it("prints warnings and why a job failed on stderr", async () => {
     const c = cli(["get", "https://example.com/a.zip"]);
     await fake.subscribed("job1");
-    fake.push("job1", { type: "warning", message: "Saved only the first posts." });
+    fake.push("job1", { type: "warning", message: "1 post is shown only to signed-in visitors; sign in to save them." });
     fake.end("job1", { state: "failed", reason: "notFound", error: "That post doesn't exist." });
     expect(await c.done).toBe(1);
     expect(c.stdout.text).toBe("");
-    expect(c.stderr.text).toBe("job1: warning: Saved only the first posts.\njob1: failed (notFound), 0 files: That post doesn't exist.\n");
+    expect(c.stderr.text).toBe("job1: warning: 1 post is shown only to signed-in visitors; sign in to save them.\njob1: failed (notFound), 0 files: That post doesn't exist.\n");
   });
 
   it("exits 3 for a limited job and 4 for Instagram's slow-down", async () => {
