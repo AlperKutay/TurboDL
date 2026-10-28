@@ -1,6 +1,7 @@
 import { existsSync, promises as fsp } from "node:fs";
 import path from "node:path";
 import {
+  API_FEATURES,
   API_VERSION,
   APP_ID,
   type ApiLaunch,
@@ -66,6 +67,7 @@ import { InstagramSession, type Crypt } from "./instagram/session";
 import { probe } from "./engine/probe";
 import { Gate } from "./jobs/gate";
 import { runInstagramJob } from "./jobs/instagram-job";
+import { POSTS_UNSUPPORTED } from "./jobs/posts-job";
 import { InstagramLane } from "./jobs/instagram-lane";
 import { Jobs } from "./jobs/jobs";
 import { jobKindOf } from "./jobs/kind";
@@ -275,6 +277,12 @@ export class AppController {
         if (outcome.type === "signedOut") throw this.wallOrExpired();
         if (outcome.type === "signInOnly") return "signInOnly";
         return outcome.type === "items" ? outcome.items : null;
+      },
+      findPostDetails: async (code, signal) => {
+        const outcome = await ig.find({ kind: "post", code }, this.instagramSession.cookies(), signal);
+        if (outcome.type === "signedOut") throw this.wallOrExpired();
+        if (outcome.type === "signInOnly") return "signInOnly";
+        return outcome.type === "items" ? { items: outcome.items, details: outcome.details ?? { taggedUsers: [] } } : null;
       },
       byAccount: () => this.settings.instagramByAccount,
       pacer: this.pacer,
@@ -937,6 +945,11 @@ export class AppController {
   private async runJob(job: JobRecord): Promise<void> {
     const { url } = job.request;
     const link = jobKindOf(url) === "file" ? null : parseInstagramLink(url);
+    // a post list never reaches the web job, which would download the link
+    if (!link && job.request.options?.postsOnly) {
+      job.end({ state: "failed", reason: "unsupported", error: POSTS_UNSUPPORTED });
+      return;
+    }
     if (link) {
       await runInstagramJob(job, link, {
         session: this.instagramSession,
@@ -973,7 +986,7 @@ export class AppController {
       info: async () => {
         const signedIn = this.instagramSession.signedIn();
         const username = signedIn ? this.saved.knownUsername() : undefined;
-        return { app: APP_ID, version: this.o.version, api: API_VERSION, instagram: { signedIn, ...(username ? { username } : {}) } };
+        return { app: APP_ID, version: this.o.version, api: API_VERSION, instagram: { signedIn, ...(username ? { username } : {}) }, features: [...API_FEATURES] };
       },
       createJob: (request) => this.jobs.create(request),
       jobs: () => this.jobs.list(),

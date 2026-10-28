@@ -1,41 +1,14 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
-import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { SavedError, type AppEvent, type BrowserCookie, type InstagramItem, type InstagramProfile, type Job, type JobEvent, type JobRequest, type PendingItem, type SavedPost } from "@turbodl/shared";
-import { AppController, type ControllerUi, type InstagramDeps } from "../../src/main/controller";
+import { SavedError, type InstagramItem, type InstagramProfile, type Job, type JobEvent, type JobRequest, type SavedPost } from "@turbodl/shared";
+import type { AppController, InstagramDeps } from "../../src/main/controller";
+import { FakeUi, SESSION, startApp } from "../fixtures/instagram-app";
 import { fakeProfiles, fakeSignedOut, savedGet, signedOutCover } from "../fixtures/instagram-fakes";
 import { startTestServer, type TestServer } from "../fixtures/test-server";
 
-const SESSION: BrowserCookie[] = [
-  { domain: ".instagram.com", hostOnly: false, path: "/", secure: true, expires: 0, name: "sessionid", value: "s" },
-  { domain: ".instagram.com", hostOnly: false, path: "/", secure: true, expires: 0, name: "csrftoken", value: "c" },
-];
 const SLOW_DOWN = "Instagram asked TurboDL to slow down. Try again in a few minutes.";
-
-function freePort(): Promise<number> {
-  return new Promise((resolve) => {
-    const s = net.createServer();
-    s.listen(0, "127.0.0.1", () => {
-      const port = (s.address() as net.AddressInfo).port;
-      s.close(() => resolve(port));
-    });
-  });
-}
-
-class FakeUi implements ControllerUi {
-  events: AppEvent[] = [];
-  broadcast(e: AppEvent) {
-    this.events.push(e);
-  }
-  openPending(_item: PendingItem) {}
-  closePending() {}
-  showMain() {}
-  notifyCompleted() {}
-  setLaunchAtLogin() {}
-  quit() {}
-}
 
 let server: TestServer;
 let root: string;
@@ -56,25 +29,7 @@ afterEach(async () => {
 });
 
 async function start(instagram: InstagramDeps): Promise<AppController> {
-  const userData = path.join(root, "user");
-  mkdirSync(userData, { recursive: true });
-  writeFileSync(path.join(userData, "settings.json"), JSON.stringify({ baseDir: path.join(root, "dl"), bridgePort: await freePort() }));
-  const extensionDir = path.join(root, "ext");
-  mkdirSync(extensionDir, { recursive: true });
-  writeFileSync(path.join(extensionDir, "manifest.json"), "{}");
-  controller = new AppController({
-    version: "0.0.1",
-    userDataDir: userData,
-    downloadsDir: path.join(root, "Downloads"),
-    documentsDir: path.join(root, "Documents"),
-    extensionSourceDir: extensionDir,
-    ffmpegPath: null,
-    ui,
-    launch: { file: "turbodl-test", args: ["--hidden"] },
-    mediaTools: { ensure: async () => ({ ytdlp: "unused", deno: null, ffmpeg: null }), updateIfStale: async () => undefined },
-    instagram,
-  });
-  await controller.init();
+  controller = await startApp(root, ui, instagram);
   return controller;
 }
 

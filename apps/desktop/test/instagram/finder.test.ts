@@ -45,6 +45,23 @@ describe("InstagramFinder", () => {
     expect(page.loads).toEqual(["https://www.instagram.com/p/C1abcDEF/"]);
   });
 
+  it("reads a post's details along with its items", async () => {
+    const post = {
+      code: "C1abcDEF",
+      pk: "3300000000000000001",
+      taken_at: 1790000400,
+      caption: { text: "A caption" },
+      user: { username: "someone" },
+      usertags: { in: [{ user: { username: "friend_one" } }] },
+      image_versions2: { candidates: [{ width: 1080, height: 1350, url: "https://scontent.cdninstagram.example/v/t51/photo_1080.jpg" }] },
+    };
+    const outcome = await finder(new FakePage([[JSON.stringify({ data: { media: post } })]])).find({ kind: "post", code: "C1abcDEF" });
+    expect(outcome.type === "items" && outcome.details).toEqual({ takenAt: 1790000400, caption: "A caption", owner: "someone", taggedUsers: ["friend_one"] });
+    // stories and highlights carry none
+    const highlight = await finder(new FakePage([[JSON.stringify(highlightShare)]])).find({ kind: "highlight", id: "17900000000000003" });
+    expect(highlight.type === "items" && "details" in highlight).toBe(false);
+  });
+
   it("waits for the page's documents", async () => {
     const page = new FakePage([[], [], [JSON.stringify(carousel)]]);
     const outcome = await finder(page).find({ kind: "post", code: "C1abcDEF" });

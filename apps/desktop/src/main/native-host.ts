@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import { existsSync, promises as fsp } from "node:fs";
 import path from "node:path";
 import { EXTENSION_ORIGIN, FIREFOX_EXTENSION_ID, NATIVE_HOST_NAME } from "@turbodl/shared";
+import { APPIMAGE_NODE_FLAG, appLocation, linuxConfigHome } from "./app-location";
 
 export interface BrowserTarget {
   name: string;
@@ -11,20 +12,22 @@ export interface BrowserTarget {
   macDir?: string;
   /** folder whose presence shows the browser is installed, when it differs from macDir */
   macProbe?: string;
+  /** Linux: folder under linuxConfigHome() whose NativeMessagingHosts the browser reads (written only when the folder exists) */
+  linuxDir?: string;
   /** Firefox uses its own manifest (allowed_extensions instead of allowed_origins) */
   firefox?: boolean;
 }
 
 /** Browsers whose extension can start the app: Windows registry key and macOS Application Support folder. */
 export const BROWSERS: readonly BrowserTarget[] = [
-  { name: "Chrome", winKey: "Google\\Chrome", macDir: "Google/Chrome" },
-  { name: "Edge", winKey: "Microsoft\\Edge", macDir: "Microsoft Edge" },
-  { name: "Brave", winKey: "BraveSoftware\\Brave-Browser", macDir: "BraveSoftware/Brave-Browser" },
-  { name: "Vivaldi", winKey: "Vivaldi", macDir: "Vivaldi" },
-  { name: "Opera", macDir: "com.operasoftware.Opera" },
+  { name: "Chrome", winKey: "Google\\Chrome", macDir: "Google/Chrome", linuxDir: "google-chrome" },
+  { name: "Edge", winKey: "Microsoft\\Edge", macDir: "Microsoft Edge", linuxDir: "microsoft-edge" },
+  { name: "Brave", winKey: "BraveSoftware\\Brave-Browser", macDir: "BraveSoftware/Brave-Browser", linuxDir: "BraveSoftware/Brave-Browser" },
+  { name: "Vivaldi", winKey: "Vivaldi", macDir: "Vivaldi", linuxDir: "vivaldi" },
+  { name: "Opera", macDir: "com.operasoftware.Opera", linuxDir: "opera" },
   { name: "Opera GX", macDir: "com.operasoftware.OperaGX" },
   { name: "Arc", macDir: "Arc/User Data" },
-  { name: "Chromium", winKey: "Chromium", macDir: "Chromium" },
+  { name: "Chromium", winKey: "Chromium", macDir: "Chromium", linuxDir: "chromium" },
   { name: "Firefox", winKey: "Mozilla", macDir: "Mozilla", macProbe: "Firefox", firefox: true },
 ];
 
@@ -63,7 +66,7 @@ function batPath(value: string, env: NodeJS.ProcessEnv): string {
   return `"${value.replace(/%/g, "%%")}"`;
 }
 
-function shQuote(value: string): string {
+export function shQuote(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
@@ -73,8 +76,9 @@ export function launcherScript(
   hostScript: string,
   launchArgs: string[] = [],
   env: NodeJS.ProcessEnv = process.env,
+  appImage = false,
 ): string {
-  const parts = [execPath, hostScript, ...launchArgs.map((a) => `--launch-arg=${a}`)];
+  const parts = [execPath, hostScript, ...(appImage && platform !== "win32" ? [APPIMAGE_NODE_FLAG] : []), ...launchArgs.map((a) => `--launch-arg=${a}`)];
   if (platform === "win32") {
     const command = `${parts.map((p) => batPath(p, env)).join(" ")} %*`;
     const utf8 = /[^\x00-\x7f]/.test(command) ? ["chcp 65001 >nul"] : [];
@@ -112,8 +116,17 @@ export async function registerNativeHost(o: RegisterOptions): Promise<{ manifest
   const win = o.platform === "win32";
   const dir = path.join(o.userDataDir, "native-host");
   await fsp.mkdir(dir, { recursive: true });
+  const env = o.env ?? process.env;
+  const linux = o.platform === "linux";
+  const loc = linux ? appLocation({ platform: o.platform, execPath: o.execPath, env }) : { file: o.execPath, appImage: false };
+  let hostScript = o.hostScript;
+  if (loc.appImage) {
+    // the AppImage's mount folder changes on every start, so keep a copy of the script where it stays
+    hostScript = path.join(dir, "host.cjs");
+    await fsp.copyFile(o.hostScript, hostScript);
+  }
   const launcher = path.join(dir, win ? "turbodl-host.bat" : "turbodl-host.sh");
-  await fsp.writeFile(launcher, launcherScript(o.platform, o.execPath, o.hostScript, o.launchArgs, o.env ?? process.env));
+  await fsp.writeFile(launcher, launcherScript(o.platform, loc.file, hostScript, o.launchArgs, env, loc.appImage));
   if (!win) await fsp.chmod(launcher, 0o755);
   const manifest = `${JSON.stringify(hostManifest(launcher), null, 2)}\n`;
   const manifestPath = path.join(dir, `${NATIVE_HOST_NAME}.json`);
@@ -130,6 +143,19 @@ export async function registerNativeHost(o: RegisterOptions): Promise<{ manifest
       if (win) {
         if (!b.winKey) continue;
         await (o.runReg ?? runRegExe)(regAddArgs(b.winKey, b.firefox ? firefoxManifestPath : manifestPath));
+      } else if (linux) {
+        let hosts: string;
+        if (b.firefox) {
+          if (!existsSync(path.join(o.homeDir, ".mozilla")) && !existsSync(path.join(o.homeDir, "snap", "firefox", "common", ".mozilla"))) continue;
+          hosts = path.join(o.homeDir, ".mozilla", "native-messaging-hosts");
+        } else {
+          if (!b.linuxDir) continue;
+          const profile = path.join(linuxConfigHome(env, o.homeDir), b.linuxDir);
+          if (!existsSync(profile)) continue;
+          hosts = path.join(profile, "NativeMessagingHosts");
+        }
+        await fsp.mkdir(hosts, { recursive: true });
+        await fsp.writeFile(path.join(hosts, `${NATIVE_HOST_NAME}.json`), b.firefox ? firefoxManifest : manifest);
       } else {
         if (!b.macDir) continue;
         const support = path.join(o.homeDir, "Library", "Application Support");

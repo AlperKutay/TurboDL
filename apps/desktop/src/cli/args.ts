@@ -1,9 +1,10 @@
 import path from "node:path";
-import type { JobOptions } from "@turbodl/shared";
+import { parseIsoTime, type JobOptions } from "@turbodl/shared";
 
 /** One parsed turbodl command line. */
 export type Command =
   | { type: "get" | "add"; urls: string[]; dir?: string; name?: string; options: JobOptions; json: boolean }
+  | { type: "posts"; url: string; since?: string; limit?: number; json: boolean }
   | { type: "list"; json: boolean }
   | { type: "status"; id: string; json: boolean }
   | { type: "wait" | "cancel"; ids: string[]; json: boolean }
@@ -17,6 +18,7 @@ export const HELP = `Usage: turbodl <command> [options]
 Commands:
   get <link...>          Download the links and wait until they finish
   add <link...>          Queue the links and return at once
+  posts <link>           List an Instagram profile's or post's posts, saving nothing
   list                   List the jobs
   status <id>            Show one job
   wait <id...>           Wait until the jobs finish
@@ -36,6 +38,11 @@ Options (get and add):
   --collection <name>    Download a Saved collection (repeatable)
   --all-collections      Download every Saved collection
 
+Options (posts):
+  --since <time>         Stop at the first post taken at or before this ISO 8601
+                         time (up to 3 older posts at the top are still listed)
+  --limit <n>            At most this many posts (1 to 100000)
+
 Options (every command):
   --json                 Print JSON instead of text
   -h, --help             Show this text
@@ -45,9 +52,9 @@ Exit codes: 0 ok, 1 failed, 2 usage, 3 sign-in needed, 4 rate limited,
 5 app unreachable, 6 stopped, 130 interrupted.
 `;
 
-const VALUE_OPTIONS = new Set(["-d", "--dir", "--name", "--max-height", "--collection"]);
+const VALUE_OPTIONS = new Set(["-d", "--dir", "--name", "--max-height", "--collection", "--since", "--limit"]);
 const FLAG_OPTIONS = new Set(["--audio", "--highlights", "--highlights-only", "--all-collections", "--json"]);
-const COMMANDS = new Set(["get", "add", "list", "status", "wait", "cancel", "instagram"]);
+const COMMANDS = new Set(["get", "add", "list", "status", "wait", "cancel", "instagram", "posts"]);
 
 /** Reads the command line; returns the command or `{ error }` for a usage mistake. */
 export function parseArgs(argv: string[], cwd: string): Command | { error: string } {
@@ -96,6 +103,24 @@ export function parseArgs(argv: string[], cwd: string): Command | { error: strin
   const json = flags.has("--json");
 
   switch (command) {
+    case "posts": {
+      if (rest.length !== 1) return { error: "posts takes one link" };
+      const result: Command = { type: "posts", url: rest[0], json };
+      const since = values.get("--since")?.at(-1);
+      if (since !== undefined) {
+        const iso = parseIsoTime(since);
+        if (iso === undefined) return { error: "--since needs an ISO time" };
+        result.since = iso;
+      }
+      const limit = values.get("--limit")?.at(-1);
+      if (limit !== undefined) {
+        if (!/^[1-9]\d{0,5}$/.test(limit) || Number(limit) > 100_000) {
+          return { error: "--limit needs a whole number from 1 to 100000" };
+        }
+        result.limit = Number(limit);
+      }
+      return result;
+    }
     case "list":
       return { type: "list", json };
     case "status":

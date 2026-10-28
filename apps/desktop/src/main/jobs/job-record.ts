@@ -1,4 +1,4 @@
-import { isJobEnded, type Job, type JobEvent, type JobEventBody, type JobKind, type JobProgress, type JobReason, type JobRequest } from "@turbodl/shared";
+import { isJobEnded, type InstagramPostInfo, type Job, type JobEvent, type JobEventBody, type JobKind, type JobProgress, type JobReason, type JobRequest } from "@turbodl/shared";
 
 /** How a job finished. */
 export type JobOutcome =
@@ -16,6 +16,8 @@ export class JobRecord {
   readonly ended: Promise<Job>;
   private readonly controller = new AbortController();
   private readonly listeners = new Set<(event: JobEvent) => void>();
+  /** `followed()` calls waiting for the first follower */
+  private readonly awaitingFollower = new Set<() => void>();
   private readonly job: Job;
   private resolveEnded!: (job: Job) => void;
   private lastProgressAt: number | undefined;
@@ -74,6 +76,32 @@ export class JobRecord {
     this.emit({ type: "warning", message });
   }
 
+  /** One post of a posts-only list, told to the followers as it is read. */
+  post(post: InstagramPostInfo): void {
+    if (this.isEnded()) return;
+    this.job.progress = { ...this.job.progress, done: this.job.progress.done + 1 };
+    this.emit({ type: "post", post });
+  }
+
+  /** How many clients follow the job's events right now. */
+  get followers(): number {
+    return this.listeners.size;
+  }
+
+  /** Resolves once a client follows the job's events (at once when one does), or when it is cancelled first. */
+  followed(): Promise<void> {
+    if (this.listeners.size > 0 || this.signal.aborted) return Promise.resolve();
+    return new Promise((resolve) => {
+      const done = () => {
+        this.awaitingFollower.delete(done);
+        this.signal.removeEventListener("abort", done);
+        resolve();
+      };
+      this.awaitingFollower.add(done);
+      this.signal.addEventListener("abort", done);
+    });
+  }
+
   failItem(): void {
     if (this.isEnded()) return;
     this.job.failedItems += 1;
@@ -112,6 +140,7 @@ export class JobRecord {
 
   subscribe(listener: (event: JobEvent) => void): () => void {
     this.listeners.add(listener);
+    for (const done of [...this.awaitingFollower]) done();
     return () => this.listeners.delete(listener);
   }
 

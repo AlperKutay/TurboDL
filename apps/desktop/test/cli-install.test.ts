@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -61,6 +61,53 @@ describe("writeCliLauncher", () => {
     expect(res.stderr).toBe("TurboDL is not installed any more.\n");
   });
 
+  it("writes the Linux launcher for the .deb like the macOS one", () => {
+    const r = writeCliLauncher({ platform: "linux", userDataDir: path.join(dir, "data"), execPath: "/opt/TurboDL/turbodl-app", script: "/opt/TurboDL/resources/cli/turbodl.cjs", launcherExe: "" });
+    expect(readFileSync(r.command, "utf8")).toBe(shellLauncher("/opt/TurboDL/turbodl-app", "/opt/TurboDL/resources/cli/turbodl.cjs"));
+    if (process.platform !== "win32") expect(statSync(r.command).mode & 0o777).toBe(0o755);
+  });
+
+  it("copies the command next to an AppImage launcher and passes the AppRun flag after it", () => {
+    const script = path.join(dir, "turbodl.cjs");
+    writeFileSync(script, "// cli");
+    const r = writeCliLauncher({
+      platform: "linux",
+      userDataDir: path.join(dir, "data"),
+      execPath: "/tmp/.mount_x/turbodl-app",
+      script,
+      launcherExe: "",
+      env: { APPIMAGE: "/home/a/O'Neil/TurboDL.AppImage", APPDIR: "/tmp/.mount_x" },
+    });
+    const copy = path.join(r.binDir, "turbodl.cjs");
+    expect(readFileSync(copy, "utf8")).toBe("// cli");
+    expect(readFileSync(r.command, "utf8")).toBe(
+      `#!/bin/sh\n[ -x '/home/a/O'\\''Neil/TurboDL.AppImage' ] || { echo "TurboDL is not installed any more." >&2; exit 5; }\nELECTRON_RUN_AS_NODE=1 exec '/home/a/O'\\''Neil/TurboDL.AppImage' '${copy}' --no-sandbox "$@"\n`,
+    );
+  });
+
+  it.skipIf(process.platform === "win32")("hands the AppImage the script, the flag, then the user's arguments", () => {
+    const echo = path.join(dir, "echo.cjs");
+    writeFileSync(echo, "process.stdout.write(JSON.stringify({ argv: process.argv.slice(2), node: process.env.ELECTRON_RUN_AS_NODE }));\n");
+    const appImage = path.join(dir, "TurboDL.AppImage");
+    // a stand-in AppImage: runs the script it is given, like Electron in Node mode
+    writeFileSync(appImage, `#!/bin/sh\nexec '${process.execPath}' "$@"\n`);
+    chmodSync(appImage, 0o755);
+    const r = writeCliLauncher({
+      platform: "linux",
+      userDataDir: path.join(dir, "data"),
+      execPath: "/tmp/.mount_x/turbodl-app",
+      script: echo,
+      launcherExe: "",
+      env: { APPIMAGE: appImage, APPDIR: "/tmp/.mount_x" },
+    });
+    const copy = path.join(r.binDir, "turbodl.cjs");
+    const res = spawnSync("/bin/sh", [r.command, "get", "a b"], { encoding: "utf8" });
+    expect(res.status).toBe(0);
+    // process.argv.slice(2) of the copy: the flag, then the user's arguments
+    expect(JSON.parse(res.stdout)).toEqual({ argv: ["--no-sandbox", "get", "a b"], node: "1" });
+    expect(readFileSync(copy, "utf8")).toBe(readFileSync(echo, "utf8"));
+  });
+
   it("reports a launcher that cannot be copied when there is no old one", () => {
     const o = { platform: "win32" as const, userDataDir: path.join(dir, "data"), execPath: "a", script: "b", launcherExe: path.join(dir, "missing.exe") };
     expect(() => writeCliLauncher(o)).toThrow(/ENOENT/);
@@ -114,6 +161,8 @@ function fake(over: Partial<CliInstallDeps> & { path?: { type: string; value: st
   const events: string[] = [];
   let current = over.path === undefined ? { type: "REG_EXPAND_SZ", value: "%USERPROFILE%\\bin;C:\\Tools" } : over.path;
   const admin: string[] = [];
+  const links: string[][] = [];
+  const unlinks: string[] = [];
   const deps: CliInstallDeps = {
     platform: "win32",
     userDataDir: "C:\\Users\\x\\AppData\\Roaming\\TurboDL",
@@ -132,9 +181,13 @@ function fake(over: Partial<CliInstallDeps> & { path?: { type: string; value: st
     runAdmin: async (c) => void admin.push(c),
     linkTarget: () => null,
     exists: () => false,
+    homeDir: "/home/a",
+    pathEnv: "",
+    symlink: (target, file) => void links.push([target, file]),
+    unlink: (file) => void unlinks.push(file),
     ...over,
   };
-  return { deps, calls, events, admin, value: () => current };
+  return { deps, calls, events, admin, links, unlinks, value: () => current };
 }
 const BIN = path.win32.join("C:\\Users\\x\\AppData\\Roaming\\TurboDL", "bin");
 
@@ -263,6 +316,56 @@ describe("macOS link", () => {
       throw Object.assign(new Error("User canceled. (-128)"), { cancelled: true });
     };
     expect(await installCli(f.deps)).toEqual({ ok: false, error: "Cancelled." });
+  });
+});
+
+describe("Linux link", () => {
+  const userDataDir = "/home/a/.config/TurboDL";
+  const ours = "/home/a/.config/TurboDL/bin/turbodl";
+  const L = "/home/a/.local/bin/turbodl";
+  const linux = (over: Partial<CliInstallDeps> = {}) => fake({ platform: "linux", userDataDir, ...over });
+
+  it("links ~/.local/bin/turbodl to the launcher without a password", async () => {
+    const f = linux();
+    expect(await installCli(f.deps)).toEqual({ ok: true });
+    expect(f.links).toEqual([[ours, L]]);
+    expect(f.admin).toEqual([]);
+  });
+
+  it("reports installed, and whether ~/.local/bin is on the PATH", async () => {
+    expect(await cliStatus(linux({ linkTarget: () => ours, pathEnv: "/usr/bin:/bin" }).deps)).toEqual({ supported: true, installed: true, where: L, onPath: false });
+    expect(await cliStatus(linux({ linkTarget: () => ours, pathEnv: "/home/a/.local/bin/:/usr/bin" }).deps)).toMatchObject({ installed: true, onPath: true });
+    expect(await cliStatus(linux().deps)).toMatchObject({ installed: false, where: L });
+  });
+
+  it("refuses to install over or remove a turbodl that is not ours", async () => {
+    const error = "~/.local/bin/turbodl belongs to another program.";
+    const other = linux({ linkTarget: () => "/usr/local/bin/other" });
+    const file = linux({ linkTarget: () => null, exists: () => true });
+    expect(await installCli(other.deps)).toEqual({ ok: false, error });
+    expect(await installCli(file.deps)).toEqual({ ok: false, error });
+    expect(await removeCli(other.deps)).toEqual({ ok: false, error });
+    expect(other.links).toEqual([]);
+    expect(file.links).toEqual([]);
+    expect(other.unlinks).toEqual([]);
+  });
+
+  it("removes only its own link", async () => {
+    const mine = linux({ linkTarget: () => ours });
+    expect(await removeCli(mine.deps)).toEqual({ ok: true });
+    expect(mine.unlinks).toEqual([L]);
+    const none = linux();
+    expect(await removeCli(none.deps)).toEqual({ ok: true });
+    expect(none.unlinks).toEqual([]);
+  });
+
+  it("answers a link it can't make", async () => {
+    const f = linux({
+      symlink: () => {
+        throw new Error("EACCES: permission denied, symlink 'x' -> 'y'");
+      },
+    });
+    expect(await installCli(f.deps)).toEqual({ ok: false, error: "EACCES: permission denied, symlink 'x' -> 'y'" });
   });
 });
 

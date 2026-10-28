@@ -3,6 +3,7 @@ import path from "node:path";
 import { Notification, app, clipboard, safeStorage, shell, type Tray } from "electron";
 import { ClipboardWatcher } from "./clipboard-watcher";
 import { clientLaunch } from "./api-file";
+import { applyAutostart, autostartFile } from "./autostart";
 import { AppController } from "./controller";
 import { chromeAgent } from "./instagram/agent";
 import { DEMO_COOKIE, demoInstagram } from "./instagram/demo";
@@ -11,6 +12,7 @@ import { loadCollections } from "./instagram/collections";
 import { ProfileFeed } from "./instagram/profile-feed";
 import { ElectronInstagramPage, allowTestSite, instagramSession } from "./instagram/page";
 import { signInToInstagram } from "./instagram/signin";
+import { systemCrypt } from "./instagram/session";
 import { EVENT_CHANNEL, broadcast, registerIpc } from "./ipc";
 import { writeCliLauncher } from "./cli-install";
 import { isBackgroundLaunch, registerNativeHost } from "./native-host";
@@ -75,9 +77,23 @@ async function start(): Promise<void> {
     onMainClosed: () => app.quit(),
   });
   windows = wm;
+  const launch = clientLaunch({ platform: process.platform, execPath: process.execPath, isPackaged: app.isPackaged, appPath: app.getAppPath(), env: process.env });
+  /** Launch at login: Electron does it on Windows and macOS; on Linux it is an autostart entry (never from a test run). */
+  const setLaunchAtLogin = (enabled: boolean): void => {
+    if (process.platform !== "linux") {
+      app.setLoginItemSettings({ openAtLogin: enabled, args: ["--hidden"] });
+      return;
+    }
+    if (process.env.TURBODL_USER_DATA) return;
+    try {
+      applyAutostart({ enabled, file: autostartFile(process.env, app.getPath("home")), launch });
+    } catch (err) {
+      console.warn("Could not update the autostart entry:", err);
+    }
+  };
   const c = new AppController({
     version: app.getVersion(),
-    launch: clientLaunch({ platform: process.platform, execPath: process.execPath, isPackaged: app.isPackaged, appPath: app.getAppPath() }),
+    launch,
     userDataDir: app.getPath("userData"),
     downloadsDir: app.getPath("downloads"),
     documentsDir: app.getPath("documents"),
@@ -89,7 +105,7 @@ async function start(): Promise<void> {
       closePending: (pendingId) => wm.closeDialog(pendingId),
       showMain: () => wm.showMain(),
       notifyCompleted: (record) => notifier.show(path.join(record.dir, record.filename)),
-      setLaunchAtLogin: (enabled) => app.setLoginItemSettings({ openAtLogin: enabled, args: ["--hidden"] }),
+      setLaunchAtLogin,
       quit: () => app.quit(),
     },
     instagram: instagramDemoBase
@@ -106,11 +122,7 @@ async function start(): Promise<void> {
           signOut: () => instagramSession().clearStorageData(),
           openProfile: (username, cookies) =>
             new ProfileFeed(new ElectronInstagramPage(cookies), username, { site: instagramTestSite, signedIn: cookies.some((c) => c.name === "sessionid" && c.value) }),
-          crypt: {
-            available: () => safeStorage.isEncryptionAvailable(),
-            encrypt: (text) => safeStorage.encryptString(text),
-            decrypt: (data) => safeStorage.decryptString(data),
-          },
+          crypt: systemCrypt(process.platform, safeStorage),
           agent: chromeAgent(app.userAgentFallback),
         },
   });
@@ -119,21 +131,24 @@ async function start(): Promise<void> {
   controller = c;
   registerIpc(c);
   // let the extension start TurboDL; test runs (TURBODL_USER_DATA) must not touch the real browser registration
-  if (app.isPackaged && !process.env.TURBODL_USER_DATA && (process.platform === "win32" || process.platform === "darwin")) {
+  if (app.isPackaged && !process.env.TURBODL_USER_DATA) {
     void registerNativeHost({
       platform: process.platform,
       userDataDir: app.getPath("userData"),
       homeDir: app.getPath("home"),
       execPath: process.execPath,
       hostScript: nativeHostScript(),
+      env: process.env,
     }).catch((err: unknown) => console.warn("Could not register the browser launcher:", err));
     try {
-      writeCliLauncher({ platform: process.platform, userDataDir: app.getPath("userData"), execPath: process.execPath, script: cliScript(), launcherExe: cliLauncherExe() });
+      writeCliLauncher({ platform: process.platform, userDataDir: app.getPath("userData"), execPath: process.execPath, script: cliScript(), launcherExe: cliLauncherExe(), env: process.env });
     } catch (err) {
       console.warn("Could not write the turbodl launcher:", err);
     }
   }
   await c.init();
+  // a moved or newer AppImage rewrites the entry
+  if (process.platform === "linux" && app.isPackaged) setLaunchAtLogin(c.settings.launchAtLogin);
   watcher = new ClipboardWatcher({ read: () => clipboard.readText(), onText: (text) => void c.handleClipboardText(text) });
   watcher.start();
   tray = createTray({
@@ -142,7 +157,7 @@ async function start(): Promise<void> {
     onPauseAll: () => c.manager.stopAll(),
     onQuit: () => app.quit(),
   });
-  const hidden = isBackgroundLaunch(process.argv) || app.getLoginItemSettings().wasOpenedAtLogin;
+  const hidden = isBackgroundLaunch(process.argv) || (process.platform !== "linux" && app.getLoginItemSettings().wasOpenedAtLogin);
   if (!hidden) wm.showMain();
   void tray;
 }

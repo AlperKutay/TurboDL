@@ -2,6 +2,7 @@ import http from "node:http";
 import path from "node:path";
 import {
   isJobEnded,
+  parseIsoTime,
   type ApiInfo,
   type InstagramLoginResult,
   type Job,
@@ -63,7 +64,7 @@ export function isApiPath(p: string): boolean {
   return p === "/v1/info" || p === "/v1/jobs" || p.startsWith("/v1/jobs/") || p.startsWith("/v1/instagram/");
 }
 
-const BOOLEAN_OPTIONS = ["highlights", "highlightsOnly", "allCollections", "audio"] as const;
+const BOOLEAN_OPTIONS = ["highlights", "highlightsOnly", "allCollections", "audio", "postsOnly"] as const;
 
 function parseOptions(v: unknown): JobOptions | string {
   if (!isObj(v)) return "options";
@@ -83,6 +84,28 @@ function parseOptions(v: unknown): JobOptions | string {
       return "collections";
     }
     out.collections = c as string[];
+  }
+  if (v.since !== undefined) {
+    const iso = typeof v.since === "string" && v.since.length <= 100 ? parseIsoTime(v.since) : undefined;
+    if (iso === undefined) return "since";
+    out.since = iso;
+  }
+  if (v.limit !== undefined) {
+    if (typeof v.limit !== "number" || !Number.isInteger(v.limit) || v.limit < 1 || v.limit > 100_000) return "limit";
+    out.limit = v.limit;
+  }
+  if (v.known !== undefined) {
+    const k = v.known;
+    if (!Array.isArray(k) || k.length > 10_000 || !k.every((s) => typeof s === "string" && s.length >= 1 && s.length <= 64)) {
+      return "known";
+    }
+    out.known = k as string[];
+  }
+  if (!out.postsOnly && (out.since !== undefined || out.limit !== undefined || out.known !== undefined)) {
+    return "since, limit and known need postsOnly";
+  }
+  if (out.postsOnly && (out.highlights || out.highlightsOnly || out.collections || out.allCollections)) {
+    return "postsOnly can't be combined with highlights or collections";
   }
   if (out.highlights && out.highlightsOnly) return "highlights and highlightsOnly can't both be set";
   if (out.collections && out.allCollections) return "collections and allCollections can't both be set";

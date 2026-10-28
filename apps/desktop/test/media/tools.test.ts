@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { ToolManager, denoAssetName, extractZip, tarCommand, ytdlpAssetName } from "../../src/main/media/tools";
+import { makeZip } from "../fixtures/zip";
 import { startTestServer, type TestServer } from "../fixtures/test-server";
 
 let server: TestServer;
@@ -25,6 +26,8 @@ describe("asset names", () => {
     expect(denoAssetName("win32", "arm64")).toBe("deno-x86_64-pc-windows-msvc.zip");
     expect(denoAssetName("darwin", "arm64")).toBe("deno-aarch64-apple-darwin.zip");
     expect(denoAssetName("darwin", "x64")).toBe("deno-x86_64-apple-darwin.zip");
+    expect(ytdlpAssetName("linux")).toBe("yt-dlp_linux");
+    expect(denoAssetName("linux", "x64")).toBe("deno-x86_64-unknown-linux-gnu.zip");
   });
 });
 
@@ -72,6 +75,24 @@ describe("ToolManager", () => {
     await expect(manager([]).ensure()).rejects.toMatchObject({ status: 404 });
   });
 
+  it("downloads yt-dlp_linux and unpacks Deno without tar on Linux", async () => {
+    server.setFile("/yt/yt-dlp_linux", { data: Buffer.from("ytdlp-binary") });
+    server.setFile("/deno/deno-x86_64-unknown-linux-gnu.zip", { data: makeZip([{ name: "deno", data: "deno-binary" }]) });
+    const tm = new ToolManager({
+      dir: path.join(dir, "tools"),
+      ffmpegPath: null,
+      platform: "linux",
+      arch: "x64",
+      ytdlpBaseUrl: server.url("/yt"),
+      denoBaseUrl: server.url("/deno"),
+    });
+    const paths = await tm.ensure();
+    expect(paths.deno).toBe(tm.denoPath);
+    expect(readFileSync(tm.denoPath, "utf8")).toBe("deno-binary");
+    expect(existsSync(path.join(dir, "tools", "deno-x86_64-unknown-linux-gnu.zip"))).toBe(false);
+    if (process.platform !== "win32") expect(statSync(tm.denoPath).mode & 0o111).not.toBe(0);
+  });
+
   it("updates yt-dlp when it is older than a week", async () => {
     const updates: string[] = [];
     const tm = new ToolManager({ dir, ffmpegPath: null, platform: "darwin", runUpdate: async (p) => void updates.push(p) });
@@ -87,7 +108,7 @@ describe("ToolManager", () => {
 });
 
 describe("extractZip", () => {
-  it("extracts a zip with the system tar", async () => {
+  it.skipIf(process.platform === "linux")("extracts a zip with the system tar", async () => {
     const out = path.join(dir, "out");
     mkdirSync(out);
     writeFileSync(path.join(dir, "hello.txt"), "merhaba");

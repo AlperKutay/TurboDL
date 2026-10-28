@@ -65,6 +65,75 @@ describe("Jobs", () => {
     expect(job).toMatchObject({ state: "done", limited: true, reason: "signInRequired" });
   });
 
+  const POST = { code: "C1", url: "https://www.instagram.com/p/C1/", takenAt: null, pinned: false, owner: "u", taggedUsers: [], items: [] };
+
+  it("emits a post event and counts it in progress", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const jobs = make(async (job) => {
+      await gate;
+      job.start();
+      job.post(POST);
+      job.post({ ...POST, code: "C2" });
+      job.end({ state: "done" });
+    });
+    const job = jobs.create({ url: URL_A });
+    const events: JobEvent[] = [];
+    jobs.subscribe(job.id, (e) => events.push(e));
+    release();
+    const final = await jobs.ended(job.id)!;
+    expect(events.filter((e) => e.type === "post")).toMatchObject([{ jobId: "j1", post: { code: "C1" } }, { post: { code: "C2" } }]);
+    expect(final.progress.done).toBe(2);
+  });
+
+  it("sends no post event once ended", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const jobs = make(async (job) => {
+      await gate;
+      job.end({ state: "cancelled" });
+      job.post(POST);
+    });
+    const job = jobs.create({ url: URL_A });
+    const events: JobEvent[] = [];
+    jobs.subscribe(job.id, (e) => events.push(e));
+    release();
+    const final = await jobs.ended(job.id)!;
+    expect(events.some((e) => e.type === "post")).toBe(false);
+    expect(final.progress.done).toBe(0);
+  });
+
+  it("counts its followers", () => {
+    const jobs = make(() => new Promise(() => undefined));
+    const job = jobs.create({ url: URL_A });
+    const record = jobs["records"].get(job.id)!;
+    expect(record.followers).toBe(0);
+    const off = jobs.subscribe(job.id, () => undefined)!;
+    expect(record.followers).toBe(1);
+    off();
+    expect(record.followers).toBe(0);
+  });
+
+  it("tells when a client first follows it, or when it is cancelled first", async () => {
+    const jobs = make(() => new Promise(() => undefined));
+    const record = (id: string) => jobs["records"].get(id)!;
+    const followedJob = record(jobs.create({ url: URL_A }).id);
+    let followed = false;
+    const waiting = followedJob.followed().then(() => (followed = true));
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(followed).toBe(false);
+    jobs.subscribe(followedJob.id, () => undefined);
+    await waiting;
+    expect(followed).toBe(true);
+    // a follower already there: at once
+    await followedJob.followed();
+    const cancelled = record(jobs.create({ url: URL_A }).id);
+    const stillWaiting = cancelled.followed();
+    jobs.cancel(cancelled.id);
+    await stillWaiting;
+    expect(cancelled.followers).toBe(0);
+  });
+
   it("ends a job whose runner throws as failed, with the message", async () => {
     const jobs = make(async () => {
       throw new Error("boom");

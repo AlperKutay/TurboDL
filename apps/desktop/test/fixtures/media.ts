@@ -1,13 +1,20 @@
-import { execFileSync, spawnSync } from "node:child_process";
-import { mkdirSync, readFileSync, readdirSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { existsSync, mkdirSync, readFileSync, readdirSync } from "node:fs";
 import { createRequire } from "node:module";
 import path from "node:path";
 import type { TestServer } from "./test-server";
 
-export const FFMPEG = createRequire(__filename)("ffmpeg-static") as string;
+/** The ffmpeg the app ships: on Linux, BtbN's build fetched by scripts/fetch-ffmpeg-linux.mjs when it is there. */
+const LINUX_FFMPEG = path.join(__dirname, "..", "..", "build", "ffmpeg-linux", "ffmpeg");
+export const FFMPEG =
+  process.platform === "linux" && existsSync(LINUX_FFMPEG) ? LINUX_FFMPEG : (createRequire(__filename)("ffmpeg-static") as string);
 
-function ff(args: string[]): void {
-  execFileSync(FFMPEG, ["-hide_banner", "-loglevel", "error", "-y", ...args], { windowsHide: true });
+/** Runs the bundled ffmpeg; a failure carries its exit status, signal and stderr (execFileSync's message drops them). */
+export function ff(args: string[]): void {
+  const res = spawnSync(FFMPEG, ["-hide_banner", "-loglevel", "error", "-y", ...args], { windowsHide: true, encoding: "utf8" });
+  if (res.status !== 0) {
+    throw new Error(`ffmpeg ${args.join(" ")} failed (status ${res.status}, signal ${res.signal}): ${res.stderr || res.error}`);
+  }
 }
 
 const VIDEO = ["-f", "lavfi", "-i", "testsrc=size=320x240:rate=25"];

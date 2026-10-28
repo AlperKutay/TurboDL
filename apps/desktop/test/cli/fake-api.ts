@@ -53,7 +53,7 @@ export async function startFakeApi(): Promise<FakeApi> {
 
   const handlers: ApiHandlers = {
     token: () => TOKEN,
-    info: async (): Promise<ApiInfo> => ({ app: "turbodl", version: "1.2.3", api: 1, instagram: fake.instagram }),
+    info: async (): Promise<ApiInfo> => ({ app: "turbodl", version: "1.2.3", api: 1, instagram: fake.instagram, features: ["posts"] }),
     createJob: (request) => {
       const job = makeJob(`job${jobs.size + 1}`, { url: request.url, state: "queued" });
       jobs.set(job.id, job);

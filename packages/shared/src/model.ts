@@ -169,7 +169,7 @@ export type SavedPageResult = { type: "page"; page: SavedPage } | { type: "signe
 
 /** A profile as its screen shows it, or why it can't. */
 export type ProfileResult =
-  /** `limited`: seen as signed-out visitors see it (its first posts only; backups and highlights' stories need sign-in) */
+  /** `limited`: seen as signed-out visitors see it (every post is read from its own page, more slowly) */
   | { type: "profile"; profile: InstagramProfile; highlights: Highlight[]; limited?: boolean }
   | { type: "signedOut" }
   | { type: "rateLimited" }
@@ -298,6 +298,8 @@ export interface CliStatus {
   supported: boolean;
   installed: boolean;
   where: string;
+  /** Linux: whether ~/.local/bin is on the PATH TurboDL started with */
+  onPath?: boolean;
 }
 
 export type DownloadDecision = { filename: string; dir: string; mode: "now" | "later" };

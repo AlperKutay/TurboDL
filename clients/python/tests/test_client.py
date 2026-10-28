@@ -182,6 +182,20 @@ class ClientTests(ClientCase):
             else:
                 os.environ["TURBODL_USER_DATA"] = old
 
+    def _linux_user_data_dir(self, extra: dict) -> str:
+        env = {k: v for k, v in os.environ.items() if k not in ("TURBODL_USER_DATA", "XDG_CONFIG_HOME")}
+        env.update(extra)
+        with mock.patch.object(sys, "platform", "linux"), mock.patch.dict(os.environ, env, clear=True):
+            return _discover.user_data_dir()
+
+    def test_user_data_dir_on_linux_follows_xdg_config_home(self) -> None:
+        self.assertEqual(self._linux_user_data_dir({"XDG_CONFIG_HOME": "/x/cfg"}), os.path.join("/x/cfg", "TurboDL"))
+
+    def test_user_data_dir_on_linux_defaults_to_dot_config(self) -> None:
+        expected = os.path.join(os.path.expanduser("~"), ".config", "TurboDL")
+        self.assertEqual(self._linux_user_data_dir({}), expected)
+        self.assertEqual(self._linux_user_data_dir({"XDG_CONFIG_HOME": ""}), expected)
+
 
 class Python39Syntax(unittest.TestCase):
     def test_modules_parse_as_3_9(self) -> None:

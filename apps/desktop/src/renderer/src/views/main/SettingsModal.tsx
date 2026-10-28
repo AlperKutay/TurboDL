@@ -190,6 +190,11 @@ export function SettingsModal({ settings, version, onClose }: { settings: Settin
             <p className="muted">
               The turbodl command is installed ({cli.where}). Open a new terminal and run <code>turbodl --help</code>.
             </p>
+            {cli.onPath === false && (
+              <p className="muted">
+                ~/.local/bin isn't on your PATH yet. Log out and back in: most systems add it at login once it exists. If turbodl still isn't found, add <code>export PATH="$HOME/.local/bin:$PATH"</code> to ~/.profile.
+              </p>
+            )}
             <button type="button" className="btn" disabled={cliBusy} onClick={() => void changeCli(api.removeCli)}>
               Remove
             </button>

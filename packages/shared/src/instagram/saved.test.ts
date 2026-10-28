@@ -3,7 +3,7 @@ import collectionPage from "./fixtures/instagram-collection-page.json?raw";
 import collections1 from "./fixtures/instagram-collections-1.json?raw";
 import collections2 from "./fixtures/instagram-collections-2.json?raw";
 import savedPageFixture from "./fixtures/instagram-saved-page.json?raw";
-import { SavedError, savedCollections, savedPage, savedUsername } from "./saved";
+import { SavedError, savedCollections, savedPage, savedPost, savedUsername } from "./saved";
 
 /** The SavedError a call throws, or undefined. */
 function failure(call: () => unknown): Pick<SavedError, "kind" | "status"> | undefined {
@@ -33,6 +33,18 @@ describe("saved feeds", () => {
     expect(page.posts.map((p) => p.id)).toEqual(["3700000000000000002", "3700000000000000004"]);
     expect(page.posts[0].items[0].mediaId).toBe("3700000000000000002");
     expect(page.next).toBeUndefined();
+  });
+
+  it("carries a post's caption and tagged users from its v1 node", () => {
+    const media = {
+      pk: "3700000000000000009",
+      code: "DS9tags",
+      taken_at: 1790000000,
+      caption: { text: "Saved hello" },
+      usertags: { in: [{ user: { username: "friend_one" } }, { user: { username: "friend_two" } }] },
+      image_versions2: { candidates: [{ url: "https://cdn.example/s9.jpg", width: 1080, height: 1080 }] },
+    };
+    expect(savedPost(media)).toMatchObject({ takenAt: 1790000000, caption: "Saved hello", taggedUsers: ["friend_one", "friend_two"] });
   });
 
   it("keeps a carousel's photo and video children apart", () => {
@@ -73,5 +85,12 @@ describe("saved collections", () => {
     expect(found.list[1].cover).toContain("trips_");
     expect(found.hasMore).toBe(false);
     expect(savedCollections([collections1]).hasMore).toBe(true);
+  });
+
+  it("keeps a saved post's time, caption and tagged users", () => {
+    const page = savedPage(savedPageFixture, 200);
+    expect(page.posts[0].takenAt).toBe(1790000000);
+    expect(page.posts.every((p) => Array.isArray(p.taggedUsers))).toBe(true);
+    expect(page.posts[0].taggedUsers).toEqual([]);
   });
 });

@@ -108,8 +108,8 @@ describe("CompletionNotifier", () => {
     expect(revealed).toEqual(["C:\\dl\\clip.mp4"]);
   });
 
-  it("elsewhere, opens the folder from the notification's click and keeps recent notifications alive", () => {
-    const { notifier, made, revealed } = setup("darwin");
+  it.each(["darwin", "linux"] as const)("elsewhere (%s), opens the folder from the notification's click and keeps recent notifications alive", (platform) => {
+    const { notifier, made, revealed } = setup(platform);
     notifier.show("/dl/a.zip");
     notifier.show("/dl/b.zip");
     notifier.show("/dl/c.zip");

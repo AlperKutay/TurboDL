@@ -1,6 +1,6 @@
 # TurboDL
 
-A download manager for Windows and macOS, inspired by IDM. It comes with a browser extension for Chrome, Edge, Brave, Opera, Vivaldi, Arc and Firefox.
+A download manager for Windows, macOS and Linux, inspired by IDM. It comes with a browser extension for Chrome, Edge, Brave, Opera, Vivaldi, Arc and Firefox.
 
 ## Features
 
@@ -12,11 +12,11 @@ A download manager for Windows and macOS, inspired by IDM. It comes with a brows
 - **Queue and scheduler** — start downloads at a set time and shut down or sleep the computer when they finish.
 - **Automatic sorting** — files go into Video, Music, Programs, Archives, Documents, Images and Other folders.
 - **Clipboard** — copying a download link offers to download it.
-- **Notifications** — clicking "Download complete" shows the file in File Explorer or Finder.
+- **Notifications** — clicking "Download complete" shows the file in File Explorer, Finder or your file manager.
 
 ## Command line
 
-The installed app comes with a `turbodl` command. Open **Settings → Command line → Install command line tool** to add it to your PATH (on macOS it asks for an administrator password to link it into `/usr/local/bin`), then open a new terminal. **Remove** takes it away again. TurboDL starts by itself if it is not running.
+The installed app comes with a `turbodl` command. Open **Settings → Command line → Install command line tool** to add it to your PATH (on macOS it asks for an administrator password to link it into `/usr/local/bin`; on Linux it links `turbodl` into `~/.local/bin`, with no password), then open a new terminal. On Linux, if `~/.local/bin` was not on your PATH before, log out and back in, or add `export PATH="$HOME/.local/bin:$PATH"` to `~/.profile`. **Remove** takes it away again. TurboDL starts by itself if it is not running.
 
 ```bash
 turbodl get https://example.com/file.zip                    # download and wait until it finishes
@@ -25,6 +25,7 @@ turbodl get https://www.instagram.com/someone/ --highlights # ... and its highli
 turbodl get https://www.instagram.com/someone/ --highlights-only
 turbodl get https://www.instagram.com/someone/saved/ --collection "Travel"   # a Saved collection (repeat the option, or use --all-collections)
 turbodl get https://x.com/someone/status/123 --dir D:\Videos   # an X link into a folder
+turbodl posts https://www.instagram.com/someone/ --since 2026-01-01 --limit 20   # list a profile's posts, save nothing
 turbodl add https://example.com/a.zip https://example.com/b.zip   # queue and return at once; prints the job ids
 turbodl wait <id> [<id>...]                                 # wait until queued jobs finish
 turbodl list                                                # all jobs
@@ -37,15 +38,16 @@ Other options for `get` and `add`: `--name <file>` (one link only), `--audio`, `
 
 - Instagram downloads always go to TurboDL's Instagram folders, whatever `--dir` says.
 - Profiles and highlights work without signing in, more slowly (each post is read from its own page). Posts Instagram shows only to signed-in visitors are skipped: the rest are saved, and the command ends with exit code 3. Saved, story links and private profiles need `turbodl instagram login`.
+- `turbodl posts <link>` lists an Instagram profile's or post's posts without saving anything: one line per post with its code, time and item count (`pinned`, `sign-in only` or `known` follow when they apply). `--since <ISO time>` (`2026-01-01`, read as UTC, or a time ending in `Z` or `+02:00`) stops at the first post taken at or before it that isn't pinned, past the first 3 positions: a profile can pin up to 3 posts at its top, so up to 3 older posts there are still listed. `--limit <n>` caps the posts listed. Tagged users are read signed out too. With `--json`, `posts` prints every event of the list (the job, its warnings and its end too), not only the posts. It doesn't reconnect: when TurboDL quits mid-list, it exits with code 5.
 - `--json` prints one JSON object per line, for scripts.
-- Ctrl+C in `get` or `wait` cancels the jobs it is waiting for; a second Ctrl+C gives up at once.
+- Ctrl+C in `get`, `posts` or `wait` cancels the jobs it is waiting for; a second Ctrl+C gives up at once.
 
 | Exit code | Meaning |
 | --- | --- |
 | 0 | Done |
 | 1 | Failed |
 | 2 | Usage mistake |
-| 3 | Instagram sign-in needed, or some of a profile's posts are shown only to signed-in visitors (the rest were saved) |
+| 3 | Instagram sign-in needed, or some of a profile's posts are shown only to signed-in visitors (the rest were saved), or a post list ended with posts shown only to signed-in visitors |
 | 4 | Instagram asked TurboDL to slow down |
 | 5 | TurboDL could not be reached |
 | 6 | Stopped in TurboDL or by another client |
@@ -53,7 +55,15 @@ Other options for `get` and `add`: `--name <file>` (one link only), `--audio`, `
 
 ### Local API
 
-Other programs can use the same engine. While TurboDL runs it writes `api.json` in its user data folder (`%APPDATA%\TurboDL` on Windows, `~/Library/Application Support/TurboDL` on macOS) with the port and an access token. Send requests to `127.0.0.1` on that port with the header `Authorization: Bearer <token>`: `POST /v1/jobs` starts a job, and `GET /v1/jobs/<id>/events` streams its progress as newline-delimited JSON. The API listens on this computer only; keep the token private.
+Other programs can use the same engine. While TurboDL runs it writes `api.json` in its user data folder (`%APPDATA%\TurboDL` on Windows, `~/Library/Application Support/TurboDL` on macOS, `~/.config/TurboDL` on Linux, or `$XDG_CONFIG_HOME/TurboDL` when that is set) with the port and an access token. Send requests to `127.0.0.1` on that port with the header `Authorization: Bearer <token>`: `POST /v1/jobs` starts a job, and `GET /v1/jobs/<id>/events` streams its progress as newline-delimited JSON. The API listens on this computer only; keep the token private. `GET /v1/info` lists `"features": ["posts"]` when the app can list posts.
+
+**Post lists.** `POST /v1/jobs` with `options.postsOnly: true` lists a profile's or a post or reel link's posts and saves nothing. Optional `since` (`YYYY-MM-DD` as UTC, or a date-time with `Z` or `±HH:MM`), `limit` (1 to 100000) and `known` (up to 10000 shortcodes, sent back as stubs without being read). `postsOnly` can't be combined with `highlights`, `highlightsOnly`, `collections` or `allCollections` (400). Each post is an event:
+
+```json
+{"type":"post","post":{"code":"…","url":"…","takenAt":"2026-01-02T03:04:05.000Z","pinned":false,"owner":"…","caption":"…","taggedUsers":[],"items":[{"kind":"video","url":"…","mediaId":"…","width":1080,"height":1920,"duration":12.5}]}}
+```
+
+`takenAt` is an ISO time or `null`; `caption`, `signInOnly` and `known` appear only when they apply; an item's `kind` is `image` or `video`, and its `mediaId`, `width`, `height` and `duration` can be missing (reels signed out often have no `duration`). The list stops at the first post taken at or before `since` that isn't pinned, past the first 3 positions: a profile can pin up to 3 posts at its top, and Instagram doesn't always mark them (signed out, never), so up to 3 old posts at the top are sent. A post whose page shows nothing, read twice, is left out, counted in the job's `failedItems` and named in a warning. It ends with `done`; `done` with `limited` and a warning when some posts are shown only to signed-in visitors; or `failed` with `rateLimited`, `private`, `signInRequired` (the session expired, or a post link Instagram shows only to signed-in visitors), `unsupported` (stories, highlights, Saved and other sites) or `error` (also a profile or post link whose page showed nothing: it may not exist, or the page was too slow, so it isn't `notFound`). A list reads nothing until a client follows its events, and one nobody follows for 60 seconds is cancelled.
 
 ## Python
 
@@ -78,12 +88,18 @@ for event in job.events():           # dicts, as the API sends them
     print(event)
 job.wait()
 
+posts = tdl.posts("https://www.instagram.com/nasa/", since="2026-01-01", limit=20)
+for post in posts:
+    print(post.code, post.taken_at, len(post.items))    # lists posts, saves nothing
+print(posts.job.failed_items, posts.job.warnings)       # the posts whose page showed nothing
+
 tdl.jobs(); tdl.job(job.id); tdl.cancel(job.id)
 tdl.instagram_login(); tdl.instagram_logout(); tdl.info()
 ```
 
 - Options are the command's, in snake_case: `dir`, `name`, `audio`, `max_height`, `highlights`, `highlights_only`, `collections`, `all_collections`. A relative `dir` is resolved against the process's current working directory.
 - `get()` and `Job.wait()` return the `Job` when it ends `done` and raise otherwise; a `limited` job (a profile saved without signing in, all but the posts Instagram shows only to signed-in visitors) ends `done` but still raises `SignInRequired`. The exceptions for how a job ended, and `AppNotReachable` when TurboDL quits during `get()`, `wait()` or `events()`, carry the job as `e.job`, with the files already saved. All derive from `TurboDLError`.
+- `posts(url, since=None, limit=None, known=None)` is eager: it checks the app, starts the list and opens its events stream when called, and returns a `PostList`. Iterate it for `Post` objects: `code`, `url`, `taken_at` (aware UTC or `None`), `pinned`, `owner`, `caption`, `tagged_users`, `sign_in_only`, `known` and `items`, a list of `PostItem` (`kind`, `"image"` or `"video"`; `url`, `media_id`, `width`, `height`, `duration`). Its `job` is the `Job` being followed, kept up to date as the list runs: after the loop, `job.failed_items` counts the posts left out because their page showed nothing, and `job.warnings` says so. It doesn't reconnect: a stream that breaks raises `AppNotReachable`. The exceptions below are raised at the end (`SignInRequired` after all posts when some were shown only to signed-in visitors). `close()`, leaving the loop early or Ctrl+C cancels the job, before the first post too. An app older than 0.8.0 raises `TurboDLError("Update TurboDL to 0.8.0 or newer to list posts.")`.
 - `wait(timeout=...)` raises the built-in `TimeoutError` when the time is up and leaves the job running; `get()` waits as long as the job runs.
 
 | Exception | Raised when |
@@ -95,11 +111,28 @@ tdl.instagram_login(); tdl.instagram_logout(); tdl.info()
 | `AppNotReachable` | TurboDL is not installed or opened yet, did not start in time, or quit while a job was running |
 
 - Ctrl+C (`KeyboardInterrupt`) inside `get()` or `wait()` cancels the job, then raises again.
-- The package finds TurboDL through `api.json` in its user data folder. Pass `TurboDL(user_data="...")` or set the `TURBODL_USER_DATA` environment variable to use another folder.
+- The package finds TurboDL through `api.json` in its user data folder (`%APPDATA%\TurboDL` on Windows, `~/Library/Application Support/TurboDL` on macOS, `~/.config/TurboDL` on Linux). Pass `TurboDL(user_data="...")` or set the `TURBODL_USER_DATA` environment variable to use another folder.
 
 ## Download
 
-Installers for Windows and macOS and the Firefox add-on are on the [Releases](https://github.com/AlperKutay/TurboDL/releases) page.
+Installers for Windows, macOS and Linux and the Firefox add-on are on the [Releases](https://github.com/AlperKutay/TurboDL/releases) page.
+
+### Linux
+
+TurboDL runs on Linux x64. It is built for glibc 2.28 or newer and tested on Ubuntu 22.04 and 24.04; other distributions with glibc 2.28 or newer should work. Older systems are not supported. Two files are on the Releases page:
+
+- **.deb** (Ubuntu, Debian and other .deb systems): `sudo apt install ./TurboDL-<version>-amd64.deb`. It installs to `/opt/TurboDL` and adds TurboDL to the app menu. Remove it with `sudo apt remove turbodl`.
+- **AppImage** (any x64 distribution, no install): `chmod +x TurboDL-<version>-x86_64.AppImage`, then run it. It needs libfuse2 (`libfuse2` on Ubuntu 22.04, `libfuse2t64` on 24.04).
+
+Notes:
+
+- After moving the AppImage or switching to a newer one, start it once from its new place, so the browser extension, `turbodl` and Launch at login follow.
+- The program is `turbodl-app`; `turbodl` is the command-line tool.
+- TurboDL shows a tray icon where the desktop has an AppIndicator/StatusNotifier host (on GNOME, the AppIndicator extension). Without one, start TurboDL again (from the app menu for the .deb, or by running the AppImage) to show its window.
+- Firefox or Chromium installed as a Snap may not be able to start TurboDL. Open it yourself then.
+- Opera's Linux folder for the extension's connection to TurboDL has not been confirmed yet.
+- Without a keyring, the Instagram sign-in lasts until TurboDL quits.
+- TurboDL is not signed and does not update itself; download new versions from Releases.
 
 ## Build from source
 
@@ -110,7 +143,9 @@ pnpm install
 pnpm dist
 ```
 
-The installer is created in `apps/desktop/release/` (`.exe` on Windows, `.dmg` on macOS). The app is not signed, so Windows and macOS show a warning the first time you open it.
+The installer is created in `apps/desktop/release/` (`.exe` on Windows, `.dmg` on macOS, `.deb` and `.AppImage` on Linux, built on Linux). The app is not signed, so Windows and macOS show a warning the first time you open it.
+
+On Linux the build fetches [BtbN's ffmpeg](https://github.com/BtbN/FFmpeg-Builds) (`apps/desktop/scripts/fetch-ffmpeg-linux.mjs`, checked against the release's SHA-256 list), whose glibc is the system's.
 
 ### Browser extension
 
@@ -146,7 +181,7 @@ apps/extension     browser extension (Manifest V3)
 
 ## Notes
 
-- yt-dlp and Deno are downloaded on first use. ffmpeg is bundled through [ffmpeg-static](https://github.com/eugeneware/ffmpeg-static). These tools have their own licenses.
+- yt-dlp and Deno are downloaded on first use. ffmpeg is bundled through [ffmpeg-static](https://github.com/eugeneware/ffmpeg-static) on Windows and macOS, and from [BtbN's FFmpeg-Builds](https://github.com/BtbN/FFmpeg-Builds) on Linux. These tools have their own licenses.
 - DRM-protected videos cannot be downloaded. Respect the terms of the sites you download from.
 - Signed in, Instagram features use your own Instagram session (stored encrypted). TurboDL paces its requests and stops when Instagram asks it to slow down, but Instagram may still limit accounts (or, signed out, this computer) that download a lot.
 - TurboDL is not affiliated with Internet Download Manager.

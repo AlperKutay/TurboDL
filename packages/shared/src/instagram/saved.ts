@@ -1,5 +1,5 @@
 import { arr, dict, int, isJson, objectsInDocuments, parseDocument, str, url, type Json } from "./json";
-import { preview, v1Items, type InstagramItem } from "./media";
+import { preview, v1Details, v1Items, type InstagramItem } from "./media";
 
 /** Which saved posts: all of them, or one of the account's collections. */
 export type SavedSource = { kind: "all" } | { kind: "collection"; id: string };
@@ -19,6 +19,10 @@ export interface SavedPost {
   mediaType?: number;
   /** shown only to signed-in visitors: a signed-out read can't open it */
   signInOnly?: true;
+  /** unix seconds */
+  takenAt?: number;
+  caption?: string;
+  taggedUsers?: string[];
 }
 
 /** One page of a saved feed; `next` is the following page's cursor, absent on the last one. */
@@ -95,7 +99,8 @@ export function savedPost(media: Json): SavedPost | undefined {
   if (items.length === 0) return undefined;
   const cover = preview(candidates(media)) ?? items[0].thumbnail ?? items[0].url;
   const code = str(media.code);
-  return { id, ...(code ? { code } : {}), cover, items };
+  const { takenAt, caption, taggedUsers } = v1Details(media);
+  return { id, ...(code ? { code } : {}), cover, items, ...(takenAt !== undefined ? { takenAt } : {}), ...(caption ? { caption } : {}), taggedUsers };
 }
 
 function collection(node: Json): SavedCollection | undefined {

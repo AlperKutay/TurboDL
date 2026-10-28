@@ -23,6 +23,11 @@ export function ffmpegPath(): string | null {
     const bundled = path.join(process.resourcesPath, "ffmpeg", process.platform === "win32" ? "ffmpeg.exe" : "ffmpeg");
     return existsSync(bundled) ? bundled : null;
   }
+  // Linux packages ship BtbN's ffmpeg (scripts/fetch-ffmpeg-linux.mjs): ffmpeg-static's crashes with current glibc
+  if (process.platform === "linux") {
+    const fetched = path.join(app.getAppPath(), "build", "ffmpeg-linux", "ffmpeg");
+    if (existsSync(fetched)) return fetched;
+  }
   try {
     const dev = require("ffmpeg-static") as string | null;
     return dev && existsSync(dev) ? dev : null;

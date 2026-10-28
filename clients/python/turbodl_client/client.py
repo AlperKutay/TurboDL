@@ -2,17 +2,26 @@
 
 import os
 import time
-from typing import Any, Callable, Dict, Generator, List, Optional, Set
+from datetime import datetime, timezone
+from typing import Any, Callable, Dict, Generator, Iterable, List, Optional, Set, Union
 
 from . import _discover
 from ._http import request, stream_lines
 from .errors import TurboDLError
 from .job import Job
+from .posts import PostList
 
 API_VERSION = 1
 # When an events stream closes without `end`, how long the app gets to answer again before it counts as quit.
 RECONNECT_WINDOW = 5.0
 RECONNECT_POLL = 0.25
+
+
+def _iso_utc(moment: datetime) -> str:
+    """`YYYY-MM-DDTHH:MM:SS[.ffffff]Z` in UTC; a naive datetime is taken as UTC."""
+    moment = (moment.replace(tzinfo=timezone.utc) if moment.tzinfo is None else moment).astimezone(timezone.utc)
+    fraction = ".%06d" % moment.microsecond if moment.microsecond else ""
+    return moment.strftime("%Y-%m-%dT%H:%M:%S") + fraction + "Z"
 
 
 class TurboDL:
@@ -107,6 +116,28 @@ class TurboDL:
         job = self.add(url, dir, name, audio=audio, max_height=max_height, highlights=highlights,
                        highlights_only=highlights_only, collections=collections, all_collections=all_collections)
         return job.wait(on_event=on_event)
+
+    def posts(self, url: str, since: Union[datetime, str, None] = None, limit: Optional[int] = None,
+              known: Optional[Iterable[str]] = None) -> PostList:
+        """The posts of an Instagram profile or post, as TurboDL finds them: a PostList, an iterator of Post.
+
+        The app is checked, the list started and its events stream opened when this is called (an old app, or a
+        stream that won't open, raises here); the PostList reads the posts, and its `job` follows the list
+        (`job.failed_items` counts the posts whose page showed nothing). `since` is a datetime (naive means UTC) or an
+        ISO 8601 string; `known` holds post codes to report as details-free stubs. When the list ends it raises as
+        `Job.wait()` does (SignInRequired after the posts it could get, RateLimited, JobFailed, Cancelled); a stream
+        that breaks raises AppNotReachable. `close()`, leaving early or Ctrl+C cancels the list."""
+        if "posts" not in (self.info().get("features") or []):
+            raise TurboDLError("Update TurboDL to 0.8.0 or newer to list posts.")
+        options = {"postsOnly": True}  # type: Dict[str, Any]
+        if since is not None:
+            options["since"] = _iso_utc(since) if isinstance(since, datetime) else since
+        if limit is not None:
+            options["limit"] = limit
+        if known is not None:
+            options["known"] = list(known)
+        job = Job(self._call("POST", "/v1/jobs", {"url": url, "options": options})["job"], self)
+        return PostList(self, job)
 
     def instagram_login(self) -> Dict[str, Any]:
         """Opens TurboDL's Instagram sign-in and waits for it: {"signed_in": bool, "username": Optional[str]}."""
