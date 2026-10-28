@@ -3,6 +3,7 @@ import { createWriteStream, existsSync, promises as fsp, statSync } from "node:f
 import path from "node:path";
 import { pipeline } from "node:stream/promises";
 import { HttpError, request } from "../engine/http";
+import { unzip } from "./unzip";
 
 export interface ToolPaths {
   ytdlp: string;
@@ -28,6 +29,7 @@ const WEEK = 7 * 24 * 3600 * 1000;
 export function ytdlpAssetName(platform: NodeJS.Platform): string {
   if (platform === "win32") return "yt-dlp.exe";
   if (platform === "darwin") return "yt-dlp_macos";
+  if (platform === "linux") return "yt-dlp_linux";
   return "yt-dlp";
 }
 
@@ -46,7 +48,9 @@ export function tarCommand(): string {
   return "tar";
 }
 
-export function extractZip(zip: string, dest: string): Promise<void> {
+/** Linux uses TurboDL's own reader: GNU tar cannot read zip files. Windows and macOS use bsdtar. */
+export function extractZip(zip: string, dest: string, platform: NodeJS.Platform = process.platform): Promise<void> {
+  if (platform === "linux") return unzip(zip, dest);
   return new Promise((resolve, reject) => {
     const child = spawn(tarCommand(), ["-xf", zip, "-C", dest], { windowsHide: true, stdio: "ignore" });
     child.on("error", reject);
@@ -125,7 +129,7 @@ export class ToolManager {
         const zip = path.join(this.o.dir, asset);
         await downloadFile(`${this.o.denoBaseUrl ?? DENO_BASE}/${asset}`, zip);
         await fsp.mkdir(path.dirname(this.denoPath), { recursive: true });
-        await (this.o.extractZip ?? extractZip)(zip, path.dirname(this.denoPath));
+        await (this.o.extractZip ?? ((z, d) => extractZip(z, d, this.platform)))(zip, path.dirname(this.denoPath));
         await fsp.rm(zip, { force: true });
         if (this.platform !== "win32" && existsSync(this.denoPath)) await fsp.chmod(this.denoPath, 0o755);
         deno = existsSync(this.denoPath) ? this.denoPath : null;
