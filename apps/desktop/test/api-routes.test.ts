@@ -213,6 +213,9 @@ describe("jobs", () => {
   it.each([
     ["a since nobody can read", { postsOnly: true, since: "not a date" }, "since"],
     ["a non-string since", { postsOnly: true, since: 5 }, "since"],
+    ["a numeric-string since", { postsOnly: true, since: "1" }, "since"],
+    ["a non-ISO since", { postsOnly: true, since: "October 1" }, "since"],
+    ["a since without an offset", { postsOnly: true, since: "2026-01-01T00:00:00" }, "since"],
     ["a zero limit", { postsOnly: true, limit: 0 }, "limit"],
     ["a fractional limit", { postsOnly: true, limit: 1.5 }, "limit"],
     ["a limit over 100000", { postsOnly: true, limit: 100_001 }, "limit"],

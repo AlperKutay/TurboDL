@@ -2,6 +2,7 @@ import http from "node:http";
 import path from "node:path";
 import {
   isJobEnded,
+  parseIsoTime,
   type ApiInfo,
   type InstagramLoginResult,
   type Job,
@@ -85,9 +86,9 @@ function parseOptions(v: unknown): JobOptions | string {
     out.collections = c as string[];
   }
   if (v.since !== undefined) {
-    const ms = typeof v.since === "string" && v.since.length <= 100 ? Date.parse(v.since) : NaN;
-    if (Number.isNaN(ms)) return "since";
-    out.since = new Date(ms).toISOString();
+    const iso = typeof v.since === "string" && v.since.length <= 100 ? parseIsoTime(v.since) : undefined;
+    if (iso === undefined) return "since";
+    out.since = iso;
   }
   if (v.limit !== undefined) {
     if (typeof v.limit !== "number" || !Number.isInteger(v.limit) || v.limit < 1 || v.limit > 100_000) return "limit";

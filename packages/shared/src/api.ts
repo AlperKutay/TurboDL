@@ -141,3 +141,32 @@ export interface InstagramLoginResult {
 export function isJobEnded(state: JobState): boolean {
   return state === "done" || state === "failed" || state === "cancelled";
 }
+
+const ISO_DATE = /^(\d{4})-(\d{2})-(\d{2})$/;
+const ISO_DATE_TIME = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(?:\.\d{1,9})?)?(Z|[+-](\d{2}):(\d{2}))$/;
+
+/**
+ * Reads an ISO 8601 time and returns it as `toISOString()` text, or undefined for anything else.
+ * Accepts `YYYY-MM-DD` (UTC midnight) and `YYYY-MM-DDTHH:MM[:SS[.fraction]]` with a required `Z` or `±HH:MM`.
+ */
+export function parseIsoTime(s: string): string | undefined {
+  const d = ISO_DATE.exec(s);
+  if (d) {
+    const ms = Date.parse(`${s}T00:00:00.000Z`);
+    if (Number.isNaN(ms)) return undefined;
+    const iso = new Date(ms).toISOString();
+    return iso.startsWith(s) ? iso : undefined;
+  }
+  const t = ISO_DATE_TIME.exec(s);
+  if (!t) return undefined;
+  const [, y, mo, da, h, mi, sec, , oh, om] = t;
+  if (+h > 23 || +mi > 59 || (sec !== undefined && +sec > 59)) return undefined;
+  if (oh !== undefined && (+oh > 23 || +om > 59)) return undefined;
+  const ms = Date.parse(s);
+  if (Number.isNaN(ms)) return undefined;
+  // the calendar date must exist (no roll-over from 2026-02-30)
+  if (Number.isNaN(Date.parse(`${y}-${mo}-${da}T00:00:00.000Z`)) || !new Date(Date.parse(`${y}-${mo}-${da}T00:00:00.000Z`)).toISOString().startsWith(`${y}-${mo}-${da}`)) {
+    return undefined;
+  }
+  return new Date(ms).toISOString();
+}
