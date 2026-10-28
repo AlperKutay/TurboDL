@@ -98,7 +98,7 @@ const MOST_PINNED = 3;
 const UNREADABLE_RUN = 3;
 /** a list ended by that many: it would otherwise read the whole profile, nothing ever ending it at `since` */
 const PAGES_CHANGED: ListRefusal = { type: "refused", error: "TurboDL couldn't read 3 posts in a row from their pages; Instagram may have changed them, or is slow.", reason: "error" };
-/** a list whose next page names its own cursor again, or brings only posts it already took: it would read on forever */
+/** a list whose next page names its own cursor again, or brings only posts it already took and names a next one: it would read on forever */
 const LISTING_STALLED: ListRefusal = { type: "refused", error: "Instagram kept answering the same posts; TurboDL stopped the list.", reason: "error" };
 
 /**
@@ -271,9 +271,10 @@ export class ProfileService {
       const at = cursor;
       // signed out, a next page takes the read slot too
       const page = await (source.limited && at !== undefined ? this.deps.read(() => this.paged(source, at, signal), signal) : this.paged(source, at, signal));
-      // a next page with nothing new would have the list ask on forever; an empty last page is the profile's end
+      // a next page with nothing new and a cursor on would have the list ask on forever; a last page (no cursor on),
+      // empty or repeating posts, is the profile's end
       const brought = page.posts.some((entry) => entry.code && !taken.has(entry.code));
-      if (at !== undefined && !brought && (page.posts.length > 0 || page.next)) return LISTING_STALLED;
+      if (at !== undefined && !brought && page.next) return signal.aborted ? LIST_CANCELLED : LISTING_STALLED;
       for (const entry of page.posts) {
         if (full()) return ended();
         if (signal.aborted) return LIST_CANCELLED;

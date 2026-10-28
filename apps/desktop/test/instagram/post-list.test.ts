@@ -71,8 +71,11 @@ const person = (o: Partial<InstagramProfile> = {}): InstagramProfile => ({ id: "
 const feedPost = (code: string, d: number, o: Partial<SavedPost> = {}): SavedPost => ({ id: `id-${code}`, code, cover: `https://cdn.example/${code}.jpg`, items: [photo(code)], takenAt: day(d), taggedUsers: [], ...o });
 const feed = (pages: SavedPost[][], profile = person()) => fakeProfiles({ "sample.user": { profile, pages } });
 
-/** A signed-in feed whose pages are `pages[cursor]` ("" for the first), cursors as given; it gives up after 10 pages. */
-function cursored(pages: Record<string, { posts: SavedPost[]; next?: string }>) {
+/**
+ * A signed-in feed whose pages are `pages[cursor]` ("" for the first), cursors as given; it gives up after 10 pages.
+ * `answering` runs as a page is fetched, before it answers.
+ */
+function cursored(pages: Record<string, { posts: SavedPost[]; next?: string }>, answering?: (cursor?: string) => void) {
   const ig = feed([]);
   const open = ig.deps.openProfile!;
   ig.deps.openProfile = (username, cookies) => {
@@ -82,6 +85,7 @@ function cursored(pages: Record<string, { posts: SavedPost[]; next?: string }>) 
       page: async (cursor, signal) => {
         await source.page(cursor, signal);
         if (ig.asked.length > 10) throw new Error("Asked too many pages.");
+        answering?.(cursor);
         return pages[cursor ?? ""] ?? { posts: [] };
       },
     };
@@ -261,6 +265,24 @@ describe("ProfileService.listPosts", () => {
     const ig = cursored({ "": { posts: [feedPost("C1", 20)], next: "a" }, a: { posts: [] } });
     const c = await signedIn(ig.deps);
     expect(await list(c)).toMatchObject({ codes: ["C1"], outcome: DONE });
+  });
+
+  it("a last page that only repeats posts ends done", async () => {
+    const ig = cursored({ "": { posts: [feedPost("C1", 20), feedPost("C2", 19)], next: "a" }, a: { posts: [feedPost("C2", 19), feedPost("C1", 20)] } });
+    const c = await signedIn(ig.deps);
+    expect(await list(c)).toMatchObject({ codes: ["C1", "C2"], outcome: DONE });
+    expect(ig.asked.map((a) => a.cursor)).toEqual([undefined, "a"]);
+  });
+
+  it("a cancel during a stalled page's fetch ends cancelled", async () => {
+    const calledOff = new AbortController();
+    // the client goes away while page "a" is fetched; the page still answers, with nothing new and a next cursor
+    const ig = cursored({ "": { posts: [feedPost("C1", 20)], next: "a" }, a: { posts: [feedPost("C1", 20)], next: "b" } }, (cursor) => {
+      if (cursor === "a") calledOff.abort();
+    });
+    const c = await signedIn(ig.deps);
+    expect(await list(c, { signal: calledOff.signal })).toMatchObject({ codes: ["C1"], outcome: { type: "cancelled" } });
+    expect(ig.asked.map((a) => a.cursor)).toEqual([undefined, "a"]);
   });
 
   it("skips a post code it already took", async () => {
