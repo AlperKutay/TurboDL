@@ -139,6 +139,11 @@ describe("postDetails", () => {
     });
   });
 
+  it("prefers the copy with taken_at over a stub whose caption has created_at", () => {
+    // the page's timeline stub comes first, with a caption time but no tags
+    expect(postDetails([doc(postDetailsPage)], "P1detail")).toMatchObject({ takenAt: 1790000400, taggedUsers: ["friend_one", "friend_two"] });
+  });
+
   it("falls back to the caption's time, and leaves the time out without either", () => {
     const post = (extra: object) => doc({ code: "P2", user: { username: "someone" }, ...extra });
     expect(postDetails([post({ caption: { text: "hi", created_at: 1790000500 } })], "P2").takenAt).toBe(1790000500);

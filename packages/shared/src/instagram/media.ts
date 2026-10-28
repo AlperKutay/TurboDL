@@ -157,14 +157,18 @@ export interface PostDetails {
 }
 
 /**
- * A post's time, caption, owner and tagged users, from its page. Signed-out pages repeat the post's `code` in
- * several objects; only the full v1 copy carries a time, so the first copy with one wins (else the first with a caption
- * or tags). The older GraphQL shape
- * isn't read: no page was seen using it. A post that isn't on the page gives no details.
+ * A post's time, caption, owner and tagged users, from its page. Signed-out pages repeat the post's `code` in several
+ * objects, stubs among them (a stub's caption may carry a time, but not the tags); the full v1 copy carries
+ * `taken_at`. So the first copy with `taken_at` wins, else the first whose caption has `created_at`, else the first
+ * with a caption or tags. The older GraphQL shape isn't read: no page was seen using it. A post that isn't on the page
+ * gives no details.
  */
 export function postDetails(documents: string[], code: string): PostDetails {
   const copies = objectsInDocuments(documents, (o) => str(o.code) === code);
-  const post = copies.find((o) => takenAt(o) !== undefined) ?? copies.find((o) => str(dict(o, "caption")?.text) !== undefined || dict(o, "usertags") !== undefined);
+  const post =
+    copies.find((o) => int(o.taken_at) !== undefined) ??
+    copies.find((o) => int(dict(o, "caption")?.created_at) !== undefined) ??
+    copies.find((o) => str(dict(o, "caption")?.text) !== undefined || dict(o, "usertags") !== undefined);
   if (!post) return { taggedUsers: [] };
   const pinned = Array.isArray(post.timeline_pinned_user_ids) && post.timeline_pinned_user_ids.length > 0;
   return { ...v1Details(post), ...(pinned ? { pinned } : {}) };

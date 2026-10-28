@@ -1,6 +1,6 @@
 {
  "require": [["ScheduledServerJS", "handle", null, [{"__bbox": {"require": [["RelayPrefetchedStreamCache", "next", [], ["adp_PolarisPostRootQueryRelayPreloader", {"__bbox": {"result": {"data": {
-  "a_timeline": {"edges": [{"node": {"code": "P1detail", "pk": "3800000000000000001", "caption": {"text": "stub caption"}, "user": {"username": "someone"}}}]},
+  "a_timeline": {"edges": [{"node": {"code": "P1detail", "pk": "3800000000000000001", "caption": {"text": "stub caption", "created_at": 1790000390}, "user": {"username": "someone"}}}]},
   "b_route": {"params": {"code": "P1detail", "caption": null, "user": {"username": "someone"}}},
   "c_media": {"code": "P1detail", "pk": "3800000000000000001"},
   "xig_polaris_media": {"if_not_gated_logged_out": {
