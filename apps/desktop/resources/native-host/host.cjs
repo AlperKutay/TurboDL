@@ -56,10 +56,41 @@ function launchArgsFrom(argv) {
   return argv.filter((a) => a.startsWith("--launch-arg=")).map((a) => a.slice("--launch-arg=".length));
 }
 
+/** The lists AppRun puts the AppImage's mount into, and the variables it adds itself. */
+const APPRUN_LISTS = ["PATH", "LD_LIBRARY_PATH", "XDG_DATA_DIRS", "GSETTINGS_SCHEMA_DIR"];
+const APPRUN_MARKERS = ["APPDIR", "APPIMAGE", "ARGV0", "OWD"];
+
+/**
+ * The environment for the TurboDL this host starts: a copy without ELECTRON_RUN_AS_NODE. With APPDIR non-empty (the host
+ * runs from an AppImage), also without AppRun's markers and without every `:`-separated entry of APPRUN_LISTS that is
+ * APPDIR or under it (a list left empty is removed): the mount goes away when this host exits, and another user could then
+ * create a folder there.
+ * Keep in sync with launchEnv in src/main/app-location.ts (this file cannot import it).
+ * @param {Record<string, string | undefined>} env
+ */
+function launchEnv(env) {
+  const out = { ...env };
+  delete out.ELECTRON_RUN_AS_NODE;
+  const dir = env.APPDIR;
+  if (!dir) return out;
+  for (const name of APPRUN_LISTS) {
+    const value = out[name];
+    if (value === undefined) continue;
+    const kept = value
+      .split(":")
+      .filter((entry) => entry !== dir && !entry.startsWith(`${dir}/`))
+      .join(":");
+    if (kept) out[name] = kept;
+    else delete out[name];
+  }
+  for (const name of APPRUN_MARKERS) delete out[name];
+  return out;
+}
+
 function launch() {
+  // launchSpec reads the AppImage variables that launchEnv removes
   const spec = launchSpec(process.platform, process.execPath, launchArgsFrom(process.argv), process.env);
-  const env = { ...process.env };
-  delete env.ELECTRON_RUN_AS_NODE;
+  const env = launchEnv(process.env);
   return new Promise((resolve) => {
     // stdio "ignore": the app must not hold on to the browser's messaging pipes
     const child = spawn(spec.file, spec.args, { detached: true, stdio: "ignore", env });
@@ -101,4 +132,4 @@ function main() {
 
 if (require.main === module) main();
 
-module.exports = { encode, decode, launchSpec, launchArgsFrom };
+module.exports = { encode, decode, launchSpec, launchArgsFrom, launchEnv };

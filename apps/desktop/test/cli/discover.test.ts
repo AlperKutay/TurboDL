@@ -3,7 +3,8 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { ApiFile, ApiLaunch } from "@turbodl/shared";
-import { connect, readApiFile, userDataDir, type Connection } from "../../src/cli/discover";
+import { connect, readApiFile, spawnDetached, userDataDir, type Connection } from "../../src/cli/discover";
+import { APPRUN_ENV, DUMP_ENV, dumpedEnv } from "../fixtures/env-dump";
 
 describe("userDataDir", () => {
   it("prefers TURBODL_USER_DATA", () => {
@@ -145,5 +146,16 @@ describe("connect", () => {
   it("tells a first-time user to open the app", async () => {
     const r = await connect({ dir, spawn: () => undefined, ping: async () => true, ...clock() });
     expect(r).toEqual({ error: "TurboDL hasn't been opened on this computer yet. Open it once, then try again." });
+  });
+});
+
+describe("spawnDetached", () => {
+  it("starts the app without Node mode or this command's AppImage mount", async () => {
+    const out = path.join(dir, "env.json");
+    spawnDetached({ file: process.execPath, args: [DUMP_ENV, "--hidden"] }, { ...process.env, ...APPRUN_ENV, TURBODL_ENV_OUT: out });
+    const env = await dumpedEnv(out);
+    expect(env.TURBODL_ENV_OUT).toBe(out);
+    expect(env.XDG_DATA_DIRS).toBe("/usr/share");
+    for (const name of ["APPDIR", "APPIMAGE", "ARGV0", "OWD", "LD_LIBRARY_PATH", "ELECTRON_RUN_AS_NODE"]) expect(env[name], name).toBeUndefined();
   });
 });

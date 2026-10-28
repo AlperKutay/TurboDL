@@ -1,6 +1,6 @@
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { appLocation, linuxConfigHome } from "../src/main/app-location";
+import { appLocation, launchEnv, linuxConfigHome } from "../src/main/app-location";
 
 describe("appLocation", () => {
   it("uses the AppImage file, not its mount point", () => {
@@ -26,6 +26,42 @@ describe("appLocation", () => {
     for (const platform of ["win32", "darwin"] as const) {
       expect(appLocation({ platform, execPath: "/tmp/.mount_x/turbodl-app", env }).appImage).toBe(false);
     }
+  });
+});
+
+describe("launchEnv", () => {
+  // what AppRun puts into the environment of a program started from the AppImage
+  const appRun = {
+    APPDIR: "/tmp/.mount_x",
+    APPIMAGE: "/home/a/T.AppImage",
+    ARGV0: "./T.AppImage",
+    OWD: "/home/a",
+    PATH: "/tmp/.mount_x:/tmp/.mount_x/usr/sbin:/usr/bin",
+    LD_LIBRARY_PATH: "/tmp/.mount_x/usr/lib:/tmp/.mount_x/usr/lib/x86_64-linux-gnu",
+    XDG_DATA_DIRS: "/tmp/.mount_x/usr/share/:/usr/share",
+    GSETTINGS_SCHEMA_DIR: "/tmp/.mount_x/usr/share/glib-2.0/schemas:/usr/share/glib-2.0/schemas",
+    ELECTRON_RUN_AS_NODE: "1",
+    HOME: "/home/a",
+  };
+
+  it("leaves out an AppImage mount, which goes away when this process exits", () => {
+    expect(launchEnv(appRun)).toEqual({ PATH: "/usr/bin", XDG_DATA_DIRS: "/usr/share", GSETTINGS_SCHEMA_DIR: "/usr/share/glib-2.0/schemas", HOME: "/home/a" });
+  });
+
+  it("does not change the environment it is given", () => {
+    const env = { ...appRun };
+    launchEnv(env);
+    expect(env).toEqual(appRun);
+  });
+
+  it("keeps a folder that only shares the mount's prefix", () => {
+    expect(launchEnv({ APPDIR: "/tmp/.mount_x", PATH: "/tmp/.mount_xy/bin:/tmp/.mount_x/usr/bin:/usr/bin" }).PATH).toBe("/tmp/.mount_xy/bin:/usr/bin");
+  });
+
+  it("only drops ELECTRON_RUN_AS_NODE without an AppImage (the .deb, Windows and macOS)", () => {
+    const env = { PATH: "/tmp/.mount_x/usr/bin:/usr/bin", LD_LIBRARY_PATH: "/opt/lib", APPIMAGE: "/home/a/T.AppImage", OWD: "/home/a", HOME: "/home/a" };
+    expect(launchEnv({ ...env, ELECTRON_RUN_AS_NODE: "1" })).toEqual(env);
+    expect(launchEnv({ ...env, APPDIR: "" })).toEqual({ ...env, APPDIR: "" });
   });
 });
 
