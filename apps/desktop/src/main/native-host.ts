@@ -66,7 +66,7 @@ function batPath(value: string, env: NodeJS.ProcessEnv): string {
   return `"${value.replace(/%/g, "%%")}"`;
 }
 
-function shQuote(value: string): string {
+export function shQuote(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 

@@ -30,6 +30,12 @@ describe("the bundled turbodl command", () => {
     expect(r.status).toBe(0);
   });
 
+  it("ignores the flag an AppImage launcher passes first", () => {
+    const r = spawnSync(process.execPath, [path.join(outDir, "turbodl.cjs"), "--no-sandbox", "--version"], { encoding: "utf8" });
+    expect(r.stdout).toBe(`turbodl ${version}\n`);
+    expect(r.status).toBe(0);
+  });
+
   it("answers wrong usage with code 2", () => {
     const r = spawnSync(process.execPath, [path.join(outDir, "turbodl.cjs"), "get"], { encoding: "utf8" });
     expect(r.status).toBe(2);

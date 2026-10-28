@@ -1,7 +1,9 @@
 import { execFile } from "node:child_process";
-import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, readlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, readlinkSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import type { CliStatus, Result } from "@turbodl/shared";
+import { APPIMAGE_NODE_FLAG, appLocation } from "./app-location";
+import { shQuote } from "./native-host";
 
 const LINK = "/usr/local/bin/turbodl";
 const ENV_KEY = "HKCU\\Environment";
@@ -11,18 +13,15 @@ function pathFor(platform: NodeJS.Platform): path.PlatformPath {
   return platform === "win32" ? path.win32 : path.posix;
 }
 
-function shQuote(value: string): string {
-  return `'${value.replace(/'/g, `'\\''`)}'`;
-}
-
-/** The macOS `turbodl` script: runs the command in Node mode of this TurboDL. */
-export function shellLauncher(execPath: string, script: string): string {
+/** The macOS and Linux `turbodl` script: runs the command in Node mode of this TurboDL; from an AppImage, AppRun gets its flag after the script. */
+export function shellLauncher(execPath: string, script: string, appImage = false): string {
   const exe = shQuote(execPath);
-  return `#!/bin/sh\n[ -x ${exe} ] || { echo "TurboDL is not installed any more." >&2; exit 5; }\nELECTRON_RUN_AS_NODE=1 exec ${exe} ${shQuote(script)} "$@"\n`;
+  const flag = appImage ? ` ${APPIMAGE_NODE_FLAG}` : "";
+  return `#!/bin/sh\n[ -x ${exe} ] || { echo "TurboDL is not installed any more." >&2; exit 5; }\nELECTRON_RUN_AS_NODE=1 exec ${exe} ${shQuote(script)}${flag} "$@"\n`;
 }
 
 /** <userData>/bin with turbodl.exe + turbodl.cfg (Windows) or the turbodl script (macOS), pointing at this TurboDL. */
-export function writeCliLauncher(o: { platform: NodeJS.Platform; userDataDir: string; execPath: string; script: string; launcherExe: string }): { binDir: string; command: string } {
+export function writeCliLauncher(o: { platform: NodeJS.Platform; userDataDir: string; execPath: string; script: string; launcherExe: string; env?: NodeJS.ProcessEnv }): { binDir: string; command: string } {
   const p = path; // real files: the host's own separators
   const binDir = p.join(o.userDataDir, "bin");
   mkdirSync(binDir, { recursive: true });
@@ -47,7 +46,15 @@ export function writeCliLauncher(o: { platform: NodeJS.Platform; userDataDir: st
     return { binDir, command };
   }
   const command = p.join(binDir, "turbodl");
-  writeFileSync(command, shellLauncher(o.execPath, o.script));
+  const loc = o.platform === "linux" ? appLocation({ platform: o.platform, execPath: o.execPath, env: o.env ?? {} }) : null;
+  if (loc?.appImage) {
+    // the AppImage's own folder changes on every start: keep a copy of the command and run it through the AppImage file
+    const copy = p.join(binDir, "turbodl.cjs");
+    copyFileSync(o.script, copy);
+    writeFileSync(command, shellLauncher(loc.file, copy, true));
+  } else {
+    writeFileSync(command, shellLauncher(o.execPath, o.script));
+  }
   chmodSync(command, 0o755);
   return { binDir, command };
 }
@@ -70,6 +77,14 @@ export interface CliInstallDeps {
   linkTarget(file: string): string | null;
   /** whether anything (file, link, folder) is at this path */
   exists(file: string): boolean;
+  /** Linux: ~/.local/bin lives here */
+  homeDir: string;
+  /** Linux: the PATH this app was started with */
+  pathEnv: string;
+  /** Linux: makes `file` a symbolic link to `target`, creating its folder */
+  symlink(target: string, file: string): void;
+  /** Linux: removes `file` */
+  unlink(file: string): void;
 }
 
 const TIMEOUT_MS = 30_000;
@@ -93,7 +108,7 @@ const USER_PATH_SCRIPT =
 const BROADCAST_SCRIPT = "[Environment]::SetEnvironmentVariable('TURBODL_PATH_REFRESH','1','User'); [Environment]::SetEnvironmentVariable('TURBODL_PATH_REFRESH',$null,'User')";
 
 /** The real reg.exe, PowerShell, osascript and readlink. */
-export function realCliDeps(o: { platform: NodeJS.Platform; userDataDir: string; supported: boolean }): CliInstallDeps {
+export function realCliDeps(o: { platform: NodeJS.Platform; userDataDir: string; supported: boolean; homeDir: string; pathEnv: string }): CliInstallDeps {
   return {
     ...o,
     runReg: (args) => run("reg", args),
@@ -112,11 +127,34 @@ export function realCliDeps(o: { platform: NodeJS.Platform; userDataDir: string;
       }
     },
     exists: (file) => existsSync(file),
+    symlink: (target, file) => {
+      mkdirSync(path.dirname(file), { recursive: true });
+      // installing again over our own link: symlinkSync won't overwrite
+      rmSync(file, { force: true });
+      symlinkSync(target, file);
+    },
+    unlink: (file) => unlinkSync(file),
   };
 }
 
 function binDirOf(d: CliInstallDeps): string {
   return pathFor(d.platform).join(d.userDataDir, "bin");
+}
+
+const NOT_OURS = "~/.local/bin/turbodl belongs to another program.";
+
+function linuxBin(d: CliInstallDeps): string {
+  return path.posix.join(d.homeDir, ".local", "bin");
+}
+
+/** Linux: where the command is linked. */
+function linuxLink(d: CliInstallDeps): string {
+  return path.posix.join(linuxBin(d), "turbodl");
+}
+
+function onLinuxPath(d: CliInstallDeps): boolean {
+  const bin = linuxBin(d);
+  return d.pathEnv.split(":").some((e) => e.replace(/\/+$/, "") === bin);
 }
 
 function ourLauncher(d: CliInstallDeps): string {
@@ -199,6 +237,7 @@ function hasEntry(value: string, entry: string): boolean {
 }
 
 function failure(err: unknown, platform: NodeJS.Platform): Result {
+  if (platform === "linux") return { ok: false, error: String((err as Error)?.message ?? err).split(/\r?\n/)[0].slice(0, 200) };
   if ((err as { timedOut?: boolean }).timedOut) return { ok: false, error: "Timed out." };
   const stderr = String((err as { stderr?: string }).stderr ?? "");
   if (platform === "darwin") {
@@ -216,6 +255,10 @@ export async function cliStatus(d: CliInstallDeps): Promise<CliStatus> {
     const found = await readPath(d);
     return { supported: true, installed: found !== null && found !== "none" && hasEntry(found.value, binDir), where: binDir };
   }
+  if (d.platform === "linux") {
+    const link = linuxLink(d);
+    return { supported: true, installed: d.linkTarget(link) === ourLauncher(d), where: link, onPath: onLinuxPath(d) };
+  }
   return { supported: true, installed: d.linkTarget(LINK) === ourLauncher(d), where: LINK };
 }
 
@@ -224,6 +267,14 @@ export async function installCli(d: CliInstallDeps): Promise<Result> {
   if (!d.supported) return UNAVAILABLE;
   try {
     if (d.platform === "win32") return await editPath(d, withEntry);
+    if (d.platform === "linux") {
+      const link = linuxLink(d);
+      const current = d.linkTarget(link);
+      if (current === ourLauncher(d)) return { ok: true };
+      if (current !== null || d.exists(link)) return { ok: false, error: NOT_OURS };
+      d.symlink(ourLauncher(d), link);
+      return { ok: true };
+    }
     const existing = d.linkTarget(LINK);
     if (existing !== ourLauncher(d) && (existing !== null || d.exists(LINK))) return { ok: false, error: `${LINK} belongs to another program.` };
     await d.runAdmin(`mkdir -p /usr/local/bin && ln -sf ${shQuote(ourLauncher(d))} ${LINK}`);
@@ -239,6 +290,12 @@ export async function removeCli(d: CliInstallDeps): Promise<Result> {
   try {
     if (d.platform === "win32") {
       return await editPath(d, withoutEntry, hasEntry);
+    } else if (d.platform === "linux") {
+      const link = linuxLink(d);
+      const target = d.linkTarget(link);
+      if (target === null) return { ok: true };
+      if (target !== ourLauncher(d)) return { ok: false, error: NOT_OURS };
+      d.unlink(link);
     } else {
       const target = d.linkTarget(LINK);
       if (target === null) return { ok: true };

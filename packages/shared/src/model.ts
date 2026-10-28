@@ -298,6 +298,8 @@ export interface CliStatus {
   supported: boolean;
   installed: boolean;
   where: string;
+  /** Linux: whether ~/.local/bin is on the PATH TurboDL started with */
+  onPath?: boolean;
 }
 
 export type DownloadDecision = { filename: string; dir: string; mode: "now" | "later" };
