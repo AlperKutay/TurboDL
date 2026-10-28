@@ -16,7 +16,10 @@ export interface SafeStorageLike {
   decryptString(data: Buffer): string;
 }
 
-/** Electron's safeStorage as a Crypt; on Linux, Chromium's "basic_text" fallback (a fixed, public key) counts as unavailable. */
+/**
+ * Electron's safeStorage as a Crypt; on Linux, Chromium's "basic_text" fallback (a fixed, public key) counts as
+ * unavailable, and so does a backend it can't name ("unknown", none reported, or an error).
+ */
 export function systemCrypt(platform: NodeJS.Platform, s: SafeStorageLike): Crypt {
   return {
     available: () => {
@@ -24,7 +27,7 @@ export function systemCrypt(platform: NodeJS.Platform, s: SafeStorageLike): Cryp
       if (platform !== "linux") return true;
       try {
         const backend = s.getSelectedStorageBackend?.();
-        return backend !== undefined && backend !== "basic_text";
+        return backend !== undefined && backend !== "basic_text" && backend !== "unknown";
       } catch {
         return false;
       }

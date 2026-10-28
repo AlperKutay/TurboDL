@@ -106,6 +106,20 @@ describe("systemCrypt", () => {
     expect(existsSync(file)).toBe(false);
   });
 
+  it("keeps the session in memory on Linux when the backend is unknown, unreported or fails", () => {
+    expect(systemCrypt("linux", store("unknown")).available()).toBe(false);
+    const unreported: SafeStorageLike = {
+      isEncryptionAvailable: () => true,
+      encryptString: (text) => Buffer.from(text),
+      decryptString: (data) => data.toString(),
+    };
+    expect(systemCrypt("linux", unreported).available()).toBe(false);
+    const throwing = (): string => {
+      throw new Error("not ready");
+    };
+    expect(systemCrypt("linux", store(throwing)).available()).toBe(false);
+  });
+
   it("uses the keyring on Linux", () => {
     expect(systemCrypt("linux", store("gnome_libsecret")).available()).toBe(true);
     expect(systemCrypt("linux", store("kwallet5")).available()).toBe(true);
