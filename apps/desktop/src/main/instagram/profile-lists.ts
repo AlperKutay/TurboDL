@@ -197,11 +197,16 @@ export class ProfileLists {
     await this.running;
   }
 
-  /** Runs a stopped list on from its row, after the rest of a wait drawn before it stopped. */
-  continue(): Result {
+  /**
+   * Runs a stopped list on from its row, after the rest of a wait drawn before it stopped; `problem` says why a list
+   * that stopped can't go on now (the app's own reason), null when it can.
+   */
+  continue(problem?: (list: ProfileListView) => string | null): Result {
     const list = this.list;
     if (!list) return { ok: false, error: NO_LIST };
     if (!RESUMABLE.has(list.state)) return { ok: false, error: list.state === "finished" ? "The list has finished." : "The list is running." };
+    const refused = problem?.(list);
+    if (refused) return { ok: false, error: refused };
     // the user's go-ahead starts the counts over (they are lost in a restart anyway)
     this.recount();
     this.bringNear(list);

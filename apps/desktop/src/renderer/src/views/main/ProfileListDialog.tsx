@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { waitProblem, type ListWait, type ParsedProfileList, type ProfileSaveOptions } from "@turbodl/shared";
+import { effectiveSaveOptions, waitProblem, type ListWait, type ParsedProfileList, type ProfileSaveOptions } from "@turbodl/shared";
 import { api } from "../../api";
 import { Modal } from "../../components/Modal";
 import { LIST_TOO_MANY, fileSummary, invalidLines, listStartProblem, namesPreview, waitNumber } from "../../profile-list-state";
@@ -59,12 +59,12 @@ export function ProfileListDialog({
     if (ok) setSignedIn(true);
   };
 
-  // the app keeps the wait and what was ticked for the next list once it has started
+  // what the dialog shows ticked (Tagged off while signed out); the app keeps the wait and the ticks for the next list
   const start = async () => {
     if (!file || problem) return;
     setStarting(true);
     setError(null);
-    const res = await api.startProfileList({ name: file.name, usernames: file.list.usernames, options, wait });
+    const res = await api.startProfileList({ name: file.name, usernames: file.list.usernames, options: effectiveSaveOptions(options, signedIn), wait });
     if (res.ok) return onClose();
     setStarting(false);
     setError(res.error);

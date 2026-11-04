@@ -890,11 +890,26 @@ export class AppController {
   }
 
   /**
-   * Starts a list of profiles to back up one after another, each as an ordinary profile job with the list's options.
-   * Its names are checked again (they may come from outside the app) and kept as Instagram's addresses have them; its
-   * wait and options are what the next list starts with.
+   * The Profiles screen's list (its dialog): it saves what the dialog showed ticked (tagged posts only with a session),
+   * and its wait and options are what the next list starts with.
    */
   async startProfileList(o: { name: string; usernames: string[]; options: ProfileSaveOptions; wait: ListWait }): Promise<Result> {
+    const signedIn = this.instagramSession.signedIn();
+    const options = effectiveSaveOptions(o.options, signedIn);
+    const started = this.beginProfileList({ ...o, options });
+    if (!started.ok) return started;
+    // signed out, Tagged can't be ticked or unticked: the tick from before is kept for when there is a session
+    const remembered = signedIn ? options : { ...options, tagged: this.settings.instagramSave.tagged };
+    await this.updateSettings({ listWait: { min: o.wait.min, max: o.wait.max }, instagramSave: remembered });
+    return started;
+  }
+
+  /**
+   * Starts a list of profiles to back up one after another, each as an ordinary profile job with the list's options
+   * (an API client's as it sent them; nothing of its list is remembered for the screen's next one). Its names are
+   * checked again (they may come from outside the app) and kept as Instagram's addresses have them.
+   */
+  private beginProfileList(o: { name: string; usernames: string[]; options: ProfileSaveOptions; wait: ListWait }): Result {
     const names = listNames(o.usernames);
     if ("error" in names) return { ok: false, error: names.error };
     const problem = waitProblem({ min: o.wait?.min, max: o.wait?.max }) ?? saveOptionsProblem(effectiveSaveOptions(o.options, this.instagramSession.signedIn()));
@@ -902,10 +917,7 @@ export class AppController {
     const { posts, highlights, tagged, photos, videos } = o.options;
     const options = { posts, highlights, tagged, photos, videos };
     const wait = { min: o.wait.min, max: o.wait.max };
-    const started = this.lists.start({ name: o.name.trim() || "Profile list", usernames: names.names, options, wait });
-    // what was ticked, not what a signed-out backup can do: the tick is kept for when there is a session
-    if (started.ok) await this.updateSettings({ listWait: wait, instagramSave: options });
-    return started;
+    return this.lists.start({ name: o.name.trim() || "Profile list", usernames: names.names, options, wait });
   }
 
   /** Stops the list: its wait, or its profile's job, between that job's parts too; resolves once it has stopped. */
@@ -913,18 +925,22 @@ export class AppController {
     return this.lists.stop();
   }
 
+  /** Runs the stopped list on; not while it could save nothing (tagged posts alone, signed out). */
   async continueProfileList(): Promise<Result> {
-    return this.lists.continue();
+    return this.lists.continue((list) => saveOptionsProblem(effectiveSaveOptions(list.options, this.instagramSession.signedIn())));
   }
 
   async closeProfileList(): Promise<Result> {
     return this.lists.close();
   }
 
-  /** One of the list's profiles as an ordinary profile job (not a screen's): the files it fetched, its progress, its cancel. */
+  /**
+   * One of the list's profiles as an ordinary profile job (not a screen's): the files it fetched, its progress, its
+   * cancel. Its options are the list's as they are: tagged posts asked for without a session are skipped by the job
+   * with a warning, which the profile's row shows.
+   */
   private runListProfile(username: string, options: ProfileSaveOptions): ProfileRun {
-    const effective = effectiveSaveOptions(options, this.instagramSession.signedIn());
-    const { id } = this.jobs.create({ url: `https://www.instagram.com/${encodeURIComponent(username)}/`, options: saveJobOptions(effective) });
+    const { id } = this.jobs.create({ url: `https://www.instagram.com/${encodeURIComponent(username)}/`, options: saveJobOptions(options) });
     let fetched = 0;
     let tell: ((p: JobProgress) => void) | undefined;
     // followed in the turn it was created in: nothing it reports is missed
@@ -1268,7 +1284,7 @@ export class AppController {
       },
       instagramLogout: () => this.instagramSignOut(),
       list: () => this.lists.view(),
-      startList: (request) => this.startProfileList(request),
+      startList: async (request) => this.beginProfileList(request),
       stopList: () => this.stopProfileList(),
       continueList: () => this.continueProfileList(),
       closeList: () => this.closeProfileList(),

@@ -1555,6 +1555,34 @@ describe("Instagram profiles", () => {
       expect(told().at(-1)).toBeNull();
     });
 
+    it("keeps tagged posts off in a list started signed out, as its dialog shows them, and remembers the tick for a session", async () => {
+      const ig = fakeProfiles({ "sample.user": SAMPLE });
+      const c = await start({}, null, ig.deps);
+      expect(await c.startProfileList(list(["sample.user"], { options: { ...POSTS_ONLY, tagged: true } }))).toEqual({ ok: true });
+      expect(c.snapshot().profileList?.options).toEqual(POSTS_ONLY);
+      const view = await listEnds(c);
+      // nothing was ticked that couldn't be saved: no warning
+      expect(view).toMatchObject({ state: "finished", options: POSTS_ONLY, rows: [{ username: "sample.user", state: "done", files: 3, fetched: 3 }] });
+      expect(view?.rows[0].note).toBeUndefined();
+      // signed out, Tagged can't be ticked or unticked: what was ticked before is kept
+      expect(c.settings.instagramSave).toEqual({ ...POSTS_ONLY, tagged: true });
+    });
+
+    it("doesn't continue a list of tagged posts alone without a session", async () => {
+      const stored = { name: "friends.txt", rows: [{ username: "sample.user", state: "waiting" }], index: 0, state: "stopped", options: { ...NOTHING, tagged: true }, wait: { min: 0, max: 0 } };
+      mkdirSync(path.join(root, "user"), { recursive: true });
+      writeFileSync(listFile(), JSON.stringify(stored));
+      const ig = fakeProfiles({ "sample.user": SAMPLE });
+      const c = await start({}, null, ig.deps);
+      expect(await c.continueProfileList()).toEqual({ ok: false, error: "Pick at least one of posts, highlights and tagged posts." });
+      expect(c.snapshot().profileList).toMatchObject({ state: "stopped" });
+      expect(c.jobs.list()).toEqual([]);
+      // signed in, it goes on
+      c.instagramSession.take(sessionJar);
+      expect(await c.continueProfileList()).toEqual({ ok: true });
+      expect(await listEnds(c)).toMatchObject({ state: "finished", rows: [{ username: "sample.user", state: "done" }] });
+    });
+
     it("starts with no list when its file is broken or doesn't hold a list", async () => {
       for (const text of ["{ not json", JSON.stringify({ name: "friends.txt", rows: "sample.user", index: 0, state: "stopped" }), "null"]) {
         mkdirSync(path.join(root, "user"), { recursive: true });
