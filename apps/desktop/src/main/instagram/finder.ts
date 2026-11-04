@@ -43,7 +43,7 @@ export function pageFor(link: InstagramLink, site = SITE): string | null {
     case "post":
       return `${site}/p/${encodeURIComponent(link.code)}/`;
     case "story":
-      return `${site}/stories/${encodeURIComponent(link.username)}/${encodeURIComponent(link.item)}/`;
+      return `${site}/stories/${encodeURIComponent(link.username)}/${link.item === undefined ? "" : `${encodeURIComponent(link.item)}/`}`;
     case "highlight":
       return `${site}/stories/highlights/${encodeURIComponent(link.id)}/`;
     default:
