@@ -1170,6 +1170,68 @@ describe("Instagram profiles", () => {
     expect(c.jobs.list()).toMatchObject([{ state: "failed", reason: "private", error: "This account is private." }]);
     expect(ig.fetched).toEqual([]);
   });
+
+  it("lets no other backup in between a screen backup's parts", async () => {
+    const ig = fakeProfiles({ "sample.user": SAMPLE });
+    withStories(ig.deps);
+    ig.deps.get = savedGet([]);
+    ig.deps.collections = async () => [{ id: "102", name: "Trips", isAll: false }];
+    // the second page opened is the highlights part's: its start waits for it until the test lets it load
+    let letIn!: () => void;
+    const gate = new Promise<void>((resolve) => (letIn = resolve));
+    const open = ig.deps.openProfile!;
+    let opens = 0;
+    ig.deps.openProfile = (username, cookies) => {
+      const source = open(username, cookies);
+      if (++opens !== 2) return source;
+      return {
+        ...source,
+        profile: async () => {
+          await gate;
+          return source.profile();
+        },
+      };
+    };
+    const c = await signedIn(ig.deps);
+    await c.savedCollections(true);
+    expect(await c.startProfileBackup("sample.user", POSTS_AND_HIGHLIGHTS)).toEqual({ ok: true });
+    const [job] = c.jobs.list();
+    for (let i = 0; i < 200 && opens < 2; i++) await new Promise((r) => setTimeout(r, 5));
+    // between the parts: the posts' backup finished, no backup runs
+    expect(c.snapshot().instagramBackup).toMatchObject({ kind: "profile", state: "finished" });
+    expect(c["backups"].isRunning()).toBe(false);
+    const busy = { ok: false, error: BACKUP_RUNNING, reason: "busy" };
+    expect(await c.startHighlightsBackup("sample.user", BOTH_KINDS)).toEqual(busy);
+    expect(await c.startBackup("102")).toEqual(busy);
+    expect(opens).toBe(2);
+    letIn();
+    expect(await c.jobs.ended(job.id)).toMatchObject({ state: "done" });
+    expect(kindsSeen()).toEqual(["profile", "highlights"]);
+    // once it ended, they start
+    expect(await c.startBackup("102")).toEqual({ ok: true });
+    await backupEnds(c);
+    expect(await c.startHighlightsBackup("sample.user", BOTH_KINDS)).toEqual({ ok: true });
+  });
+
+  it("says why a screen backup saved nothing", async () => {
+    const ig = fakeProfiles({ "no.highlights": { profile: person("54", "no.highlights"), pages: [[]], highlights: [] } });
+    const c = await signedIn(ig.deps);
+    expect(await c.startProfileBackup("no.highlights", { ...DEFAULT_SAVE_OPTIONS, posts: false, tagged: false })).toEqual({ ok: false, error: "This profile has no highlights." });
+    expect(c.jobs.list()).toMatchObject([{ state: "done", warnings: ["This profile has no highlights."] }]);
+  });
+
+  it("starts one job for two Continues at once", async () => {
+    const ig = fakeProfiles({ "sample.user": SAMPLE });
+    const held = stoppableFetch(ig.deps);
+    const c = await signedIn(ig.deps);
+    expect(await c.startProfileBackup("sample.user", POSTS_ONLY)).toEqual({ ok: true });
+    await c.stopBackup();
+    const answers = await Promise.all([c.continueBackup(), c.continueBackup()]);
+    expect(answers).toEqual([{ ok: true }, { ok: false, error: BACKUP_RUNNING }]);
+    expect(c.jobs.list()).toHaveLength(2);
+    held.open();
+    expect(await c.jobs.ended(c.jobs.list()[0].id)).toMatchObject({ state: "done" });
+  });
 });
 
 describe("Instagram highlights", () => {

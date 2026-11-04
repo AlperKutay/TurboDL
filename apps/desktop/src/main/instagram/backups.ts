@@ -22,6 +22,9 @@ export interface BackupsDeps {
   onBackup(view: BackupView): void;
 }
 
+/** What a backup that can't start because another one runs answers. */
+export const BACKUP_RUNNING = "A backup is already running.";
+
 /** Why a backup didn't start (`unreadable`: a page TurboDL couldn't read, as a profile's tagged page may be). */
 export type StartReason = "signInRequired" | "private" | "rateLimited" | "busy" | "empty" | "unreadable" | "error";
 /** A Result whose failures say why (still a Result for the screens). */
@@ -52,7 +55,7 @@ export class Backups {
    * `again` starts it once more, for Continue; `read` reads a post known only by its cover from its own page.
    */
   async start(target: BackupTarget, page: BackupDeps["page"], again: () => Promise<Result>, read?: BackupDeps["read"]): Promise<StartResult> {
-    if (this.isRunning()) return { ok: false, error: "A backup is already running.", reason: "busy" };
+    if (this.isRunning()) return { ok: false, error: BACKUP_RUNNING, reason: "busy" };
     this.starting = true;
     try {
       await this.run?.settled();

@@ -14,6 +14,7 @@ import {
   effectiveSaveOptions,
   extensionFromMime,
   getExtension,
+  isJobEnded,
   mediaKinds,
   sanitizeFilename,
   saveJobOptions,
@@ -62,7 +63,7 @@ import { HttpDownloadTask } from "./engine/download-task";
 import { delay } from "./engine/http";
 import { fetchMedia } from "./instagram/fetch-media";
 import { itemDownload } from "./instagram/item-download";
-import { Backups, type StartResult } from "./instagram/backups";
+import { BACKUP_RUNNING, Backups, type StartResult } from "./instagram/backups";
 import { LedgerStore } from "./instagram/ledger";
 import { InstagramPacer, SLOW_DOWN, failedPage } from "./instagram/pacer";
 import { ProfileIndex } from "./instagram/profile-index";
@@ -214,8 +215,8 @@ function newId(): string {
 }
 
 const HTTP_URL = /^https?:\/\//i;
-/** the screens' answer while a backup runs, or an Instagram job holds the lane's turn */
-const BACKUP_RUNNING = "A backup is already running.";
+/** what nothing else starts while a screen's profile job goes on: its parts are one backup */
+const SCREEN_JOB_GOES_ON: StartResult = { ok: false, error: BACKUP_RUNNING, reason: "busy" };
 
 /** The account number a profile's backup ledger is named by (`profile-`, `highlights-` or `tagged-<number>`); none for Saved's. */
 function profileAccount(targetId: string | undefined): string | undefined {
@@ -267,6 +268,8 @@ export class AppController {
    * backups forget it.
    */
   private lastScreen: { request: JobRequest; account: string; jobId: string } | null = null;
+  /** the profile job a screen started last; until it ends, no other backup starts from the screens */
+  private screenJobId: string | null = null;
 
   constructor(private readonly o: ControllerOptions) {
     this.instagram = o.instagram ?? NO_INSTAGRAM;
@@ -629,6 +632,7 @@ export class AppController {
   }
 
   async startBackup(collectionId: string): Promise<StartResult> {
+    if (this.screenJobGoesOn()) return SCREEN_JOB_GOES_ON;
     const result = await this.saved.startBackup(collectionId);
     if (result.ok) this.lastScreen = null;
     return result;
@@ -644,11 +648,14 @@ export class AppController {
    */
   async continueBackup(): Promise<Result> {
     const screen = this.lastScreen;
-    if (!screen || profileAccount(this.backups.target()?.id) !== screen.account) return this.backups.continueLast();
+    if (!screen || profileAccount(this.backups.target()?.id) !== screen.account) {
+      return this.screenJobGoesOn() ? { ok: false, error: BACKUP_RUNNING } : this.backups.continueLast();
+    }
     if (this.backups.isRunning()) return { ok: false, error: BACKUP_RUNNING };
     // a job whose backup was stopped (or pushed back) ends as that backup settles; one between its parts goes on
     if (this.backups.view()?.state !== "finished") await this.jobs.ended(screen.jobId);
-    if (this.lane.busy()) return { ok: false, error: BACKUP_RUNNING };
+    // something may have started meanwhile
+    if (this.backups.isRunning() || this.screenJobGoesOn() || this.lane.busy()) return { ok: false, error: BACKUP_RUNNING };
     return this.startScreenJob(screen.request);
   }
 
@@ -715,6 +722,7 @@ export class AppController {
   async startHighlightsBackup(username: string, kinds: { photos: boolean; videos: boolean }): Promise<StartResult> {
     const problem = saveOptionsProblem({ ...DEFAULT_SAVE_OPTIONS, photos: kinds.photos, videos: kinds.videos });
     if (problem) return { ok: false, error: problem, reason: "error" };
+    if (this.screenJobGoesOn()) return SCREEN_JOB_GOES_ON;
     const result = await this.profiles.startHighlightsBackup(username, mediaKinds(kinds));
     if (result.ok) this.lastScreen = null;
     return result;
@@ -737,9 +745,13 @@ export class AppController {
     return this.startScreenJob({ url: `https://www.instagram.com/${encodeURIComponent(username)}/`, options: saveJobOptions(effective) });
   }
 
-  /** A profile job for a screen: answered once it runs (Continue starts it again from then on), or as it ended first. */
+  /**
+   * A profile job for a screen: answered once it runs (Continue starts it again from then on), or as it ended first;
+   * done without a backup is answered with why (its first warning: "This profile has no highlights.").
+   */
   private startScreenJob(request: JobRequest): Promise<Result> {
     const { id } = this.jobs.create(request);
+    this.screenJobId = id;
     return new Promise((resolve) => {
       let answered = false;
       let unsubscribe: (() => void) | undefined;
@@ -759,9 +771,17 @@ export class AppController {
         if (event.type === "state" && event.state === "running") running();
       });
       if (this.jobs.get(id)?.state === "running") running();
-      // it may have ended already, asking Instagram nothing (its slow-down holds); done at once is answered as started
-      void this.jobs.ended(id)?.then((job) => answer(job.state === "done" ? { ok: true } : { ok: false, error: job.error ?? "The backup was cancelled." }));
+      // it may have ended already, asking Instagram nothing (its slow-down holds)
+      void this.jobs.ended(id)?.then((job) =>
+        answer({ ok: false, error: job.state === "done" ? (job.warnings[0] ?? "Nothing to back up.") : (job.error ?? "The backup was cancelled.") }),
+      );
     });
+  }
+
+  /** The profile job a screen started last hasn't ended: it may be between its parts, when no backup runs. */
+  private screenJobGoesOn(): boolean {
+    const state = this.screenJobId === null ? undefined : this.jobs.get(this.screenJobId)?.state;
+    return state !== undefined && !isJobEnded(state);
   }
 
   async instagramProfiles(): Promise<ProfileEntry[]> {
