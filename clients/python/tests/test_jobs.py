@@ -346,10 +346,6 @@ class InterruptionTests(JobCase):
         self.assertEqual(readers(), [])
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class ProfileOptionTests(JobCase):
     def test_add_sends_only_the_options_that_differ_from_the_defaults(self) -> None:
         t = self.serve()
@@ -386,3 +382,7 @@ class ProfileOptionTests(JobCase):
         self.assertEqual(self.stub.posted, [])
         t.add(URL)  # the defaults need no feature
         self.assertEqual(len(self.stub.posted), 1)
+
+
+if __name__ == "__main__":
+    unittest.main()
