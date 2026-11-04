@@ -16,6 +16,8 @@ describe("parseInstagramLink", () => {
       username: "sample.user",
       item: "4010000000000000002",
     });
+    expect(ig("/stories/Sample.User/")).toEqual({ kind: "story", username: "sample.user" });
+    expect(ig("/stories/sample.user?igsh=abc")).toEqual({ kind: "story", username: "sample.user" });
     expect(ig("/stories/highlights/17900000000000001/")).toEqual({ kind: "highlight", id: "17900000000000001" });
     expect(ig("/s/aGlnaGxpZ2h0OjE3OTAwMDAwMDAwMDAwMDAy?obrf=b2JyZg")).toEqual({ kind: "highlight", id: "17900000000000002" });
     expect(ig("/Sample.User/")).toEqual({ kind: "profile", username: "sample.user" });
@@ -31,6 +33,8 @@ describe("parseInstagramLink", () => {
       expect(ig(`/${word}/`), word).toBeNull();
     }
     expect(ig("/")).toBeNull();
+    expect(ig("/stories/highlights/")).toBeNull();
+    expect(ig("/stories/sample-user/")).toBeNull();
     expect(ig(`/${"a".repeat(31)}`)).toBeNull();
     expect(ig("/sample-user")).toBeNull();
     expect(parseInstagramLink("https://example.com/p/C1abcDEF/")).toBeNull();

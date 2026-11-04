@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import carousel from "../../../../packages/shared/src/instagram/fixtures/instagram-v1-carousel.json";
 import highlightShare from "../../../../packages/shared/src/instagram/fixtures/instagram-highlight-share.json";
+import storyReel from "../../../../packages/shared/src/instagram/fixtures/instagram-story-reel.json";
 import { InstagramFinder, type PageDriver } from "../../src/main/instagram/finder";
 
 /** A page whose documents come in steps, one per look; the last step stays. */
@@ -87,6 +88,13 @@ describe("InstagramFinder", () => {
     const outcome = await finder(page).find({ kind: "highlight", id: "17900000000000003" });
     expect(page.loads).toEqual(["https://www.instagram.com/stories/highlights/17900000000000003/"]);
     expect(outcome.type === "items" && outcome.items.map((i) => i.url.split("/").pop())).toEqual(["winter_one_1080.jpg"]);
+  });
+
+  it("reads an account's current stories from its stories page", async () => {
+    const page = new FakePage([[JSON.stringify(storyReel)]]);
+    const outcome = await finder(page).find({ kind: "story", username: "someone" });
+    expect(page.loads).toEqual(["https://www.instagram.com/stories/someone/"]);
+    expect(outcome.type === "items" && outcome.items.map((i) => i.url.split("/").pop())).toEqual(["story_one.mp4?efg=a", "story_two_1080.jpg"]);
   });
 
   it("asks to sign in for a post the signed-out page hides, and for any signed-out page that shows nothing", async () => {

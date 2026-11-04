@@ -46,10 +46,12 @@ export function storyItems(
     .map((edge) => dict(edge, "node"))
     .filter((node): node is Json => node !== undefined);
   const reels = [...listed, ...connected];
+  // the story a story link names; an account's stories link names none
+  const shared = link.kind === "story" ? link.item : undefined;
   const reel =
     link.kind === "highlight"
       ? reels.find((r) => str(r.id) === `highlight:${link.id}`)
-      : (reels.find((r) => arr(r.items).some((item) => str(item.pk) === link.item)) ??
+      : ((shared !== undefined ? reels.find((r) => arr(r.items).some((item) => str(item.pk) === shared)) : undefined) ??
         reels.find((r) => str(dict(r, "user")?.username) === link.username && str(r.reel_type) !== "highlight_reel"));
   if (!reel) return [];
   const owner = str(dict(reel, "user")?.username) ?? (link.kind === "story" ? link.username : undefined);
@@ -57,7 +59,7 @@ export function storyItems(
     const found = v1Item(media);
     if (!found) return [];
     const item = owner ? { ...found, owner } : found;
-    return [link.kind === "story" && str(media.pk) === link.item ? { ...item, shared: true } : item];
+    return [shared !== undefined && str(media.pk) === shared ? { ...item, shared: true } : item];
   });
 }
 

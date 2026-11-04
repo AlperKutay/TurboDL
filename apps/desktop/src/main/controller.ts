@@ -527,7 +527,7 @@ export class AppController {
     if (!p || p.type !== "instagram" || !items) return { ok: false, error: "This request no longer exists." };
     const chosen = indices.length > 0 ? indices.map((i) => items[i]).filter((item): item is InstagramItem => item !== undefined) : items;
     if (chosen.length === 0) return { ok: false, error: "Nothing was picked." };
-    const fallback = p.link.kind === "post" ? p.link.code : p.link.kind === "story" ? p.link.item : p.link.kind === "highlight" ? p.link.id : "instagram";
+    const fallback = p.link.kind === "post" ? p.link.code : p.link.kind === "story" ? (p.link.item ?? p.link.username) : p.link.kind === "highlight" ? p.link.id : "instagram";
     // each item into its account's folder when downloads are kept per account
     const target = {
       defaultDir: p.defaultDir,

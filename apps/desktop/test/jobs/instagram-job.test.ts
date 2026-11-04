@@ -250,6 +250,19 @@ describe("Instagram link jobs", () => {
     expect(so.read).toEqual(["17900000000000009"]);
   });
 
+  it("reads an account's stories link (no story in it) with a session, and needs one for it", async () => {
+    const so = fakeSignedOut({ story: [item("a"), { ...item("b"), mediaId: undefined }] });
+    const c = await start(so.deps);
+    const stories = "https://www.instagram.com/stories/someone/";
+    expect(await run(c, { url: stories })).toMatchObject({ kind: "instagramStory", state: "failed", reason: "signInRequired" });
+    expect(so.read).toEqual([]);
+    c.instagramSession.take(SESSION);
+    const job = await run(c, { url: stories });
+    expect(job).toMatchObject({ kind: "instagramStory", state: "done" });
+    // an item without Instagram's id is named after the account
+    expect(sorted(job.files)).toEqual([dl("someone", "a.jpg"), dl("someone", "someone-2.jpg")]);
+  });
+
   it("fails signInRequired for a post only signed-in visitors see, read signed out", async () => {
     const so = fakeSignedOut({});
     so.deps.find = async () => ({ type: "signInOnly" });

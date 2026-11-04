@@ -89,6 +89,14 @@ describe("storyItems", () => {
     expect(file(found[1].url)).toBe("story_two_1080.jpg");
   });
 
+  it("finds an account's current stories by its name, marking none as shared", () => {
+    const found = storyItems([doc(storyReel)], { kind: "story", username: "someone" });
+    expect(found.map((i) => file(i.url))).toEqual(["story_one.mp4", "story_two_1080.jpg"]);
+    expect(found.map((i) => i.shared ?? false)).toEqual([false, false]);
+    expect(found.map((i) => i.owner)).toEqual(["someone", "someone"]);
+    expect(storyItems([doc(storyReel)], { kind: "story", username: "someone_else" })).toEqual([]);
+  });
+
   it("finds a highlight in reels_media and in the connection a share link's page uses", () => {
     expect(storyItems([doc(storyReel)], { kind: "highlight", id: "17900000000000001" }).map((i) => file(i.url))).toEqual([
       "highlight_one_1080.jpg",

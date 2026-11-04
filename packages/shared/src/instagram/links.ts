@@ -1,7 +1,10 @@
-/** What an Instagram address points at. Post and story links under a username are posts and stories, not profiles. */
+/**
+ * What an Instagram address points at. Post and story links under a username are posts and stories, not profiles.
+ * A story link without `item` is the account's stories page (`/stories/<username>/`): all of its current stories.
+ */
 export type InstagramLink =
   | { kind: "post"; code: string }
-  | { kind: "story"; username: string; item: string }
+  | { kind: "story"; username: string; item?: string }
   | { kind: "highlight"; id: string }
   | { kind: "profile"; username: string }
   | { kind: "saved"; username: string };
@@ -27,6 +30,10 @@ export function parseInstagramLink(address: string): InstagramLink | null {
   if (parts[0] === "s" && parts[1]) return sharedHighlight(parts[1]);
   if (parts[0] === "stories" && parts.length >= 3) {
     return parts[1] === "highlights" ? { kind: "highlight", id: parts[2] } : { kind: "story", username: parts[1], item: parts[2] };
+  }
+  if (parts[0] === "stories" && parts.length === 2) {
+    const username = parts[1].toLowerCase();
+    return username !== "highlights" && USERNAME.test(username) ? { kind: "story", username } : null;
   }
   const postAt = parts.findIndex((p) => POST_PARTS.includes(p));
   if (postAt >= 0 && postAt + 1 < parts.length && postAt <= 1) return { kind: "post", code: parts[postAt + 1] };

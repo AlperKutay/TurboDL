@@ -520,6 +520,18 @@ describe("Instagram links", () => {
     expect(ig.finds.map((f) => f.code)).toEqual(["highlight"]);
   });
 
+  it("opens an account's stories link (no story in it) in the picker, signed in or not", async () => {
+    const ig = fakeInstagram(items);
+    const c = await start({}, null, ig.deps);
+    expect(await c.handleDownloadRequest({ url: "https://www.instagram.com/stories/someone/", source: "manual" })).toEqual({ accepted: true });
+    expect(ui.opened[0]).toMatchObject({ type: "instagram", link: { kind: "story", username: "someone" } });
+    expect(await c.findInstagram(ui.opened[0].pendingId)).toEqual({ type: "signedOut" });
+    expect(ig.finds).toEqual([]);
+    c.instagramSession.take(sessionJar);
+    expect((await c.findInstagram(ui.opened[0].pendingId)).type).toBe("items");
+    expect(ig.finds.map((f) => f.code)).toEqual(["story"]);
+  });
+
   it("calls the page off when its picker is closed", async () => {
     let aborted = false;
     const ig = fakeInstagram(
