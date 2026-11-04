@@ -116,9 +116,12 @@ describe("TaggedFeed", () => {
     expect(reports).toEqual([]);
   });
 
-  it("answers signed out when the page shows the profile as everyone sees it", async () => {
+  it("reports a page that shows only the profile as everyone sees it, as any page it can't read", async () => {
     const everyone = JSON.stringify({ data: { xig_user_by_igid_v2: { username: "someone" } } });
-    expect(await failure(feed(new FakeTaggedPage([[everyone]])).load())).toBe("signedOut");
+    const reports: string[][] = [];
+    const f = feed(new FakeTaggedPage([[everyone]]), { firstLoad: 100, report: (_url, documents) => reports.push(documents) });
+    expect(await failure(f.load())).toBe("badAnswer");
+    expect(reports).toEqual([[everyone]]);
   });
 
   it("reports what the page held and says it can't read it when nothing readable comes in time", async () => {

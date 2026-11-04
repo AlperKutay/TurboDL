@@ -1,4 +1,4 @@
-import { SavedError, signedOutProfileView, taggedAnswer, taggedPosts, type ProfilePosts, type SavedPage } from "@turbodl/shared";
+import { SavedError, taggedAnswer, taggedPosts, type ProfilePosts, type SavedPage } from "@turbodl/shared";
 import { within } from "./finder";
 import { LOOK, onSignInPage, resendPaging, sleep, toPage, type ProfileDriver } from "./profile-feed";
 
@@ -83,8 +83,6 @@ export class TaggedFeed implements TaggedSource {
         this.driver.stopCollecting();
         return;
       }
-      // the session is gone: Instagram showed the profile as everyone sees it, without the tab
-      if (signedOutProfileView(documents, this.username)) throw new SavedError("signedOut");
       if (!lastLook) await sleep(poll);
     }
     this.o.report?.(url, documents);

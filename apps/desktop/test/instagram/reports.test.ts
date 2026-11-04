@@ -17,10 +17,9 @@ describe("reportWriter", () => {
     const folder = path.join(dir, "instagram-reports");
     reportWriter(folder, "-tagged.json", { now: () => 1790000000000 })("https://www.instagram.com/someone/tagged/", ['{"a":1}', "{}"]);
     expect(readdirSync(folder)).toEqual(["1790000000000-tagged.json"]);
-    expect(JSON.parse(readFileSync(path.join(folder, "1790000000000-tagged.json"), "utf8"))).toEqual({
-      url: "https://www.instagram.com/someone/tagged/",
-      documents: ['{"a":1}', "{}"],
-    });
+    expect(readFileSync(path.join(folder, "1790000000000-tagged.json"), "utf8")).toBe(
+      JSON.stringify({ url: "https://www.instagram.com/someone/tagged/", documents: ['{"a":1}', "{}"] }),
+    );
   });
 
   it("keeps only the newest five of its own reports, and leaves other files alone", () => {

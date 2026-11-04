@@ -20,7 +20,7 @@ export function reportWriter(folder: string, suffix: string, o: ReportWriterOpti
   return (url, documents) => {
     try {
       mkdirSync(folder, { recursive: true });
-      writeFileSync(path.join(folder, `${(o.now ?? Date.now)()}${suffix}`), JSON.stringify({ url, documents }, null, 1));
+      writeFileSync(path.join(folder, `${(o.now ?? Date.now)()}${suffix}`), JSON.stringify({ url, documents }));
       const reports = readdirSync(folder)
         .filter((name) => name.endsWith(suffix) && /^\d+$/.test(name.slice(0, -suffix.length)))
         .map((name) => ({ name, time: Number(name.slice(0, -suffix.length)) }))
