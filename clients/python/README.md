@@ -18,6 +18,23 @@ or from a checkout of the repo with `pip install ./clients/python`. See the repo
 TurboDL().get("https://www.instagram.com/someone/", videos=False, tagged=True)
 ```
 
+## Backing up a list of profiles
+
+`TurboDL.backup_profiles(profiles, wait=(2, 5), *, posts=True, highlights=True, tagged=False, photos=True, videos=True, name=None)` starts the app's list of profiles, the same one its Profiles screen shows: TurboDL backs them up one after another, waiting a random number of minutes between two of them (`wait` is `(least, most)` in whole minutes, or one number). Every save option is sent as given; unlike a single profile link, highlights are on unless `highlights=False`. The app runs one list at a time and refuses a second while one is unfinished. It needs TurboDL 0.9.0 or newer; an older app raises `TurboDLError`.
+
+It returns a `ProfileListRun`. `wait(poll=2.0, timeout=None)` reads the list every `poll` seconds until it no longer goes on by itself and returns it as a dict, whatever way it ended: its `state` is `finished`, `stopped`, `rateLimited` (Instagram asked to slow down too often) or `signedOut`, and each of its `rows` has the `username` and the row's `state` (`done`, `skipped` or `failed`, with a `note` saying why). `timeout` raises `TimeoutError` and leaves the list running; Ctrl+C stops the list. `refresh()` reads it once, `stop()` stops it (the app keeps it, to continue).
+
+`read_profile_list(path)` reads a `.txt` of profiles as the app does: one per line, as a name, an `@name` or a profile link; blank lines and `#` comments are skipped and a name written twice is kept once. A line that isn't a profile raises `ValueError` naming it.
+
+```python
+from turbodl_client import TurboDL, read_profile_list
+
+run = TurboDL().backup_profiles(read_profile_list("profiles.txt"), wait=(3, 8), videos=False)
+done = run.wait()
+for row in done["rows"]:
+    print(row["username"], row["state"], row.get("note", ""))
+```
+
 ## Instagram posts
 
 `TurboDL.posts(url, since=None, limit=None, known=None)` lists the posts of an Instagram profile or post as `Post` objects (with `PostItem` photos and videos), as TurboDL finds them. It returns a `PostList`: iterate it for the posts; its `job` follows the list, and after the loop `job.failed_items` counts the posts whose page showed nothing. It needs TurboDL 0.8.0 or newer, and raises `SignInRequired` after the posts it could get when the rest needs a sign-in.

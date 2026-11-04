@@ -3,12 +3,13 @@
 import os
 import time
 from datetime import datetime, timezone
-from typing import Any, Callable, Dict, Generator, Iterable, List, Optional, Set, Union
+from typing import Any, Callable, Dict, Generator, Iterable, List, Optional, Set, Tuple, Union
 
 from . import _discover
 from ._http import request, stream_lines
 from .errors import TurboDLError
 from .job import Job
+from .lists import ProfileListRun
 from .posts import PostList
 
 API_VERSION = 1
@@ -155,6 +156,29 @@ class TurboDL:
             options["known"] = list(known)
         job = Job(self._call("POST", "/v1/jobs", {"url": url, "options": options})["job"], self)
         return PostList(self, job)
+
+    def backup_profiles(self, profiles: Iterable[str], wait: Union[Tuple[int, int], int] = (2, 5), *,
+                        posts: bool = True, highlights: bool = True, tagged: bool = False, photos: bool = True,
+                        videos: bool = True, name: Optional[str] = None) -> ProfileListRun:
+        """Starts TurboDL's list of profiles: backs them up one after another, as the Profiles screen's list does.
+
+        `profiles` are names, `@names` or profile links (`read_profile_list()` reads them from a .txt), at most
+        1000. `wait` is the random wait between two profiles in whole minutes, (least, most) or one number;
+        `name` is what the app shows for the list ("API list" when None). Every save option is sent as given: unlike
+        a single profile's `add()`, highlights are on unless `highlights=False`. Returns a ProfileListRun to follow
+        or stop it. The app refuses a second list while one is unfinished (TurboDLError with its message). Needs
+        TurboDL 0.9.0 or newer."""
+        if "lists" not in (self.info().get("features") or []):
+            raise TurboDLError("Update TurboDL to 0.9.0 or newer to back up a list of profiles.")
+        least, most = (wait, wait) if isinstance(wait, int) else wait
+        body = {
+            "profiles": list(profiles),
+            "options": {"posts": posts, "highlights": highlights, "tagged": tagged, "photos": photos, "videos": videos},
+            "wait": {"min": least, "max": most},
+        }  # type: Dict[str, Any]
+        if name is not None:
+            body["name"] = name
+        return ProfileListRun(self, self._call("POST", "/v1/lists", body)["list"])
 
     def instagram_login(self) -> Dict[str, Any]:
         """Opens TurboDL's Instagram sign-in and waits for it: {"signed_in": bool, "username": Optional[str]}."""

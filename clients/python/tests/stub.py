@@ -27,6 +27,18 @@ def make_job(id: str = "j1", url: str = "https://example.com/a", **extra: Any) -
     return job
 
 
+def make_list(profiles: List[str], name: str = "API list", **extra: Any) -> Dict[str, Any]:
+    """A profile list as the API shows it, its first row running."""
+    lst = {
+        "name": name, "index": 0, "state": "running",
+        "rows": [{"username": p, "state": "running" if i == 0 else "waiting"} for i, p in enumerate(profiles)],
+        "options": {"posts": True, "highlights": True, "tagged": False, "photos": True, "videos": True},
+        "wait": {"min": 2, "max": 5},
+    }  # type: Dict[str, Any]
+    lst.update(extra)
+    return lst
+
+
 def write_api_file(folder: str, port: Optional[int], token: str = "tok", api: int = 1,
                    launch: Optional[Dict[str, Any]] = None, error: Optional[str] = None) -> None:
     data = {
@@ -64,6 +76,11 @@ class StubApi:
         self.events_error = None  # type: Optional[Tuple[int, Dict[str, Any]]]
         # set: the app is on its way out; every request calls it, then is dropped unanswered
         self.gone = None  # type: Optional[Callable[[], None]]
+        self.list = None  # type: Optional[Dict[str, Any]]  # what GET /v1/lists/current answers
+        self.list_posted = []  # type: List[Dict[str, Any]]  # the bodies of POST /v1/lists
+        self.list_refusal = None  # type: Optional[Tuple[int, str]]  # (status, error) for POST /v1/lists
+        self.list_reads = 0
+        self.list_stops = 0
         stub = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -110,6 +127,20 @@ class StubApi:
                     return self.send(201, {"job": job})
                 if path == "/v1/jobs" and not post:
                     return self.send(200, {"jobs": list(stub.jobs.values())})
+                if path == "/v1/lists" and post:
+                    stub.list_posted.append(body)
+                    if stub.list_refusal is not None:
+                        return self.send(stub.list_refusal[0], {"error": stub.list_refusal[1]})
+                    stub.list = make_list(body.get("profiles") or [], body.get("name") or "API list")
+                    return self.send(201, {"list": stub.list})
+                if path == "/v1/lists/current" and not post:
+                    stub.list_reads += 1
+                    return self.send(200, {"list": stub.list})
+                if path == "/v1/lists/current/stop" and post:
+                    stub.list_stops += 1
+                    if stub.list is not None and stub.list["state"] in ("running", "waiting", "slowedDown"):
+                        stub.list["state"] = "stopped"
+                    return self.send(200, {"list": stub.list})
                 if path == "/v1/instagram/login" and post:
                     return self.send(200, stub.instagram)
                 if path == "/v1/instagram/logout" and post:

@@ -1,9 +1,11 @@
 import path from "node:path";
-import { TAGGED_AVAILABLE, parseIsoTime, type JobOptions } from "@turbodl/shared";
+import { DEFAULT_LIST_WAIT, TAGGED_AVAILABLE, parseIsoTime, waitProblem, type JobOptions, type ListWait, type ProfileSaveOptions } from "@turbodl/shared";
 
 /** One parsed turbodl command line. */
 export type Command =
   | { type: "get" | "add"; urls: string[]; dir?: string; name?: string; options: JobOptions; json: boolean }
+  /** `get --from-file`: back up the profiles a .txt lists, as the app's profile list */
+  | { type: "profileList"; file: string; wait: ListWait; options: ProfileSaveOptions; json: boolean }
   | { type: "posts"; url: string; since?: string; limit?: number; json: boolean }
   | { type: "list"; json: boolean }
   | { type: "status"; id: string; json: boolean }
@@ -44,6 +46,10 @@ ${tagged ? TAGGED_LINE : ""}  --photos-only          Save photos only (Instagram
   --collection <name>    Download a Saved collection (repeatable)
   --all-collections      Download every Saved collection
 
+Options (get only):
+  --from-file <txt>      Back up the Instagram profiles listed in a .txt, one after another
+  --wait <min>-<max>     Minutes to wait between those profiles, at random (default 2-5)
+
 Options (posts):
   --since <time>         Stop at the first post taken at or before this ISO 8601
                          time (up to 3 older posts at the top are still listed)
@@ -62,9 +68,51 @@ Exit codes: 0 ok, 1 failed, 2 usage, 3 sign-in needed, 4 rate limited,
 /** The `--help` text of this version. */
 export const HELP = helpText();
 
-const VALUE_OPTIONS = new Set(["-d", "--dir", "--name", "--max-height", "--collection", "--since", "--limit"]);
+const VALUE_OPTIONS = new Set(["-d", "--dir", "--name", "--max-height", "--collection", "--since", "--limit", "--from-file", "--wait"]);
 const FLAG_OPTIONS = new Set(["--audio", "--highlights", "--highlights-only", "--no-posts", "--tagged", "--photos-only", "--videos-only", "--all-collections", "--json"]);
 const COMMANDS = new Set(["get", "add", "list", "status", "wait", "cancel", "instagram", "posts"]);
+/** what a list of profiles has no use for */
+const NOT_FOR_LISTS = ["--dir", "--name", "--audio", "--max-height", "--collection", "--all-collections"];
+
+/** Why the profile save flags can't go together, or null. */
+function saveFlagsProblem(flags: Set<string>, taggedAvailable: boolean): string | null {
+  if (flags.has("--highlights") && flags.has("--highlights-only")) return "--highlights and --highlights-only can't both be set";
+  if (flags.has("--photos-only") && flags.has("--videos-only")) return "--photos-only and --videos-only can't both be set";
+  if (flags.has("--tagged") && !taggedAvailable) return "--tagged isn't available in this version";
+  if (flags.has("--no-posts") && !flags.has("--highlights") && !flags.has("--tagged") && !flags.has("--highlights-only")) {
+    return taggedAvailable ? "--no-posts needs --highlights or --tagged" : "--no-posts needs --highlights";
+  }
+  return null;
+}
+
+/** `--wait`: "3" or "2-5" minutes; anything else gets the app's own message. */
+function parseWait(text: string | undefined): ListWait | { error: string } {
+  if (text === undefined) return { ...DEFAULT_LIST_WAIT };
+  const m = /^(\d+)(?:-(\d+))?$/.exec(text);
+  const wait = m ? { min: Number(m[1]), max: Number(m[2] ?? m[1]) } : { min: Number.NaN, max: Number.NaN };
+  const problem = waitProblem(wait);
+  return problem ? { error: problem } : wait;
+}
+
+/** `get --from-file`: every save option spelled out from the flags (highlights only when asked, as for one profile). */
+function listCommand(file: string, rest: string[], flags: Set<string>, values: Map<string, string[]>, o: { cwd: string; tagged: boolean; json: boolean }): Command | { error: string } {
+  if (rest.length > 0) return { error: "--from-file can't be combined with links" };
+  const other = NOT_FOR_LISTS.find((opt) => values.has(opt) || flags.has(opt));
+  if (other) return { error: `--from-file can't be combined with ${other}` };
+  const problem = saveFlagsProblem(flags, o.tagged);
+  if (problem) return { error: problem };
+  const wait = parseWait(values.get("--wait")?.at(-1));
+  if ("error" in wait) return wait;
+  const highlightsOnly = flags.has("--highlights-only");
+  const options: ProfileSaveOptions = {
+    posts: !flags.has("--no-posts") && !highlightsOnly,
+    highlights: flags.has("--highlights") || highlightsOnly,
+    tagged: flags.has("--tagged"),
+    photos: !flags.has("--videos-only"),
+    videos: !flags.has("--photos-only"),
+  };
+  return { type: "profileList", file: path.resolve(o.cwd, file), wait, options, json: o.json };
+}
 
 /**
  * Reads the command line; returns the command or `{ error }` for a usage mistake. `o.tagged`: whether tagged posts are
@@ -148,6 +196,11 @@ export function parseArgs(argv: string[], cwd: string, o: { tagged?: boolean } =
         : { error: "instagram needs login, logout or status" };
   }
 
+  const fromFile = values.get("--from-file")?.at(-1);
+  if (fromFile !== undefined && command === "add") return { error: "--from-file works only with get" };
+  if (fromFile !== undefined) return listCommand(fromFile, rest, flags, values, { cwd, tagged: taggedAvailable, json });
+  if (values.has("--wait")) return { error: "--wait needs --from-file" };
+
   if (rest.length === 0) return { error: `${command} needs at least one link` };
   const name = values.get("--name")?.at(-1);
   if (name !== undefined && rest.length > 1) return { error: "--name takes a single link" };
@@ -159,18 +212,10 @@ export function parseArgs(argv: string[], cwd: string, o: { tagged?: boolean } =
     options.maxHeight = Number(height);
   }
   if (flags.has("--audio")) options.audio = true;
-  if (flags.has("--highlights") && flags.has("--highlights-only")) {
-    return { error: "--highlights and --highlights-only can't both be set" };
-  }
+  const problem = saveFlagsProblem(flags, taggedAvailable);
+  if (problem) return { error: problem };
   if (flags.has("--highlights")) options.highlights = true;
   if (flags.has("--highlights-only")) options.highlightsOnly = true;
-  if (flags.has("--photos-only") && flags.has("--videos-only")) {
-    return { error: "--photos-only and --videos-only can't both be set" };
-  }
-  if (flags.has("--tagged") && !taggedAvailable) return { error: "--tagged isn't available in this version" };
-  if (flags.has("--no-posts") && !flags.has("--highlights") && !flags.has("--tagged") && !flags.has("--highlights-only")) {
-    return { error: taggedAvailable ? "--no-posts needs --highlights or --tagged" : "--no-posts needs --highlights" };
-  }
   // "highlights only" already leaves the posts out, and the app refuses it combined with `posts`.
   if (flags.has("--no-posts") && !flags.has("--highlights-only")) options.posts = false;
   if (flags.has("--tagged")) options.tagged = true;
