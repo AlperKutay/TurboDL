@@ -128,7 +128,7 @@ export class Backups {
       ...(count !== undefined && sample.length > 0 ? { bytes: (count * sampleBytes) / sample.length } : {}),
       ...(freeBytes !== undefined ? { freeBytes } : {}),
       large: (count ?? 0) > LARGE,
-      resumes: ledger.saved.length > 0 && !ledger.reachedEnd,
+      resumes: ledger.saved.length > 0 && !(ledger.reachedEnd.image && ledger.reachedEnd.video),
     };
   }
 

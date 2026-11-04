@@ -2,12 +2,16 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync 
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { SavedError, type BackupView, type InstagramItem, type SavedPost } from "@turbodl/shared";
+import { SavedError, type BackupView, type InstagramItem, type InstagramMediaKind, type SavedPost } from "@turbodl/shared";
 import { BackupRun, type BackupTarget } from "../../src/main/instagram/backup";
 import { LedgerStore, type BackupLedger } from "../../src/main/instagram/ledger";
 
 const item = (id: string, kind: InstagramItem["kind"] = "image"): InstagramItem => ({ kind, url: `https://cdn.example/${id}.${kind === "video" ? "mp4" : "jpg"}`, mediaId: id });
 const post = (id: string, ...items: InstagramItem[]): SavedPost => ({ id, cover: `https://cdn.example/${id}-cover.jpg`, items });
+/** a ledger's done marks, the same for photos and videos */
+const done = (...ids: string[]) => ({ image: ids, video: ids });
+/** a ledger's end reached (or not), the same for photos and videos */
+const end = (reached: boolean) => ({ image: reached, video: reached });
 
 /** Posts 1 (a photo 11 and a video 12) and 2 on the first page, post 3 on the second. */
 const PAGES = [[post("1", item("11"), item("12", "video")), post("2", item("2"))], [post("3", item("3"))]];
@@ -39,6 +43,8 @@ interface Setup {
   checkCount?: boolean;
   /** how a post known only by its cover is read from its own page (a profile seen signed out) */
   read?: (post: SavedPost) => Promise<SavedPost>;
+  /** the kinds of media the run saves (the target's default unless given) */
+  kinds?: InstagramMediaKind[];
 }
 
 function setup(o: Setup = {}) {
@@ -46,7 +52,7 @@ function setup(o: Setup = {}) {
   const pages = o.pages ?? PAGES;
   const ledgers = new LedgerStore(path.join(root, "ledgers"));
   const id = o.id ?? "102";
-  if (o.ledger) ledgers.save(id, { saved: [], failedPosts: [], reachedEnd: false, donePosts: [], signInPosts: [], ...o.ledger });
+  if (o.ledger) ledgers.save(id, { saved: [], failedPosts: [], signInPosts: [], done: done(), reachedEnd: end(false), ...o.ledger });
   const asked: (string | undefined)[] = [];
   /** the posts read from their own pages, in turn */
   const reads: string[] = [];
@@ -64,6 +70,7 @@ function setup(o: Setup = {}) {
     allowsEarlyStop: o.kind !== "highlights",
     ...(o.pageGap ? { pageGap: o.pageGap } : {}),
     ...(o.checkCount ? { checkCount: true } : {}),
+    ...(o.kinds ? { kinds: o.kinds } : {}),
   };
   const read = o.read;
   const run = new BackupRun(
@@ -116,12 +123,12 @@ describe("BackupRun", () => {
     const { run, ledgers, target } = setup();
     await run.start();
     expect(readdirSync(target.dir).sort()).toEqual(["11.jpg", "12.mp4", "2.jpg", "3.jpg"]);
-    expect(ledgers.load("102")).toEqual({ saved: ["11", "12", "2", "3"], failedPosts: [], reachedEnd: true, donePosts: ["1", "2", "3"], signInPosts: [] });
+    expect(ledgers.load("102")).toEqual({ saved: ["11", "12", "2", "3"], failedPosts: [], signInPosts: [], done: done("1", "2", "3"), reachedEnd: end(true) });
     expect(run.view()).toMatchObject({ state: "finished", done: 3, failed: 0, left: 0, saved: 4 });
   });
 
   it("goes on where an earlier run stopped, without saving anything twice", async () => {
-    const { run, fetched } = setup({ ledger: { saved: ["11", "12"], failedPosts: [], reachedEnd: false } });
+    const { run, fetched } = setup({ ledger: { saved: ["11", "12"], failedPosts: [], reachedEnd: end(false) } });
     await run.start();
     expect(fetched).toEqual(["https://cdn.example/2.jpg", "https://cdn.example/3.jpg"]);
     expect(run.view()).toMatchObject({ state: "finished", done: 3, saved: 2 });
@@ -140,13 +147,13 @@ describe("BackupRun", () => {
 
   it("stops at a page already saved only after a complete pass that left nothing failed", async () => {
     const all = ["11", "12", "2", "3"];
-    const clean = setup({ ledger: { saved: all, failedPosts: [], reachedEnd: true } });
+    const clean = setup({ ledger: { saved: all, failedPosts: [], reachedEnd: end(true) } });
     await clean.run.start();
     expect(clean.asked).toEqual([undefined]);
     expect(clean.run.view()).toMatchObject({ state: "finished", done: 3 });
     for (const ledger of [
-      { saved: all, failedPosts: [], reachedEnd: false },
-      { saved: all, failedPosts: ["9"], reachedEnd: true },
+      { saved: all, failedPosts: [], reachedEnd: end(false) },
+      { saved: all, failedPosts: ["9"], reachedEnd: end(true) },
     ]) {
       const again = setup({ ledger });
       await again.run.start();
@@ -158,7 +165,7 @@ describe("BackupRun", () => {
     const { run, ledgers } = setup({ pushBack: { page: 1, error: new SavedError("signedOut") } });
     await run.start();
     expect(run.view().state).toBe("signedOut");
-    expect(ledgers.load("102")).toEqual({ saved: ["11", "12", "2"], failedPosts: [], reachedEnd: false, donePosts: ["1", "2"], signInPosts: [] });
+    expect(ledgers.load("102")).toEqual({ saved: ["11", "12", "2"], failedPosts: [], signInPosts: [], done: done("1", "2"), reachedEnd: end(false) });
   });
 
   it("stops at once when Instagram asks to slow down", async () => {
@@ -225,11 +232,11 @@ describe("BackupRun", () => {
     expect(run.view()).toMatchObject({ state: "finished", done: 5, saved: 0 });
     // once for the page, once at the listing's end
     expect(save).toHaveBeenCalledTimes(2);
-    expect(ledgers.load("102").donePosts).toEqual(["1", "2", "3", "4", "5"]);
+    expect(ledgers.load("102").done).toEqual(done("1", "2", "3", "4", "5"));
   });
 
   it("waits the target's own gap before each next page", async () => {
-    const { run, waits } = setup({ pageGap: [3000, 6000], ledger: { saved: ["11", "12", "2"], failedPosts: [], reachedEnd: false } });
+    const { run, waits } = setup({ pageGap: [3000, 6000], ledger: { saved: ["11", "12", "2"], failedPosts: [], reachedEnd: end(false) } });
     await run.start();
     // page 1 all saved before; page 2 after 3–6 s (4.5 s at 0.5); post 3 fetched → 2.25 s
     expect(waits).toEqual([4500, 2250]);
@@ -237,13 +244,13 @@ describe("BackupRun", () => {
 
   it("draws a new gap before each next page", async () => {
     const pages = [[post("1", item("11"))], [post("2", item("2"))], [post("3", item("3"))]];
-    const { run, waits } = setup({ pages, pageGap: [3000, 6000], randoms: [0, 1], ledger: { saved: ["11", "2", "3"], failedPosts: [], reachedEnd: false } });
+    const { run, waits } = setup({ pages, pageGap: [3000, 6000], randoms: [0, 1], ledger: { saved: ["11", "2", "3"], failedPosts: [], reachedEnd: end(false) } });
     await run.start();
     expect(waits).toEqual([3000, 6000]);
   });
 
   it("waits between posts it fetched and before each next page, never after posts already done", async () => {
-    const { run, waits } = setup({ ledger: { saved: ["2"], failedPosts: [], reachedEnd: false } });
+    const { run, waits } = setup({ ledger: { saved: ["2"], failedPosts: [], reachedEnd: end(false) } });
     await run.start();
     // post 1 fetched → 1.5–3 s (2.25 s at 0.5); post 2 done; page 2 → 2 s; post 3 fetched → 2.25 s
     expect(waits).toEqual([2250, 2000, 2250]);
@@ -273,7 +280,7 @@ describe("BackupRun over a profile seen signed out", () => {
     await run.start();
     expect(reads).toEqual(["1", "2", "3"]);
     expect(readdirSync(target.dir).sort()).toEqual(["11.jpg", "12.mp4", "2.jpg", "3.jpg"]);
-    expect(ledgers.load("102")).toEqual({ saved: ["11", "12", "2", "3"], failedPosts: [], reachedEnd: true, donePosts: ["1", "2", "3"], signInPosts: [] });
+    expect(ledgers.load("102")).toEqual({ saved: ["11", "12", "2", "3"], failedPosts: [], signInPosts: [], done: done("1", "2", "3"), reachedEnd: end(true) });
     expect(run.view()).toMatchObject({ state: "finished", done: 3, failed: 0, left: 0, saved: 4 });
   });
 
@@ -310,11 +317,11 @@ describe("BackupRun over a profile seen signed out", () => {
   });
 
   it("knows a post an earlier backup saved by its items once it is read, downloading nothing again", async () => {
-    const { run, reads, fetched, ledgers } = setup({ pages: COVERS, read: reader(), ledger: { saved: ["11", "12", "2", "3"], reachedEnd: true } });
+    const { run, reads, fetched, ledgers } = setup({ pages: COVERS, read: reader(), ledger: { saved: ["11", "12", "2", "3"], reachedEnd: end(true) } });
     await run.start();
     expect(reads).toEqual(["1", "2", "3"]);
     expect(fetched).toEqual([]);
-    expect(ledgers.load("102").donePosts).toEqual(["1", "2", "3"]);
+    expect(ledgers.load("102").done).toEqual(done("1", "2", "3"));
   });
 
   it("skips a post shown only to signed-in visitors: counted, not failed, and not read again on later runs", async () => {
@@ -322,7 +329,7 @@ describe("BackupRun over a profile seen signed out", () => {
     await first.run.start();
     expect(first.reads).toEqual(["1", "2", "3"]);
     expect(first.run.view()).toMatchObject({ state: "finished", done: 2, failed: 0, signInOnly: 1, left: 0 });
-    expect(first.ledgers.load("102")).toEqual({ saved: ["11", "12", "3"], failedPosts: [], reachedEnd: true, donePosts: ["1", "3"], signInPosts: ["2"] });
+    expect(first.ledgers.load("102")).toEqual({ saved: ["11", "12", "3"], failedPosts: [], signInPosts: ["2"], done: done("1", "3"), reachedEnd: end(true) });
     // it doesn't keep the next run from stopping at the first page
     const again = setup({ pages: COVERS, read: reader({ signInOnly: ["2"] }) });
     await again.run.start();
@@ -346,7 +353,7 @@ describe("BackupRun over a profile seen signed out", () => {
     await signedIn.run.start();
     expect(signedIn.asked).toEqual([undefined, "1"]);
     expect(signedIn.fetched).toEqual(["https://cdn.example/3.jpg"]);
-    expect(signedIn.ledgers.load("102")).toMatchObject({ failedPosts: [], signInPosts: [], donePosts: ["1", "2", "3"], reachedEnd: true });
+    expect(signedIn.ledgers.load("102")).toMatchObject({ failedPosts: [], signInPosts: [], done: done("1", "2", "3"), reachedEnd: end(true) });
     expect(signedIn.run.view()).toMatchObject({ state: "finished", done: 3, left: 0 });
     expect(signedIn.run.view().signInOnly).toBeUndefined();
   });
@@ -357,7 +364,7 @@ describe("BackupRun over a profile seen signed out", () => {
     expect(walled.run.view().state).toBe("rateLimited");
     expect(walled.reads).toEqual(["1", "2"]);
     expect(walled.asked).toEqual([undefined]);
-    expect(walled.ledgers.load("102")).toEqual({ saved: ["11", "12"], failedPosts: [], reachedEnd: false, donePosts: ["1"], signInPosts: [] });
+    expect(walled.ledgers.load("102")).toEqual({ saved: ["11", "12"], failedPosts: [], signInPosts: [], done: done("1"), reachedEnd: end(false) });
     const again = setup({ pages: COVERS, read: reader() });
     await again.run.start();
     expect(again.reads).toEqual(["2", "3"]);
@@ -369,7 +376,7 @@ describe("BackupRun over a profile seen signed out", () => {
     const first = setup({ pages: [[cover("1"), cover("9")]], read: reader(), count: 2 });
     await first.run.start();
     expect(first.run.view()).toMatchObject({ state: "finished", done: 1, failed: 1 });
-    expect(first.ledgers.load("102")).toMatchObject({ failedPosts: ["9"], donePosts: ["1"] });
+    expect(first.ledgers.load("102")).toMatchObject({ failedPosts: ["9"], done: done("1") });
     const again = setup({ pages: [[cover("1"), cover("9")]], read: reader(), count: 2 });
     await again.run.start();
     expect(again.reads).toEqual(["9"]);
@@ -382,7 +389,7 @@ describe("BackupRun over a profile seen signed out", () => {
     expect(reads).toEqual(["1"]);
     expect(fetched).toEqual([]);
     expect(asked).toEqual([undefined]);
-    expect(ledgers.load("102")).toMatchObject({ failedPosts: [], donePosts: [], reachedEnd: false });
+    expect(ledgers.load("102")).toMatchObject({ failedPosts: [], done: done(), reachedEnd: end(false) });
   });
 
   it("forgets posts left for a sign-in that a whole listing no longer shows, but not after a listing that ended short", async () => {
@@ -402,26 +409,130 @@ describe("BackupRun over a profile seen signed out", () => {
     const short = setup({ id: "short", pages: listing(40), count: 100, checkCount: true });
     await short.run.start();
     expect(short.run.view()).toMatchObject({ state: "finished", done: 40, warning: "Instagram listed 40 of 100 posts." });
-    expect(short.ledgers.load("short").reachedEnd).toBe(false);
+    expect(short.ledgers.load("short").reachedEnd).toEqual(end(false));
     const nearly = setup({ id: "nearly", pages: listing(95), count: 100, checkCount: true });
     await nearly.run.start();
     expect(nearly.run.view()).toMatchObject({ state: "finished", done: 95 });
     expect(nearly.run.view().warning).toBeUndefined();
-    expect(nearly.ledgers.load("nearly").reachedEnd).toBe(true);
+    expect(nearly.ledgers.load("nearly").reachedEnd).toEqual(end(true));
     // without the check (signed in) the end is Instagram's word, as always
     const trusted = setup({ id: "trusted", pages: listing(40), count: 100 });
     await trusted.run.start();
     expect(trusted.run.view().warning).toBeUndefined();
-    expect(trusted.ledgers.load("trusted").reachedEnd).toBe(true);
+    expect(trusted.ledgers.load("trusted").reachedEnd).toEqual(end(true));
   });
 
   it("goes through every highlight on every run: a highlight is never done by its id", async () => {
     const first = setup({ kind: "highlights", pages: [[post("h1", item("s1"))]], count: 1 });
     await first.run.start();
-    expect(first.ledgers.load("102").donePosts).toEqual([]);
-    const again = setup({ kind: "highlights", pages: [[post("h1", item("s1"), item("s2"))]], count: 1, ledger: { saved: ["s1"], donePosts: ["h1"] } });
+    expect(first.ledgers.load("102").done).toEqual(done());
+    const again = setup({ kind: "highlights", pages: [[post("h1", item("s1"), item("s2"))]], count: 1, ledger: { saved: ["s1"], done: done("h1") } });
     await again.run.start();
     expect(again.fetched).toEqual(["https://cdn.example/s2.jpg"]);
     expect(again.run.view()).toMatchObject({ state: "finished", done: 1 });
+  });
+});
+
+/** A photo and a video, by the post's id: `Ai.jpg` and `Av.mp4` for post A. */
+const both = (id: string): SavedPost => post(id, item(`${id}i`), item(`${id}v`, "video"));
+const photoOf = (id: string) => `https://cdn.example/${id}i.jpg`;
+const videoOf = (id: string) => `https://cdn.example/${id}v.mp4`;
+
+describe("BackupRun saving chosen kinds of media", () => {
+  it("reads a ledger written before kinds were kept", async () => {
+    const pages = [[cover("1")], [cover("2")]];
+    const s = setup({ pages, read: reader(), count: 2 });
+    mkdirSync(path.join(root, "ledgers"), { recursive: true });
+    writeFileSync(path.join(root, "ledgers", "102.json"), JSON.stringify({ saved: ["11", "12", "2"], donePosts: ["1", "2"], reachedEnd: true, failedPosts: [], signInPosts: [] }));
+    expect(s.ledgers.load("102")).toEqual({ saved: ["11", "12", "2"], failedPosts: [], signInPosts: [], done: done("1", "2"), reachedEnd: end(true) });
+    // photos and videos: its marks hold for both, so the first page already saved ends the run
+    await s.run.start();
+    expect(s.asked).toEqual([undefined]);
+    expect(s.reads).toEqual([]);
+    expect(s.fetched).toEqual([]);
+    expect(s.run.view()).toMatchObject({ state: "finished", done: 2, failed: 0 });
+  });
+
+  it("saves only the wanted kinds of a carousel", async () => {
+    const { run, fetched, ledgers, target } = setup({ pages: [[post("1", item("i1"), item("v1", "video"))]], count: 1, kinds: ["image"] });
+    await run.start();
+    expect(fetched).toEqual(["https://cdn.example/i1.jpg"]);
+    expect(readdirSync(target.dir)).toEqual(["i1.jpg"]);
+    const ledger = ledgers.load("102");
+    expect(ledger.done).toEqual({ image: ["1"], video: [] });
+    expect(ledger.saved).toEqual(["i1"]);
+    expect(ledger.reachedEnd).toEqual({ image: true, video: false });
+    expect(run.view()).toMatchObject({ state: "finished", done: 1, failed: 0, saved: 1 });
+  });
+
+  it("counts a post with none of the wanted kinds as done", async () => {
+    // known by their covers; their own pages show a video each
+    const pages = [[cover("r1")], [cover("r2")]];
+    const read = async (p: SavedPost): Promise<SavedPost> => ({ ...p, items: [item(`${p.id}v`, "video")], unread: false });
+    const first = setup({ pages, read, count: 2, kinds: ["image"] });
+    await first.run.start();
+    expect(first.reads).toEqual(["r1", "r2"]);
+    expect(first.fetched).toEqual([]);
+    expect(first.run.view()).toMatchObject({ state: "finished", done: 2, failed: 0, saved: 0 });
+    expect(first.ledgers.load("102")).toMatchObject({ failedPosts: [], done: { image: ["r1", "r2"], video: [] } });
+    // not read again: the next photos-only run stops at the first page
+    const again = setup({ pages, read, count: 2, kinds: ["image"] });
+    await again.run.start();
+    expect(again.asked).toEqual([undefined]);
+    expect(again.reads).toEqual([]);
+    expect(again.fetched).toEqual([]);
+    expect(again.run.view()).toMatchObject({ state: "finished", done: 2, failed: 0 });
+  });
+
+  it("fills in a kind a later run asks for, after a run without it", async () => {
+    // a third page below B shows where a run stops: a run that went on would ask for it
+    const first = setup({ pages: [[both("A")], [both("B")], [both("C")]], count: 3, kinds: ["image", "video"] });
+    await first.run.start();
+    expect(first.run.view()).toMatchObject({ state: "finished", done: 3, failed: 0, saved: 6 });
+    // a new post P on top; photos only
+    const later = [[both("P"), both("A")], [both("B")], [both("C")]];
+    const photos = setup({ pages: later, count: 4, kinds: ["image"] });
+    await photos.run.start();
+    expect(photos.fetched).toEqual([photoOf("P")]);
+    expect(photos.asked).toEqual([undefined, "1"]);
+    expect(photos.ledgers.load("102").done).toEqual({ image: ["A", "B", "C", "P"], video: ["A", "B", "C"] });
+    // photos and videos again: P's video, nothing of A or B again, and B's page ends it (done for both kinds)
+    const again = setup({ pages: later, count: 4, kinds: ["image", "video"] });
+    await again.run.start();
+    expect(again.fetched).toEqual([videoOf("P")]);
+    expect(again.asked).toEqual([undefined, "1"]);
+    expect(again.ledgers.load("102").done).toEqual({ image: ["A", "B", "C", "P"], video: ["A", "B", "C", "P"] });
+    expect(again.run.view()).toMatchObject({ state: "finished", done: 4, failed: 0, saved: 1 });
+  });
+
+  it("stops early for a kind only after a complete pass with it", async () => {
+    // X, a photo alone on the first page, has nothing for a videos-only run: that page alone would look saved
+    const pages = [[post("X", item("Xi"))], [both("P"), both("A")], [both("B")]];
+    const photos = setup({ pages, count: 4, kinds: ["image"] });
+    await photos.run.start();
+    expect(photos.run.view()).toMatchObject({ state: "finished", done: 4, failed: 0 });
+    expect(photos.ledgers.load("102").reachedEnd).toEqual({ image: true, video: false });
+    const videos = setup({ pages, count: 4, kinds: ["video"] });
+    await videos.run.start();
+    expect(videos.asked).toEqual([undefined, "1", "2"]);
+    expect(videos.fetched).toEqual([videoOf("P"), videoOf("A"), videoOf("B")]);
+    expect(videos.ledgers.load("102").reachedEnd).toEqual(end(true));
+    // after that pass, a videos-only run stops at the first page
+    const again = setup({ pages, count: 4, kinds: ["video"] });
+    await again.run.start();
+    expect(again.asked).toEqual([undefined]);
+    expect(again.fetched).toEqual([]);
+  });
+
+  it("saves only the wanted kinds of a highlight's stories, and the others on a later run that asks for them", async () => {
+    const pages = [[post("h1", item("s1"), item("s2", "video"))]];
+    const photos = setup({ kind: "highlights", pages, count: 1, kinds: ["image"] });
+    await photos.run.start();
+    expect(photos.fetched).toEqual(["https://cdn.example/s1.jpg"]);
+    expect(photos.ledgers.load("102").done).toEqual(done());
+    const videos = setup({ kind: "highlights", pages, count: 1, kinds: ["video"] });
+    await videos.run.start();
+    expect(videos.fetched).toEqual(["https://cdn.example/s2.mp4"]);
+    expect(videos.run.view()).toMatchObject({ state: "finished", done: 1, failed: 0 });
   });
 });
