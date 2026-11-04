@@ -141,6 +141,7 @@ function OptionsConfirm({
   initial,
   signedIn,
   kindsOnly = false,
+  signingIn,
   start,
   onSignIn,
   onClose,
@@ -155,6 +156,8 @@ function OptionsConfirm({
   initial: ProfileSaveOptions;
   signedIn: boolean;
   kindsOnly?: boolean;
+  /** a sign-in is going on */
+  signingIn: boolean;
   start(options: ProfileSaveOptions): Promise<Result>;
   onSignIn(): void;
   onClose(): void;
@@ -186,6 +189,7 @@ function OptionsConfirm({
         }}
         signedIn={signedIn}
         kindsOnly={kindsOnly}
+        signingIn={signingIn}
         onSignIn={onSignIn}
       />
     </BackupConfirm>
@@ -244,11 +248,12 @@ function ProfilePosts({
         <OptionsConfirm
           title={`Back up @${username}`}
           folder={folder}
-          where={`Every photo and video goes into ${folder} (highlights and tagged posts into its Highlights and Tagged folders). A later backup saves only what is new — and what you tick later is fetched for older posts too.`}
+          where={`Every photo and video goes into ${folder} (highlights and tagged posts into folders of their own). A later backup saves only what is new — and what you tick later is fetched for older posts too.`}
           plan={confirming.plan}
           {...(limited ? { note: SIGNED_OUT_PACE } : {})}
           initial={saveOptions}
           signedIn={confirming.signedIn}
+          signingIn={busy}
           start={(options) => api.startProfileBackup(username, effectiveSaveOptions(options, confirming.signedIn))}
           onSignIn={onSignIn}
           onClose={() => setConfirming(null)}
@@ -339,6 +344,7 @@ function ProfileHighlights({
           initial={saveOptions}
           signedIn={confirming.signedIn}
           kindsOnly
+          signingIn={busy}
           start={({ photos, videos }) => api.startHighlightsBackup(username, { photos, videos })}
           onSignIn={onSignIn}
           onClose={() => setConfirming(null)}

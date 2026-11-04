@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { SavedPost } from "@turbodl/shared";
 import { LedgerStore, allowsEarlyStop, postDone, wantedItems, type BackupLedger } from "../../src/main/instagram/ledger";
 
-const EMPTY: BackupLedger = { saved: [], failedPosts: [], signInPosts: [], done: { image: [], video: [] }, reachedEnd: { image: false, video: false } };
+const EMPTY: BackupLedger = { saved: [], failedPosts: [], signInPosts: [], done: { image: [], video: [] }, reachedEnd: { image: false, video: false }, unfinished: false };
 const BOTH = ["image", "video"] as const;
 /** done marks for both kinds */
 const doneSets = (image: string[], video: string[] = image) => ({ image: new Set(image), video: new Set(video) });
@@ -23,7 +23,7 @@ const store = () => {
 describe("LedgerStore", () => {
   it("keeps what a backup saved, between runs", () => {
     const ledgers = store();
-    const ledger: BackupLedger = { saved: ["11", "12"], failedPosts: ["2"], signInPosts: ["3"], done: { image: ["1", "4"], video: ["1"] }, reachedEnd: { image: true, video: false } };
+    const ledger: BackupLedger = { saved: ["11", "12"], failedPosts: ["2"], signInPosts: ["3"], done: { image: ["1", "4"], video: ["1"] }, reachedEnd: { image: true, video: false }, unfinished: true };
     ledgers.save("102", ledger);
     expect(ledgers.load("102")).toEqual(ledger);
   });
@@ -40,7 +40,7 @@ describe("LedgerStore", () => {
     const ledgers = store();
     ledgers.save("105", EMPTY);
     writeFileSync(path.join(folder, "instagram-backups", "105.json"), JSON.stringify({ saved: ["11"], failedPosts: ["2"], reachedEnd: true }));
-    expect(ledgers.load("105")).toEqual({ saved: ["11"], failedPosts: ["2"], signInPosts: [], done: { image: [], video: [] }, reachedEnd: { image: true, video: true } });
+    expect(ledgers.load("105")).toEqual({ saved: ["11"], failedPosts: ["2"], signInPosts: [], done: { image: [], video: [] }, reachedEnd: { image: true, video: true }, unfinished: false });
   });
 
   it("reads a ledger written before kinds were kept: its marks count for photos and videos", () => {
@@ -49,13 +49,30 @@ describe("LedgerStore", () => {
     const file = path.join(folder, "instagram-backups", "106.json");
     writeFileSync(file, JSON.stringify({ saved: ["11"], donePosts: ["p1"], reachedEnd: true, failedPosts: [], signInPosts: [] }));
     const ledger = ledgers.load("106");
-    expect(ledger).toEqual({ saved: ["11"], failedPosts: [], signInPosts: [], done: { image: ["p1"], video: ["p1"] }, reachedEnd: { image: true, video: true } });
+    expect(ledger).toEqual({ saved: ["11"], failedPosts: [], signInPosts: [], done: { image: ["p1"], video: ["p1"] }, reachedEnd: { image: true, video: true }, unfinished: false });
     // one that never reached the end reached it for neither kind
     writeFileSync(file, JSON.stringify({ saved: ["11"], donePosts: ["p1"], reachedEnd: false, failedPosts: [], signInPosts: [] }));
     expect(ledgers.load("106").reachedEnd).toEqual({ image: false, video: false });
     // written back, it has only the new shape
     ledgers.save("106", ledger);
-    expect(Object.keys(JSON.parse(readFileSync(file, "utf8"))).sort()).toEqual(["done", "failedPosts", "reachedEnd", "saved", "signInPosts"]);
+    expect(Object.keys(JSON.parse(readFileSync(file, "utf8"))).sort()).toEqual(["done", "failedPosts", "reachedEnd", "saved", "signInPosts", "unfinished"]);
+  });
+
+  it("reads a ledger written before it said whether its last run was left unfinished: unfinished unless it reached the end for both kinds", () => {
+    const ledgers = store();
+    ledgers.save("107", EMPTY);
+    const file = path.join(folder, "instagram-backups", "107.json");
+    const old = { saved: ["11"], failedPosts: [], signInPosts: [], done: { image: ["p1"], video: [] } };
+    writeFileSync(file, JSON.stringify({ ...old, reachedEnd: { image: true, video: false } }));
+    expect(ledgers.load("107").unfinished).toBe(true);
+    writeFileSync(file, JSON.stringify({ ...old, reachedEnd: { image: true, video: true } }));
+    expect(ledgers.load("107").unfinished).toBe(false);
+    // one from before kinds were kept, likewise
+    writeFileSync(file, JSON.stringify({ saved: ["11"], donePosts: ["p1"], reachedEnd: false, failedPosts: [], signInPosts: [] }));
+    expect(ledgers.load("107").unfinished).toBe(true);
+    // a ledger that says so keeps what it says
+    writeFileSync(file, JSON.stringify({ ...old, reachedEnd: { image: true, video: false }, unfinished: false }));
+    expect(ledgers.load("107").unfinished).toBe(false);
   });
 
   it("names the file safely whatever the id holds", () => {

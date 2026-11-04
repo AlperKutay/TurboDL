@@ -62,7 +62,7 @@ test("profiles: backs a profile up and lists it", async () => {
     await expect(confirm).toContainText("6 posts");
     // at first everything is ticked, tagged posts too (signed in)
     for (const name of ["Posts", "Highlights", "Tagged", "Photos", "Videos"]) await expect(confirm.getByRole("checkbox", { name, exact: true })).toBeChecked();
-    await expect(confirm).toContainText("(highlights and tagged posts into its Highlights and Tagged folders)");
+    await expect(confirm).toContainText("(highlights and tagged posts into folders of their own)");
     await confirm.getByRole("button", { name: "Start backup" }).click();
     await expect(confirm).toBeHidden({ timeout: 15_000 });
     // the parts run in turn (posts, highlights, tagged posts): the last one's end is the backup's
@@ -112,15 +112,18 @@ test("profiles: a backup saves the kinds ticked, remembers them, and fetches a k
     expect(readdirSync(root).sort()).toEqual(["Tagged", "p1.png", "p3.png"]);
     expect(readdirSync(path.join(root, "Tagged"))).toEqual(["p1.png"]);
 
-    // the choice is remembered; Videos ticked now fetches the video of the post saved before, tagged too (the button may
-    // offer to continue: the posts' ledger hasn't reached the end for videos)
-    await main.getByRole("button", { name: /^(Back up this profile|Continue backup)$/ }).click();
+    // the choice is remembered; Videos ticked now fetches the video of the post saved before, tagged too (the backup
+    // without videos finished: nothing to continue)
+    await main.getByRole("button", { name: "Back up this profile" }).click();
     await expect(photos).toBeChecked();
     await expect(videos).not.toBeChecked();
+    await expect(confirm).not.toContainText("An earlier backup stopped before the end");
     await videos.check();
     await start.click();
     await expect.poll(() => readdirSync(path.join(root, "Tagged")).sort(), { timeout: 30_000 }).toEqual(["p1.png", "p2.mp4"]);
     expect(readdirSync(root).sort()).toEqual(["Tagged", "p1.png", "p2.mp4", "p3.png"]);
+    await expect(panel).toContainText("demo.plain · Tagged");
+    await expect(panel).toContainText("Backup finished", { timeout: 30_000 });
   } finally {
     await app.close();
     await server.close();

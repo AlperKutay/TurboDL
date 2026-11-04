@@ -4,6 +4,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { SavedError, type BackupView, type InstagramItem, type InstagramMediaKind, type SavedPost } from "@turbodl/shared";
 import { BackupRun, type BackupTarget } from "../../src/main/instagram/backup";
+import { Backups } from "../../src/main/instagram/backups";
 import { LedgerStore, type BackupLedger } from "../../src/main/instagram/ledger";
 
 const item = (id: string, kind: InstagramItem["kind"] = "image"): InstagramItem => ({ kind, url: `https://cdn.example/${id}.${kind === "video" ? "mp4" : "jpg"}`, mediaId: id });
@@ -52,7 +53,7 @@ function setup(o: Setup = {}) {
   const pages = o.pages ?? PAGES;
   const ledgers = new LedgerStore(path.join(root, "ledgers"));
   const id = o.id ?? "102";
-  if (o.ledger) ledgers.save(id, { saved: [], failedPosts: [], signInPosts: [], done: done(), reachedEnd: end(false), ...o.ledger });
+  if (o.ledger) ledgers.save(id, { saved: [], failedPosts: [], signInPosts: [], done: done(), reachedEnd: end(false), unfinished: false, ...o.ledger });
   const asked: (string | undefined)[] = [];
   /** the posts read from their own pages, in turn */
   const reads: string[] = [];
@@ -123,7 +124,7 @@ describe("BackupRun", () => {
     const { run, ledgers, target } = setup();
     await run.start();
     expect(readdirSync(target.dir).sort()).toEqual(["11.jpg", "12.mp4", "2.jpg", "3.jpg"]);
-    expect(ledgers.load("102")).toEqual({ saved: ["11", "12", "2", "3"], failedPosts: [], signInPosts: [], done: done("1", "2", "3"), reachedEnd: end(true) });
+    expect(ledgers.load("102")).toEqual({ saved: ["11", "12", "2", "3"], failedPosts: [], signInPosts: [], done: done("1", "2", "3"), reachedEnd: end(true), unfinished: false });
     expect(run.view()).toMatchObject({ state: "finished", done: 3, failed: 0, left: 0, saved: 4 });
   });
 
@@ -165,7 +166,7 @@ describe("BackupRun", () => {
     const { run, ledgers } = setup({ pushBack: { page: 1, error: new SavedError("signedOut") } });
     await run.start();
     expect(run.view().state).toBe("signedOut");
-    expect(ledgers.load("102")).toEqual({ saved: ["11", "12", "2"], failedPosts: [], signInPosts: [], done: done("1", "2"), reachedEnd: end(false) });
+    expect(ledgers.load("102")).toEqual({ saved: ["11", "12", "2"], failedPosts: [], signInPosts: [], done: done("1", "2"), reachedEnd: end(false), unfinished: true });
   });
 
   it("stops at once when Instagram asks to slow down", async () => {
@@ -280,7 +281,7 @@ describe("BackupRun over a profile seen signed out", () => {
     await run.start();
     expect(reads).toEqual(["1", "2", "3"]);
     expect(readdirSync(target.dir).sort()).toEqual(["11.jpg", "12.mp4", "2.jpg", "3.jpg"]);
-    expect(ledgers.load("102")).toEqual({ saved: ["11", "12", "2", "3"], failedPosts: [], signInPosts: [], done: done("1", "2", "3"), reachedEnd: end(true) });
+    expect(ledgers.load("102")).toEqual({ saved: ["11", "12", "2", "3"], failedPosts: [], signInPosts: [], done: done("1", "2", "3"), reachedEnd: end(true), unfinished: false });
     expect(run.view()).toMatchObject({ state: "finished", done: 3, failed: 0, left: 0, saved: 4 });
   });
 
@@ -329,7 +330,7 @@ describe("BackupRun over a profile seen signed out", () => {
     await first.run.start();
     expect(first.reads).toEqual(["1", "2", "3"]);
     expect(first.run.view()).toMatchObject({ state: "finished", done: 2, failed: 0, signInOnly: 1, left: 0 });
-    expect(first.ledgers.load("102")).toEqual({ saved: ["11", "12", "3"], failedPosts: [], signInPosts: ["2"], done: done("1", "3"), reachedEnd: end(true) });
+    expect(first.ledgers.load("102")).toEqual({ saved: ["11", "12", "3"], failedPosts: [], signInPosts: ["2"], done: done("1", "3"), reachedEnd: end(true), unfinished: false });
     // it doesn't keep the next run from stopping at the first page
     const again = setup({ pages: COVERS, read: reader({ signInOnly: ["2"] }) });
     await again.run.start();
@@ -364,7 +365,7 @@ describe("BackupRun over a profile seen signed out", () => {
     expect(walled.run.view().state).toBe("rateLimited");
     expect(walled.reads).toEqual(["1", "2"]);
     expect(walled.asked).toEqual([undefined]);
-    expect(walled.ledgers.load("102")).toEqual({ saved: ["11", "12"], failedPosts: [], signInPosts: [], done: done("1"), reachedEnd: end(false) });
+    expect(walled.ledgers.load("102")).toEqual({ saved: ["11", "12"], failedPosts: [], signInPosts: [], done: done("1"), reachedEnd: end(false), unfinished: true });
     const again = setup({ pages: COVERS, read: reader() });
     await again.run.start();
     expect(again.reads).toEqual(["2", "3"]);
@@ -433,6 +434,57 @@ describe("BackupRun over a profile seen signed out", () => {
   });
 });
 
+/** Whether a backup's confirmation offers to continue it, as its ledger says. */
+async function resumes(ledgers: LedgerStore, id = "102"): Promise<boolean> {
+  const backups = new Backups({ ledgers, fetch: async () => undefined, wait: async () => undefined, headers: () => ({}), held: () => false, onBackup: () => undefined });
+  return (await backups.plan(id, undefined, [], root)).resumes;
+}
+
+describe("BackupRun and Continue", () => {
+  it("offers no Continue after a run of fewer kinds that went to the end", async () => {
+    const { run, ledgers } = setup({ kinds: ["image"] });
+    await run.start();
+    expect(ledgers.load("102")).toMatchObject({ reachedEnd: { image: true, video: false }, unfinished: false });
+    expect(await resumes(ledgers)).toBe(false);
+  });
+
+  it("offers Continue after a run stopped midway, even when an earlier run went to the end", async () => {
+    // posts 2 and 3 saved by a complete run; post 1 is new, and the run is stopped on its video
+    const { run, ledgers } = setup({ hang: "https://cdn.example/12.mp4", ledger: { saved: ["2", "3"], done: done("2", "3"), reachedEnd: end(true) } });
+    const running = run.start();
+    await new Promise((r) => setTimeout(r, 50));
+    void run.stop();
+    await running;
+    expect(ledgers.load("102")).toMatchObject({ saved: ["2", "3", "11"], reachedEnd: end(true), unfinished: true });
+    expect(await resumes(ledgers)).toBe(true);
+  });
+
+  it("offers no Continue after a run that saved new posts, then stopped at a page saved before", async () => {
+    const { run, ledgers, asked, fetched } = setup({ ledger: { saved: ["3"], done: done("3"), reachedEnd: end(true) } });
+    await run.start();
+    expect(asked).toEqual([undefined, "1"]);
+    expect(fetched).toHaveLength(3);
+    expect(run.view().state).toBe("finished");
+    expect(ledgers.load("102").unfinished).toBe(false);
+    expect(await resumes(ledgers)).toBe(false);
+  });
+
+  it("offers no Continue after a listing that ended short", async () => {
+    const { run, ledgers } = setup({ pages: [[post("1", item("1"))]], count: 100, checkCount: true });
+    await run.start();
+    expect(ledgers.load("102")).toMatchObject({ reachedEnd: end(false), unfinished: false });
+    expect(await resumes(ledgers)).toBe(false);
+  });
+
+  it("offers Continue after a run Instagram slowed down", async () => {
+    const { run, ledgers } = setup({ pushBack: { page: 1, error: new SavedError("rateLimited") } });
+    await run.start();
+    expect(run.view().state).toBe("rateLimited");
+    expect(ledgers.load("102").unfinished).toBe(true);
+    expect(await resumes(ledgers)).toBe(true);
+  });
+});
+
 /** A photo and a video, by the post's id: `Ai.jpg` and `Av.mp4` for post A. */
 const both = (id: string): SavedPost => post(id, item(`${id}i`), item(`${id}v`, "video"));
 const photoOf = (id: string) => `https://cdn.example/${id}i.jpg`;
@@ -444,7 +496,7 @@ describe("BackupRun saving chosen kinds of media", () => {
     const s = setup({ pages, read: reader(), count: 2 });
     mkdirSync(path.join(root, "ledgers"), { recursive: true });
     writeFileSync(path.join(root, "ledgers", "102.json"), JSON.stringify({ saved: ["11", "12", "2"], donePosts: ["1", "2"], reachedEnd: true, failedPosts: [], signInPosts: [] }));
-    expect(s.ledgers.load("102")).toEqual({ saved: ["11", "12", "2"], failedPosts: [], signInPosts: [], done: done("1", "2"), reachedEnd: end(true) });
+    expect(s.ledgers.load("102")).toEqual({ saved: ["11", "12", "2"], failedPosts: [], signInPosts: [], done: done("1", "2"), reachedEnd: end(true), unfinished: false });
     // photos and videos: its marks hold for both, so the first page already saved ends the run
     await s.run.start();
     expect(s.asked).toEqual([undefined]);

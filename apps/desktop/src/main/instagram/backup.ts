@@ -174,14 +174,19 @@ export class BackupRun {
     /** the posts left for a sign-in that this run met */
     const met = new Set<string>();
     const reachedEnd = { ...ledger.reachedEnd };
-    const record = () =>
+    /** what the ledger says: a run is unfinished from its first record until it gets to the listing's end (`end`) */
+    let unfinished = ledger.unfinished;
+    const record = (end = false) => {
+      unfinished = !end;
       deps.ledgers.save(target.id, {
         saved: [...saved],
         failedPosts: [...failedPosts],
         signInPosts: [...signInPosts],
         done: { image: [...done.image], video: [...done.video] },
         reachedEnd: { ...reachedEnd },
+        unfinished,
       });
+    };
     // a post with nothing to save (a highlight whose page showed nothing) is done only by its id
     const isDone = (post: SavedPost) => postDone(post, kinds, done, saved);
     /** the post is done for this run's kinds: neither failed nor waiting for a sign-in any more; true when that is news for the ledger */
@@ -221,6 +226,8 @@ export class BackupRun {
         this.signInOnly = signInPosts.size;
         const below = this.done + page.posts.filter(isDone).length;
         this.done = target.count !== undefined ? Math.max(target.count - this.failed - this.signInOnly, below) : below;
+        // the end of what is new: a run that recorded something (or an earlier unfinished one) is finished now
+        if (unfinished) record(true);
         this.state = "finished";
         return;
       }
@@ -318,7 +325,7 @@ export class BackupRun {
         // a whole listing met every post still there: the others left for a sign-in are gone, or were saved
         if (!short) for (const id of signInPosts) if (!met.has(id)) signInPosts.delete(id);
         this.signInOnly = signInPosts.size;
-        record();
+        record(true);
         this.state = "finished";
         return;
       }

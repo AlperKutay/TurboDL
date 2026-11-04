@@ -9,6 +9,7 @@ export function SaveOptions({
   onChange,
   signedIn,
   kindsOnly = false,
+  signingIn = false,
   onSignIn,
 }: {
   value: ProfileSaveOptions;
@@ -16,6 +17,8 @@ export function SaveOptions({
   signedIn: boolean;
   /** only the Photos/Videos row (the Highlights tab's backup) */
   kindsOnly?: boolean;
+  /** a sign-in is going on: its link waits */
+  signingIn?: boolean;
   onSignIn(): void;
 }) {
   const box = (key: keyof ProfileSaveOptions, label: string, checked = value[key], disabled = false) => (
@@ -37,7 +40,7 @@ export function SaveOptions({
       {!kindsOnly && TAGGED_AVAILABLE && !signedIn && (
         <p className="muted">
           Tagged needs a sign-in to Instagram.{" "}
-          <button type="button" className="link-button" onClick={onSignIn}>
+          <button type="button" className="link-button" disabled={signingIn} onClick={onSignIn}>
             Sign in
           </button>
         </p>

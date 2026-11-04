@@ -16,9 +16,11 @@ export interface BackupLedger {
   done: Record<InstagramMediaKind, string[]>;
   /** per kind, a run asking for it went through to the collection's end */
   reachedEnd: Record<InstagramMediaKind, boolean>;
+  /** the last run that recorded anything didn't get to the listing's end (stopped, signed out, slowed down, failed): Continue goes on with it */
+  unfinished: boolean;
 }
 
-const empty = (): BackupLedger => ({ saved: [], failedPosts: [], signInPosts: [], done: { image: [], video: [] }, reachedEnd: { image: false, video: false } });
+const empty = (): BackupLedger => ({ saved: [], failedPosts: [], signInPosts: [], done: { image: [], video: [] }, reachedEnd: { image: false, video: false }, unfinished: false });
 
 /** The items of the kinds asked for. */
 export function wantedItems(post: SavedPost, kinds: readonly InstagramMediaKind[]): InstagramItem[] {
@@ -55,7 +57,8 @@ export class LedgerStore {
 
   /**
    * A missing or unreadable ledger is an empty one; one written before a field existed has it empty. One written before
-   * kinds were kept (`donePosts`, a single `reachedEnd`) counts for photos and videos alike.
+   * kinds were kept (`donePosts`, a single `reachedEnd`) counts for photos and videos alike. One written before
+   * `unfinished` is unfinished unless it reached the end for both kinds (what Continue was offered by then).
    */
   load(id: string): BackupLedger {
     try {
@@ -64,6 +67,10 @@ export class LedgerStore {
       const field = (v: unknown, key: string): unknown => (v !== null && typeof v === "object" ? (v as Record<string, unknown>)[key] : undefined);
       const oldDone = data.done === undefined && Array.isArray(data.donePosts) ? strings(data.donePosts) : undefined;
       const oldEnd = typeof data.reachedEnd === "boolean" ? data.reachedEnd : undefined;
+      const reachedEnd = {
+        image: oldEnd ?? field(data.reachedEnd, "image") === true,
+        video: oldEnd ?? field(data.reachedEnd, "video") === true,
+      };
       return {
         saved: strings(data.saved),
         failedPosts: strings(data.failedPosts),
@@ -72,10 +79,8 @@ export class LedgerStore {
           image: oldDone ? [...oldDone] : strings(field(data.done, "image")),
           video: oldDone ? [...oldDone] : strings(field(data.done, "video")),
         },
-        reachedEnd: {
-          image: oldEnd ?? field(data.reachedEnd, "image") === true,
-          video: oldEnd ?? field(data.reachedEnd, "video") === true,
-        },
+        reachedEnd,
+        unfinished: typeof data.unfinished === "boolean" ? data.unfinished : !(reachedEnd.image && reachedEnd.video),
       };
     } catch {
       return empty();

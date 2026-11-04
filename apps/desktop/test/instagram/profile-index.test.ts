@@ -7,7 +7,7 @@ import { LedgerStore, type BackupLedger } from "../../src/main/instagram/ledger"
 import { ProfileIndex } from "../../src/main/instagram/profile-index";
 
 /** a ledger whose backups went through to the end */
-const ENDED: BackupLedger = { saved: [], failedPosts: [], signInPosts: [], done: { image: [], video: [] }, reachedEnd: { image: true, video: true } };
+const ENDED: BackupLedger = { saved: [], failedPosts: [], signInPosts: [], done: { image: [], video: [] }, reachedEnd: { image: true, video: true }, unfinished: false };
 
 let root = "";
 afterEach(() => {
