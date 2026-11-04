@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { readdirSync, rmSync, writeFileSync } from "node:fs";
+import { readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { expect, test, type ElectronApplication, type Page } from "@playwright/test";
 import { startTestServer } from "../test/fixtures/test-server";
@@ -189,6 +189,40 @@ test("profiles: backs up a list of profiles from a .txt, one after another", asy
     // Close forgets the list
     await main.getByRole("region", { name: "Profile list" }).getByRole("button", { name: "Close", exact: true }).click();
     await expect(main.getByRole("region", { name: "Profile list" })).toHaveCount(0);
+  } finally {
+    await app.close();
+    await server.close();
+    rmSync(userData, { recursive: true, force: true });
+  }
+});
+
+test("profiles: a list started signed out keeps Tagged off, as its dialog shows it", async () => {
+  const { server, app, userData } = await demo({ TURBODL_INSTAGRAM_DEMO_SIGNED_OUT: "1" });
+  try {
+    const file = path.join(userData, "one.txt");
+    writeFileSync(file, "demo.public\n");
+    await stubOpenDialog(app, file);
+    const main = await app.firstWindow();
+    await main.getByRole("button", { name: "Profiles", exact: true }).click();
+    await main.getByRole("button", { name: "Back up a list…" }).click();
+    const dialog = main.getByRole("dialog", { name: "Back up a list" });
+    await dialog.getByRole("button", { name: "Choose a .txt file…" }).click();
+    await expect(dialog).toContainText("one.txt · 1 profile");
+    // remembered ticked (the first use's), shown unticked: it can't be saved signed out
+    const tagged = dialog.getByRole("checkbox", { name: "Tagged" });
+    await expect(tagged).not.toBeChecked();
+    await expect(tagged).toBeDisabled();
+    await dialog.getByRole("button", { name: "Start", exact: true }).click();
+    await expect(dialog).toBeHidden({ timeout: 15_000 });
+    const stored = () => {
+      try {
+        return (JSON.parse(readFileSync(path.join(userData, "instagram-profile-list.json"), "utf8")) as { options: unknown }).options;
+      } catch {
+        return null;
+      }
+    };
+    await expect.poll(stored, { timeout: 5_000 }).toMatchObject({ posts: true, tagged: false });
+    await expect(main.getByRole("region", { name: "Profile list" })).toContainText("one.txt ·");
   } finally {
     await app.close();
     await server.close();
