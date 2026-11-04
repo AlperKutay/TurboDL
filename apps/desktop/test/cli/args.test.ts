@@ -101,6 +101,28 @@ describe("parseArgs errors", () => {
     });
   });
 
+  it("maps the profile save options", () => {
+    expect(parseArgs(["get", "u", "--no-posts", "--highlights"], cwd)).toMatchObject({
+      options: { posts: false, highlights: true }
+    });
+    expect(parseArgs(["add", "u", "--tagged"], cwd)).toMatchObject({ options: { tagged: true } });
+    expect(parseArgs(["add", "u", "--no-posts", "--tagged"], cwd)).toMatchObject({
+      options: { posts: false, tagged: true }
+    });
+    expect(parseArgs(["get", "u", "--photos-only"], cwd)).toMatchObject({ options: { videos: false } });
+    expect(parseArgs(["get", "u", "--videos-only"], cwd)).toMatchObject({ options: { photos: false } });
+    const only = parseArgs(["get", "u", "--no-posts", "--highlights-only"], cwd);
+    expect(only).toMatchObject({ options: { highlightsOnly: true } });
+    expect((only as { options: object }).options).not.toHaveProperty("posts");
+  });
+
+  it("rejects bad profile save option combinations", () => {
+    expect(err(["get", "u", "--photos-only", "--videos-only"])).toEqual({
+      error: "--photos-only and --videos-only can't both be set"
+    });
+    expect(err(["get", "u", "--no-posts"])).toEqual({ error: "--no-posts needs --highlights or --tagged" });
+  });
+
   it("rejects bad ids and instagram actions", () => {
     expect(err(["status"])).toEqual({ error: "status needs one job id" });
     expect(err(["status", "a", "b"])).toEqual({ error: "status needs one job id" });
@@ -116,6 +138,7 @@ describe("HELP", () => {
     for (const word of [
       "get", "add", "list", "status", "wait", "cancel", "instagram", "help",
       "--dir", "--name", "--audio", "--max-height", "--highlights", "--highlights-only",
+      "--no-posts", "--tagged", "--photos-only", "--videos-only",
       "--collection", "--all-collections", "--json", "--version"
     ]) {
       expect(HELP).toContain(word);

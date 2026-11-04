@@ -47,9 +47,24 @@ class TurboDL:
 
     def add(self, url: str, dir: Optional[str] = None, name: Optional[str] = None, *, audio: bool = False,
             max_height: Optional[int] = None, highlights: bool = False, highlights_only: bool = False,
-            collections: Optional[List[str]] = None, all_collections: bool = False) -> Job:
-        """Queues a link and returns its job at once."""
+            collections: Optional[List[str]] = None, all_collections: bool = False,
+            posts: bool = True, tagged: bool = False, photos: bool = True, videos: bool = True) -> Job:
+        """Queues a link and returns its job at once.
+
+        `posts`, `tagged`, `photos` and `videos` choose what an Instagram profile backup saves (the profile's own
+        posts, the posts it is tagged in, photos, videos); they need TurboDL 0.9.0 or newer."""
         options = {}  # type: Dict[str, Any]
+        if not posts or tagged or not photos or not videos:
+            if "profileOptions" not in (self.info().get("features") or []):
+                raise TurboDLError("Update TurboDL to 0.9.0 or newer to choose what a profile backup saves.")
+            if not posts:
+                options["posts"] = False
+            if tagged:
+                options["tagged"] = True
+            if not photos:
+                options["photos"] = False
+            if not videos:
+                options["videos"] = False
         if audio:
             options["audio"] = True
         if max_height is not None:
@@ -111,10 +126,12 @@ class TurboDL:
     def get(self, url: str, dir: Optional[str] = None, name: Optional[str] = None, *, audio: bool = False,
             max_height: Optional[int] = None, highlights: bool = False, highlights_only: bool = False,
             collections: Optional[List[str]] = None, all_collections: bool = False,
+            posts: bool = True, tagged: bool = False, photos: bool = True, videos: bool = True,
             on_event: Optional[Callable[[Dict[str, Any]], None]] = None) -> Job:
         """Queues a link and waits for it: the finished Job, or the exception for how it ended."""
         job = self.add(url, dir, name, audio=audio, max_height=max_height, highlights=highlights,
-                       highlights_only=highlights_only, collections=collections, all_collections=all_collections)
+                       highlights_only=highlights_only, collections=collections, all_collections=all_collections,
+                       posts=posts, tagged=tagged, photos=photos, videos=videos)
         return job.wait(on_event=on_event)
 
     def posts(self, url: str, since: Union[datetime, str, None] = None, limit: Optional[int] = None,

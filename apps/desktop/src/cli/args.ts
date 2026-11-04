@@ -35,6 +35,10 @@ Options (get and add):
   --max-height <px>      Pick a video of at most this height
   --highlights           Include highlights (Instagram profiles)
   --highlights-only      Download only the highlights
+  --no-posts             Leave out the profile's own posts (Instagram profiles)
+  --tagged               Include the posts the profile is tagged in (needs a sign-in)
+  --photos-only          Save photos only (Instagram profiles)
+  --videos-only          Save videos only (Instagram profiles)
   --collection <name>    Download a Saved collection (repeatable)
   --all-collections      Download every Saved collection
 
@@ -53,7 +57,7 @@ Exit codes: 0 ok, 1 failed, 2 usage, 3 sign-in needed, 4 rate limited,
 `;
 
 const VALUE_OPTIONS = new Set(["-d", "--dir", "--name", "--max-height", "--collection", "--since", "--limit"]);
-const FLAG_OPTIONS = new Set(["--audio", "--highlights", "--highlights-only", "--all-collections", "--json"]);
+const FLAG_OPTIONS = new Set(["--audio", "--highlights", "--highlights-only", "--no-posts", "--tagged", "--photos-only", "--videos-only", "--all-collections", "--json"]);
 const COMMANDS = new Set(["get", "add", "list", "status", "wait", "cancel", "instagram", "posts"]);
 
 /** Reads the command line; returns the command or `{ error }` for a usage mistake. */
@@ -150,6 +154,17 @@ export function parseArgs(argv: string[], cwd: string): Command | { error: strin
   }
   if (flags.has("--highlights")) options.highlights = true;
   if (flags.has("--highlights-only")) options.highlightsOnly = true;
+  if (flags.has("--photos-only") && flags.has("--videos-only")) {
+    return { error: "--photos-only and --videos-only can't both be set" };
+  }
+  if (flags.has("--no-posts") && !flags.has("--highlights") && !flags.has("--tagged") && !flags.has("--highlights-only")) {
+    return { error: "--no-posts needs --highlights or --tagged" };
+  }
+  // "highlights only" already leaves the posts out, and the app refuses it combined with `posts`.
+  if (flags.has("--no-posts") && !flags.has("--highlights-only")) options.posts = false;
+  if (flags.has("--tagged")) options.tagged = true;
+  if (flags.has("--photos-only")) options.videos = false;
+  if (flags.has("--videos-only")) options.photos = false;
   const collections = values.get("--collection");
   if (collections && flags.has("--all-collections")) {
     return { error: "--collection and --all-collections can't both be set" };
