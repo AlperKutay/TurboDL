@@ -47,6 +47,8 @@ class FakeUi implements ControllerUi {
   opened: PendingItem[] = [];
   closed: string[] = [];
   shown = 0;
+  /** what the profile list notified */
+  listNotes: string[] = [];
   broadcast(e: AppEvent) {
     this.events.push(e);
   }
@@ -60,6 +62,9 @@ class FakeUi implements ControllerUi {
     this.shown++;
   }
   notifyCompleted() {}
+  notifyListFinished(text: string) {
+    this.listNotes.push(text);
+  }
   setLaunchAtLogin() {}
   quit() {}
 }
@@ -1344,6 +1349,234 @@ describe("Instagram profiles", () => {
     expect(c.jobs.list()).toHaveLength(2);
     held.open();
     expect(await c.jobs.ended(c.jobs.list()[0].id)).toMatchObject({ state: "done" });
+  });
+
+  describe("profile lists", () => {
+    const WAIT_PROBLEM = "Waits are whole minutes from 0 to 1440, the most at least the least.";
+    const NOTHING = { ...DEFAULT_SAVE_OPTIONS, posts: false, highlights: false, tagged: false };
+    /** other.user: posts 1 and 3 */
+    const OTHER = () => ({ profile: person("53", "other.user"), pages: [[photo("1"), photo("3")]] });
+    const listFile = () => path.join(root, "user", "instagram-profile-list.json");
+    const list = (usernames: string[], o: { options?: typeof DEFAULT_SAVE_OPTIONS; wait?: { min: number; max: number } } = {}) => ({
+      name: "friends.txt",
+      usernames,
+      options: o.options ?? POSTS_ONLY,
+      wait: o.wait ?? { min: 0, max: 0 },
+    });
+    const told = () => ui.events.flatMap((e) => (e.type === "profileList" ? [e.list] : []));
+
+    /** The list once it no longer goes on by itself. */
+    async function listEnds(c: AppController) {
+      const goesOn = () => ["running", "waiting", "slowedDown"].includes(c.snapshot().profileList?.state ?? "");
+      for (let i = 0; i < 400 && goesOn(); i++) await new Promise((r) => setTimeout(r, 25));
+      return c.snapshot().profileList;
+    }
+
+    async function backupRuns(c: AppController) {
+      for (let i = 0; i < 200 && c.snapshot().instagramBackup?.state !== "running"; i++) await new Promise((r) => setTimeout(r, 5));
+    }
+
+    it("runs a list of two profiles through profile jobs and finishes", async () => {
+      const ig = fakeProfiles({ "sample.user": SAMPLE, "other.user": OTHER() });
+      const c = await signedIn(ig.deps);
+      // the names as Instagram's addresses have them
+      expect(await c.startProfileList(list(["Sample.User", "@other.user"]))).toEqual({ ok: true });
+      const view = await listEnds(c);
+      expect(view).toEqual({
+        name: "friends.txt",
+        rows: [
+          // files: what the Profiles list says each one's backups saved; fetched: this run's new files
+          { username: "sample.user", state: "done", files: 3, fetched: 3 },
+          { username: "other.user", state: "done", files: 2, fetched: 2 },
+        ],
+        index: 2,
+        state: "finished",
+        options: POSTS_ONLY,
+        wait: { min: 0, max: 0 },
+      });
+      expect(readdirSync(path.join(root, "dl", "Instagram", "sample.user")).sort()).toEqual(["1.jpg", "2.jpg", "3.jpg"]);
+      expect(readdirSync(path.join(root, "dl", "Instagram", "other.user")).sort()).toEqual(["1.jpg", "3.jpg"]);
+      expect(await c.instagramProfiles()).toMatchObject([{ username: "other.user", saved: 2 }, { username: "sample.user", saved: 3 }]);
+      // ordinary profile jobs, one per profile, none of them the screen's
+      expect(c.jobs.list().map((j) => [j.url, j.state])).toEqual([
+        ["https://www.instagram.com/other.user/", "done"],
+        ["https://www.instagram.com/sample.user/", "done"],
+      ]);
+      expect(c.snapshot().screenBackup).toBeNull();
+      expect(ui.listNotes).toEqual(["Profile list finished: 2 backed up, 0 skipped."]);
+      expect(c.snapshot().profileList).toEqual(view);
+      // every change told
+      expect(told()[0]).toMatchObject({ name: "friends.txt", state: "running", index: 0 });
+      const rowStates = told().map((l) => l?.rows.map((r) => r.state).join(" "));
+      expect(rowStates).toContain("running waiting");
+      expect(rowStates).toContain("done running");
+      expect(told().at(-1)).toEqual(view);
+      // its wait and options are what the next list starts with
+      expect(c.settings).toMatchObject({ listWait: { min: 0, max: 0 }, instagramSave: POSTS_ONLY });
+      expect(ui.events).toContainEqual({ type: "settings", settings: c.settings });
+
+      // files already in place count as saved, not as fetched: its ledger forgotten, its files kept
+      await c.removeInstagramProfile("5100000000000000001");
+      expect(await c.closeProfileList()).toEqual({ ok: true });
+      expect(await c.startProfileList(list(["sample.user"]))).toEqual({ ok: true });
+      expect(await listEnds(c)).toMatchObject({ state: "finished", rows: [{ username: "sample.user", state: "done", files: 3, fetched: 0 }] });
+    });
+
+    it("stops the list when its running backup is stopped from the screen", async () => {
+      const ig = fakeProfiles({ "sample.user": SAMPLE, "other.user": OTHER() });
+      const held = stoppableFetch(ig.deps);
+      const c = await signedIn(ig.deps);
+      expect(await c.startProfileList(list(["sample.user", "other.user"]))).toEqual({ ok: true });
+      await backupRuns(c);
+      expect(c.snapshot().instagramBackup).toMatchObject({ kind: "profile", name: "sample.user", state: "running" });
+      await c.stopBackup();
+      expect(await listEnds(c)).toMatchObject({ state: "stopped", index: 0, rows: [{ username: "sample.user", state: "waiting" }, { username: "other.user", state: "waiting" }] });
+      expect(c.jobs.list()).toMatchObject([{ state: "cancelled", reason: "stopped" }]);
+      expect(ui.listNotes).toEqual([]);
+      // Continue goes on from that profile
+      held.open();
+      expect(await c.continueProfileList()).toEqual({ ok: true });
+      expect(await listEnds(c)).toMatchObject({ state: "finished", rows: [{ state: "done", files: 3, fetched: 3 }, { state: "done", files: 2 }] });
+      expect(c.jobs.list()).toHaveLength(3);
+    });
+
+    it("the list's Stop stops it between a profile's parts, the screen's Stop doesn't", async () => {
+      const ig = fakeProfiles({ "sample.user": SAMPLE, "other.user": OTHER() });
+      withStories(ig.deps);
+      // the second page opened is the highlights part's: its start waits for it until the test lets it load
+      let letIn!: () => void;
+      const gate = new Promise<void>((resolve) => (letIn = resolve));
+      const open = ig.deps.openProfile!;
+      let opens = 0;
+      ig.deps.openProfile = (username, cookies) => {
+        const source = open(username, cookies);
+        if (++opens !== 2) return source;
+        return {
+          ...source,
+          profile: async () => {
+            await gate;
+            return source.profile();
+          },
+        };
+      };
+      const c = await signedIn(ig.deps);
+      expect(await c.startProfileList(list(["sample.user", "other.user"], { options: POSTS_AND_HIGHLIGHTS }))).toEqual({ ok: true });
+      for (let i = 0; i < 200 && opens < 2; i++) await new Promise((r) => setTimeout(r, 5));
+      // between the parts: the posts' backup finished, no backup runs
+      expect(c.snapshot().instagramBackup).toMatchObject({ kind: "profile", state: "finished" });
+      const [job] = c.jobs.list();
+      // the screen's Stop: nothing of the screen's goes on
+      await c.stopBackup();
+      expect(c.jobs.get(job.id)?.state).toBe("running");
+      expect(c.snapshot().profileList).toMatchObject({ state: "running", index: 0 });
+      // the list's
+      const stopped = c.stopProfileList();
+      letIn();
+      await stopped;
+      expect(await c.jobs.ended(job.id)).toMatchObject({ state: "cancelled" });
+      expect(c.snapshot().profileList).toMatchObject({ state: "stopped", index: 0, rows: [{ state: "waiting" }, { state: "waiting" }] });
+      expect(existsSync(path.join(root, "dl", "Instagram", "sample.user", "Highlights", "s1.jpg"))).toBe(false);
+      expect(c.jobs.list()).toHaveLength(1);
+    });
+
+    it("reads a list's .txt, and says why it can't", async () => {
+      const c = await start();
+      const file = path.join(root, "friends.txt");
+      writeFileSync(file, "﻿sample.user\r\n@Other.User\r\nnot a name!\r\n");
+      expect(await c.readProfileList(file)).toEqual({
+        name: "friends.txt",
+        list: { usernames: ["sample.user", "other.user"], invalid: [{ line: 3, text: "not a name!" }], tooMany: false },
+      });
+      const unreadable = { error: "TurboDL couldn't read this file." };
+      expect(await c.readProfileList(path.join(root, "missing.txt"))).toEqual(unreadable);
+      expect(await c.readProfileList(root)).toEqual(unreadable);
+      expect(await c.readProfileList("")).toEqual(unreadable);
+      const large = path.join(root, "large.txt");
+      writeFileSync(large, "sample.user\n".repeat(100_000));
+      expect(await c.readProfileList(large)).toEqual({ error: "This file is too large for a list of profiles (over 1 MB)." });
+    });
+
+    it("refuses a list with a bad wait or nothing to save", async () => {
+      const ig = fakeProfiles({ "sample.user": SAMPLE });
+      const c = await start({}, null, ig.deps);
+      expect(await c.startProfileList(list(["sample.user"], { wait: { min: 5, max: 2 } }))).toEqual({ ok: false, error: WAIT_PROBLEM });
+      expect(await c.startProfileList(list(["sample.user"], { wait: { min: 1.5, max: 2 } }))).toEqual({ ok: false, error: WAIT_PROBLEM });
+      const noPart = { ok: false, error: "Pick at least one of posts, highlights and tagged posts." };
+      expect(await c.startProfileList(list(["sample.user"], { options: NOTHING }))).toEqual(noPart);
+      // signed out, tagged posts can't be saved: ticked alone, there is nothing to save
+      expect(await c.startProfileList(list(["sample.user"], { options: { ...NOTHING, tagged: true } }))).toEqual(noPart);
+      expect(await c.startProfileList(list(["sample.user"], { options: { ...POSTS_ONLY, photos: false, videos: false } }))).toEqual({ ok: false, error: "Pick photos, videos or both." });
+      expect(await c.startProfileList(list([]))).toEqual({ ok: false, error: "The list has no profiles." });
+      expect(await c.startProfileList(list(["sample.user", "not a name"]))).toEqual({ ok: false, error: '"not a name" isn\'t a profile.' });
+      expect(await c.startProfileList(list(Array.from({ length: 1001 }, (_, k) => `p${k}`)))).toEqual({ ok: false, error: "A list can hold at most 1,000 profiles." });
+      expect(c.snapshot().profileList).toBeNull();
+      expect(told()).toEqual([]);
+      expect(c.jobs.list()).toEqual([]);
+      expect(ig.opened).toEqual([]);
+      expect(existsSync(listFile())).toBe(false);
+      // nothing of a refused list is remembered
+      expect(c.settings).toMatchObject({ listWait: { min: 2, max: 5 }, instagramSave: DEFAULT_SAVE_OPTIONS });
+    });
+
+    it("shows a list kept from before a restart as stopped, runs it on when continued, and forgets it with its file on Close", async () => {
+      const stored = {
+        name: "friends.txt",
+        rows: [
+          { username: "sample.user", state: "done", files: 3, fetched: 3 },
+          { username: "other.user", state: "running" },
+        ],
+        index: 1,
+        state: "running",
+        progress: { done: 1, total: 2 },
+        options: POSTS_ONLY,
+        wait: { min: 0, max: 0 },
+      };
+      mkdirSync(path.join(root, "user"), { recursive: true });
+      writeFileSync(listFile(), JSON.stringify(stored));
+      const ig = fakeProfiles({ "sample.user": SAMPLE, "other.user": OTHER() });
+      const c = await signedIn(ig.deps);
+      const { progress: _progress, ...rest } = stored;
+      expect(c.snapshot().profileList).toEqual({ ...rest, state: "stopped", rows: [stored.rows[0], { username: "other.user", state: "waiting" }] });
+      // nothing runs by itself
+      await new Promise((r) => setTimeout(r, 50));
+      expect(c.jobs.list()).toEqual([]);
+      expect(await c.closeProfileList()).toEqual({ ok: true });
+      expect(c.snapshot().profileList).toBeNull();
+      expect(told()).toEqual([null]);
+      expect(existsSync(listFile())).toBe(false);
+
+      expect(await c.startProfileList(list(["other.user"]))).toEqual({ ok: true });
+      expect(await listEnds(c)).toMatchObject({ state: "finished", rows: [{ username: "other.user", state: "done", files: 2 }] });
+      expect(await c.continueProfileList()).toEqual({ ok: false, error: "The list has finished." });
+      expect(await c.closeProfileList()).toEqual({ ok: true });
+      // the deletion holds: no write still pending brings the file back
+      await new Promise((r) => setTimeout(r, 400));
+      expect(existsSync(listFile())).toBe(false);
+      expect(told().at(-1)).toBeNull();
+    });
+
+    it("starts with no list when its file is broken or doesn't hold a list", async () => {
+      for (const text of ["{ not json", JSON.stringify({ name: "friends.txt", rows: "sample.user", index: 0, state: "stopped" }), "null"]) {
+        mkdirSync(path.join(root, "user"), { recursive: true });
+        writeFileSync(listFile(), text);
+        const c = await start();
+        expect(c.snapshot().profileList).toBeNull();
+        expect(await c.continueProfileList()).toEqual({ ok: false, error: "There is no list." });
+        await c.shutdown();
+        controller = null;
+      }
+    });
+
+    it("writes the list's last change when the app quits", async () => {
+      const ig = fakeProfiles({ "sample.user": SAMPLE });
+      const c = await signedIn(ig.deps);
+      expect(await c.startProfileList(list(["sample.user"]))).toEqual({ ok: true });
+      const view = await listEnds(c);
+      expect(view).toMatchObject({ state: "finished" });
+      await c.shutdown();
+      controller = null;
+      expect(JSON.parse(readFileSync(listFile(), "utf8"))).toEqual(view);
+    });
   });
 });
 

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { DEFAULT_SAVE_OPTIONS, type Job, type JobProgress, type ListWait, type ProfileListView, type ProfileSaveOptions } from "@turbodl/shared";
-import { ProfileLists, type ProfileListsDeps, type ProfileRun } from "../../src/main/instagram/profile-lists";
+import { ProfileLists, isProfileListView, listNames, type ProfileListsDeps, type ProfileRun } from "../../src/main/instagram/profile-lists";
 import { profileShowedNothing } from "../../src/main/instagram/profile-service";
 
 const MIN = 60_000;
@@ -85,7 +85,7 @@ interface FakeRun {
  * A runner with fake deps: each profile's runs end as `script` says, in turn (done once its outcomes are used up);
  * "hold" leaves a run going until the test ends or cancels it.
  */
-function harness(o: { script?: Record<string, Outcome[]>; random?: number; totals?: Record<string, number>; load?: ProfileListView | null } = {}) {
+function harness(o: { script?: Record<string, Outcome[]>; random?: number; totals?: Record<string, number>; load?: ProfileListView | null; cancelThrows?: boolean } = {}) {
   const clock = steppedClock();
   const runs: FakeRun[] = [];
   const saved: (ProfileListView | null)[] = [];
@@ -120,6 +120,8 @@ function harness(o: { script?: Record<string, Outcome[]>; random?: number; total
       return {
         ended,
         cancel: () => {
+          // as cancelling a job that has ended may
+          if (o.cancelThrows) throw new Error("This job has ended.");
           run.cancelled = true;
           resolve({ job: jobOf(username, { state: "cancelled" }), fetched: 0 });
         },
@@ -262,7 +264,8 @@ describe("ProfileLists", () => {
     expect(view).toMatchObject({ state: "rateLimited", index: 0, message: RATE_LIMITED, rows: [{ state: "waiting" }, { state: "waiting" }] });
     expect(view.nextAt).toBeUndefined();
     expect(h.clock.pending()).toBe(0);
-    expect(h.notes).toEqual([]);
+    // a list that stops by itself says so
+    expect(h.notes).toEqual(["Profile list stopped: Instagram asked TurboDL to slow down 3 times in a row."]);
     // Continue runs the same profile at once; the next slow-down is the first of a new count
     expect(h.lists.continue()).toEqual({ ok: true });
     await flush();
@@ -323,6 +326,7 @@ describe("ProfileLists", () => {
     expect(view).toMatchObject({ state: "signedOut", index: 1, message: SIGNED_OUT, rows: [{ state: "done" }, { state: "waiting" }, { state: "waiting" }] });
     expect(view.nextAt).toBeUndefined();
     expect(h.clock.pending()).toBe(0);
+    expect(h.notes).toEqual(["Profile list stopped: Instagram signed TurboDL out."]);
     h.clock.advance(60 * MIN);
     expect(h.lists.continue()).toEqual({ ok: true });
     await settle(h);
@@ -330,15 +334,22 @@ describe("ProfileLists", () => {
     expect(ranAt(h)).toEqual([["first.one", 0], ["second.one", 3], ["second.one", 63], ["third.one", 66]]);
     expect(h.lists.view()).toMatchObject({ state: "finished", rows: [{ state: "done" }, { state: "done" }, { state: "done" }] });
     expect(h.lists.view()!.message).toBeUndefined();
+    expect(h.notes).toEqual(["Profile list stopped: Instagram signed TurboDL out.", "Profile list finished: 3 backed up, 0 skipped."]);
   });
 
   it("shows the running profile's progress, and stops it: Continue runs it again", async () => {
     const h = harness({ script: { "first.one": ["hold", DONE] } });
     start(h, ["first.one", "second.one"]);
     await flush();
+    const savedBefore = h.saved.length;
     h.runs[0].tell({ done: 4, total: 10, bytes: 1000, note: "Signed out: reading each post from its own page" });
-    expect(h.lists.view()!.progress).toEqual({ done: 4, total: 10, note: "Signed out: reading each post from its own page" });
-    expect(h.saved.at(-1)!.progress).toEqual({ done: 4, total: 10, note: "Signed out: reading each post from its own page" });
+    h.runs[0].tell({ done: 5, total: 10 });
+    expect(h.lists.view()!.progress).toEqual({ done: 5, total: 10 });
+    // progress is told, not saved: a list loaded later drops it anyway
+    expect(h.changes.at(-2)!.progress).toEqual({ done: 4, total: 10, note: "Signed out: reading each post from its own page" });
+    expect(h.changes.at(-1)!.progress).toEqual({ done: 5, total: 10 });
+    expect(h.saved).toHaveLength(savedBefore);
+    expect(h.saved.some((v) => v?.progress)).toBe(false);
     await h.lists.stop();
     expect(h.runs[0].cancelled).toBe(true);
     const view = h.lists.view()!;
@@ -418,6 +429,55 @@ describe("ProfileLists", () => {
     await h.lists.stop();
     expect(h.lists.view()).toMatchObject({ state: "finished", index: 2, rows: [{ state: "done" }, { state: "done" }] });
     expect(h.notes).toEqual(["Profile list finished: 2 backed up, 0 skipped."]);
+  });
+
+  it("still stops when cancelling a profile's run that has just ended throws", async () => {
+    const h = harness({ script: { "first.one": ["hold"] }, cancelThrows: true });
+    start(h, ["first.one", "second.one"], { min: 2, max: 4 });
+    await flush();
+    h.runs[0].end(DONE as Exclude<Outcome, "hold">);
+    await h.lists.stop();
+    expect(h.lists.view()).toMatchObject({ state: "stopped", index: 1, rows: [{ state: "done" }, { state: "waiting" }] });
+    expect(h.clock.pending()).toBe(0);
+  });
+
+  it("brings a stored time to go on back to the list's longest wait (15 minutes at least) from now, on load and on Continue", async () => {
+    // saved while the clock was days ahead
+    const load: ProfileListView = {
+      name: "friends.txt",
+      rows: [{ username: "first.one", state: "done", fetched: 0 }, { username: "second.one", state: "waiting" }],
+      index: 1,
+      state: "waiting",
+      nextAt: T0 + 3 * 24 * 60 * MIN,
+      options: OPTIONS,
+      wait: { min: 2, max: 5 },
+    };
+    const loaded = harness({ load });
+    expect(loaded.lists.view()).toMatchObject({ state: "stopped", nextAt: T0 + 15 * MIN });
+    loaded.lists.continue();
+    await settle(loaded);
+    expect(loaded.clock.waits).toEqual([15 * MIN]);
+    expect(ranAt(loaded)).toEqual([["second.one", 15]]);
+
+    // a clock set back a day after a stop: Continue waits the list's longest wait, not a day and more
+    const h = harness();
+    start(h, ["first.one", "second.one"], { min: 30, max: 60 });
+    await flush();
+    expect(h.lists.view()).toMatchObject({ state: "waiting", nextAt: T0 + 45 * MIN });
+    await h.lists.stop();
+    h.clock.advance(-24 * 60 * MIN);
+    expect(h.lists.continue()).toEqual({ ok: true });
+    expect(h.lists.view()).toMatchObject({ state: "waiting", nextAt: T0 - 24 * 60 * MIN + 60 * MIN });
+    await settle(h);
+    expect(h.clock.waits).toEqual([45 * MIN, 60 * MIN]);
+    expect(h.lists.view()!.state).toBe("finished");
+  });
+
+  it("never takes up a loaded list that hasn't a list's shape", async () => {
+    const h = harness({ load: { name: "friends.txt", rows: "first.one", index: 0, state: "stopped" } as unknown as ProfileListView });
+    expect(h.lists.view()).toBeNull();
+    expect(h.lists.continue()).toEqual({ ok: false, error: "There is no list." });
+    expect(start(h, ["first.one"])).toEqual({ ok: true });
   });
 
   it("does nothing on stop() without a running list", async () => {
@@ -529,5 +589,82 @@ describe("ProfileLists", () => {
     h.runs[0].end(DONE as Exclude<Outcome, "hold">);
     await settle(h);
     expect(h.lists.continue()).toEqual({ ok: false, error: "The list has finished." });
+  });
+});
+
+describe("isProfileListView", () => {
+  const VALID: ProfileListView = {
+    name: "friends.txt",
+    rows: [
+      { username: "first.one", state: "done", files: 12, fetched: 2, note: "1 post couldn't be saved." },
+      { username: "second.one", state: "running" },
+    ],
+    index: 1,
+    state: "running",
+    nextAt: T0,
+    message: "Instagram asked TurboDL to slow down — going on at 18:40.",
+    options: OPTIONS,
+    wait: { min: 2, max: 5 },
+    progress: { done: 4, total: 10, note: "Signed out: reading each post from its own page" },
+  };
+
+  it("takes a list as the app saves it", () => {
+    expect(isProfileListView(VALID)).toBe(true);
+    expect(isProfileListView(JSON.parse(JSON.stringify(VALID)))).toBe(true);
+    const { nextAt: _n, message: _m, progress: _p, ...bare } = VALID;
+    expect(isProfileListView(bare)).toBe(true);
+    // a finished list's index is past its last row
+    expect(isProfileListView({ ...bare, index: 2, state: "finished" })).toBe(true);
+  });
+
+  it("refuses anything else", () => {
+    const bad: unknown[] = [
+      null,
+      "friends.txt",
+      [],
+      { ...VALID, name: 3 },
+      { ...VALID, rows: "first.one" },
+      { ...VALID, rows: [] },
+      { ...VALID, rows: [{ username: "first.one" }] },
+      { ...VALID, rows: [{ username: "first.one", state: "lost" }] },
+      { ...VALID, rows: [{ username: "First.One", state: "waiting" }] },
+      { ...VALID, rows: [{ username: "not a name", state: "waiting" }] },
+      { ...VALID, rows: [{ username: "first.one", state: "done", files: "12" }] },
+      { ...VALID, rows: [null] },
+      { ...VALID, rows: Array.from({ length: 1001 }, (_, k) => ({ username: `p${k}`, state: "waiting" })) },
+      { ...VALID, index: -1 },
+      { ...VALID, index: 3 },
+      { ...VALID, index: 0.5 },
+      { ...VALID, index: "1" },
+      { ...VALID, state: "paused" },
+      { ...VALID, nextAt: "soon" },
+      { ...VALID, message: 5 },
+      { ...VALID, options: { ...OPTIONS, posts: "yes" } },
+      { ...VALID, options: undefined },
+      { ...VALID, wait: { min: 5, max: 2 } },
+      { ...VALID, wait: null },
+      { ...VALID, progress: { total: 10 } },
+    ];
+    for (const v of bad) expect(isProfileListView(v), JSON.stringify(v)?.slice(0, 120)).toBe(false);
+  });
+});
+
+describe("listNames", () => {
+  it("takes profiles however they are written, lowercased, repeats dropped", () => {
+    expect(listNames(["First.One", "@second.one", "https://www.instagram.com/third.one/", "first.one"])).toEqual({ names: ["first.one", "second.one", "third.one"] });
+  });
+
+  it("says why the names can't make a list", () => {
+    const none = { error: "The list has no profiles." };
+    expect(listNames([])).toEqual(none);
+    expect(listNames("first.one")).toEqual(none);
+    expect(listNames(undefined)).toEqual(none);
+    expect(listNames(["first.one", "not a name"])).toEqual({ error: '"not a name" isn\'t a profile.' });
+    expect(listNames(["first.one", 7])).toEqual({ error: "The list holds something that isn't a profile's name." });
+    const many = Array.from({ length: 1001 }, (_, k) => `p${k}`);
+    expect(listNames(many)).toEqual({ error: "A list can hold at most 1,000 profiles." });
+    expect(listNames(many.slice(0, 1000))).toMatchObject({ names: { length: 1000 } });
+    // repeats count once
+    expect(listNames([...many.slice(0, 1000), "P0"])).toMatchObject({ names: { length: 1000 } });
   });
 });

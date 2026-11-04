@@ -19,7 +19,7 @@ import { systemCrypt } from "./instagram/session";
 import { EVENT_CHANNEL, broadcast, registerIpc } from "./ipc";
 import { writeCliLauncher } from "./cli-install";
 import { isBackgroundLaunch, registerNativeHost } from "./native-host";
-import { CompletionNotifier, notificationIdentity, revealDownload } from "./notifications";
+import { CompletionNotifier, noticeOf, notificationIdentity, revealDownload } from "./notifications";
 import { appIconPath, cliLauncherExe, cliScript, extensionSourceDir, ffmpegPath, nativeHostScript, trayIconPath } from "./paths";
 import { createTray } from "./tray";
 import { WindowManager } from "./windows";
@@ -66,6 +66,8 @@ async function start(): Promise<void> {
   const notifier = new CompletionNotifier({
     platform: process.platform,
     enabled: () => identity.enabled && (controller?.settings.notifyOnComplete ?? false) && Notification.isSupported(),
+    // not a download finishing: shown wherever notifications show (never in test runs)
+    textEnabled: () => identity.enabled && Notification.isSupported(),
     create: (options) => new Notification(options as Electron.NotificationConstructorOptions),
     reveal: (file) => void revealDownload(file, { exists: existsSync, showItemInFolder: (p) => shell.showItemInFolder(p), openPath: (p) => shell.openPath(p) }),
     icon: appIconPath(),
@@ -108,6 +110,10 @@ async function start(): Promise<void> {
       closePending: (pendingId) => wm.closeDialog(pendingId),
       showMain: () => wm.showMain(),
       notifyCompleted: (record) => notifier.show(path.join(record.dir, record.filename)),
+      notifyListFinished: (text) => {
+        const { title, body } = noticeOf(text);
+        notifier.showText(title, body);
+      },
       setLaunchAtLogin,
       quit: () => app.quit(),
     },

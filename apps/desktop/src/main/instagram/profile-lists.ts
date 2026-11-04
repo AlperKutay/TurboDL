@@ -1,4 +1,18 @@
-import { SLOW_DOWN_WAIT_MINUTES, type Job, type JobProgress, type ListState, type ListWait, type ProfileListRow, type ProfileListView, type ProfileSaveOptions, type Result } from "@turbodl/shared";
+import {
+  PROFILE_LIST_MAX,
+  SLOW_DOWN_WAIT_MINUTES,
+  profileName,
+  waitProblem,
+  type Job,
+  type JobProgress,
+  type ListRowState,
+  type ListState,
+  type ListWait,
+  type ProfileListRow,
+  type ProfileListView,
+  type ProfileSaveOptions,
+  type Result,
+} from "@turbodl/shared";
 import { isPlanWarning } from "../jobs/instagram-job";
 import { profileShowedNothing } from "./profile-service";
 
@@ -20,7 +34,7 @@ export interface ProfileListsDeps {
   load(): ProfileListView | null;
   save(list: ProfileListView | null): void;
   onChange(list: ProfileListView | null): void;
-  /** list finished */
+  /** the list finished, or stopped by itself (Instagram's slow-downs, its sign-out) */
   notify(text: string): void;
   /** items the profile's backups have saved in all, from the Profiles index; undefined when it has no entry */
   savedTotal(username: string): number | undefined;
@@ -31,13 +45,83 @@ const MINUTE = 60_000;
 const IN_A_ROW = 3;
 const RATE_LIMITED = "Instagram asked TurboDL to slow down 3 times in a row. Continue later.";
 const SIGNED_OUT = "Instagram signed TurboDL out. Sign in, then continue.";
+const STOPPED_RATE_LIMITED = "Profile list stopped: Instagram asked TurboDL to slow down 3 times in a row.";
+const STOPPED_SIGNED_OUT = "Profile list stopped: Instagram signed TurboDL out.";
 const UNFINISHED = "Close the list that is there first.";
 const STOP_FIRST = "Stop the list first.";
 const NO_LIST = "There is no list.";
+const NO_PROFILES = "The list has no profiles.";
+const NOT_A_NAME = "The list holds something that isn't a profile's name.";
+const TOO_MANY = `A list can hold at most ${PROFILE_LIST_MAX.toLocaleString("en-US")} profiles.`;
 /** the list goes on by itself in these */
 const ACTIVE: ReadonlySet<ListState> = new Set(["running", "waiting", "slowedDown"]);
 /** Continue runs these on */
 const RESUMABLE: ReadonlySet<ListState> = new Set(["stopped", "rateLimited", "signedOut"]);
+const LIST_STATES: ReadonlySet<string> = new Set<ListState>(["running", "waiting", "slowedDown", "stopped", "signedOut", "rateLimited", "finished"]);
+const ROW_STATES: ReadonlySet<string> = new Set<ListRowState>(["waiting", "running", "done", "skipped", "failed"]);
+const OPTION_KEYS: readonly (keyof ProfileSaveOptions)[] = ["posts", "highlights", "tagged", "photos", "videos"];
+
+/**
+ * A list's profiles as `profileName()` gives them (lowercased, repeats dropped), or why they can't make a list: they
+ * may come from outside the app (the renderer, an API client).
+ */
+export function listNames(usernames: unknown): { names: string[] } | { error: string } {
+  if (!Array.isArray(usernames) || usernames.length === 0) return { error: NO_PROFILES };
+  const names = new Set<string>();
+  for (const typed of usernames as unknown[]) {
+    if (typeof typed !== "string") return { error: NOT_A_NAME };
+    const name = profileName(typed);
+    if (!name) return { error: `"${typed}" isn't a profile.` };
+    names.add(name);
+  }
+  if (names.size > PROFILE_LIST_MAX) return { error: TOO_MANY };
+  return { names: [...names] };
+}
+
+type Fields = Record<string, unknown>;
+const isFields = (v: unknown): v is Fields => typeof v === "object" && v !== null && !Array.isArray(v);
+const optional = (v: unknown, is: (v: unknown) => boolean) => v === undefined || is(v);
+const isText = (v: unknown) => typeof v === "string";
+const isTime = (v: unknown) => typeof v === "number" && Number.isFinite(v);
+const isCount = (v: unknown) => Number.isInteger(v) && (v as number) >= 0;
+
+function isRow(v: unknown): boolean {
+  return (
+    isFields(v) &&
+    typeof v.username === "string" &&
+    // as the app stores them: profileName()'s own
+    profileName(v.username) === v.username &&
+    typeof v.state === "string" &&
+    ROW_STATES.has(v.state) &&
+    optional(v.note, isText) &&
+    optional(v.files, isCount) &&
+    optional(v.fetched, isCount)
+  );
+}
+
+/** Whether a stored list has a list's shape: the file may be old, edited by hand or broken. */
+export function isProfileListView(v: unknown): v is ProfileListView {
+  if (!isFields(v)) return false;
+  const { name, rows, index, state, nextAt, message, options, wait, progress } = v;
+  return (
+    typeof name === "string" &&
+    Array.isArray(rows) &&
+    rows.length > 0 &&
+    rows.length <= PROFILE_LIST_MAX &&
+    rows.every(isRow) &&
+    isCount(index) &&
+    (index as number) <= rows.length &&
+    typeof state === "string" &&
+    LIST_STATES.has(state) &&
+    optional(nextAt, isTime) &&
+    optional(message, isText) &&
+    isFields(options) &&
+    OPTION_KEYS.every((key) => typeof options[key] === "boolean") &&
+    isFields(wait) &&
+    waitProblem({ min: wait.min, max: wait.max }) === null &&
+    optional(progress, (p) => isFields(p) && isTime(p.done) && optional(p.total, isTime) && optional(p.note, isText))
+  );
+}
 
 /** How a row's run ended, for the list. */
 type Outcome =
@@ -49,8 +133,8 @@ type Outcome =
  * The app's one list of profiles to back up: each in turn as an ordinary profile backup, with a random wait between
  * them (drawn once, stored as `nextAt`), going on by itself through Instagram's slow-downs (15 minutes, then the same
  * profile again; the 3rd in a row stops it) and past profiles it can't back up. It never holds Instagram's backup slot
- * or read slot in its own waits: only its profile runs do. Every change is saved and told; a list loaded after a
- * restart is stopped, and goes on only when continued.
+ * or read slot in its own waits: only its profile runs do. Every change is told, and saved but for the running profile's
+ * progress; a list loaded after a restart is stopped, and goes on only when continued.
  */
 export class ProfileLists {
   private list: ProfileListView | null;
@@ -66,7 +150,9 @@ export class ProfileLists {
   private run: ProfileRun | null = null;
 
   constructor(private readonly deps: ProfileListsDeps) {
-    const loaded = deps.load();
+    const stored: unknown = deps.load();
+    // the app checks the file's list before; one that isn't a list never runs all the same
+    const loaded = isProfileListView(stored) ? structuredClone(stored) : null;
     if (loaded) {
       for (const row of loaded.rows) if (row.state === "running") row.state = "waiting";
       delete loaded.progress;
@@ -74,6 +160,7 @@ export class ProfileLists {
         loaded.state = "stopped";
         delete loaded.message;
       }
+      this.bringNear(loaded);
     }
     this.list = loaded;
   }
@@ -102,7 +189,11 @@ export class ProfileLists {
   async stop(): Promise<void> {
     if (!this.list || !ACTIVE.has(this.list.state)) return;
     this.halt?.abort();
-    this.run?.cancel();
+    try {
+      this.run?.cancel();
+    } catch {
+      // its job has ended already: the list stops before the next profile
+    }
     await this.running;
   }
 
@@ -113,6 +204,7 @@ export class ProfileLists {
     if (!RESUMABLE.has(list.state)) return { ok: false, error: list.state === "finished" ? "The list has finished." : "The list is running." };
     // the user's go-ahead starts the counts over (they are lost in a restart anyway)
     this.recount();
+    this.bringNear(list);
     const ahead = list.nextAt !== undefined && list.nextAt > this.deps.now();
     if (!ahead) delete list.nextAt;
     list.state = ahead ? "waiting" : "running";
@@ -187,7 +279,8 @@ export class ProfileLists {
       run.progress((p) => {
         if (this.run !== run) return;
         list.progress = { done: p.done, ...(p.total !== undefined ? { total: p.total } : {}), ...(p.note !== undefined ? { note: p.note } : {}) };
-        this.changed();
+        // told, not saved: a list loaded later drops its progress anyway
+        this.deps.onChange(this.view());
       });
       ended = await run.ended;
     } catch (err) {
@@ -236,6 +329,7 @@ export class ProfileLists {
         list.state = "signedOut";
         list.message = SIGNED_OUT;
         this.changed();
+        this.deps.notify(STOPPED_SIGNED_OUT);
         return false;
       case "slowedDown":
         return this.slowDown(list, row);
@@ -264,6 +358,7 @@ export class ProfileLists {
       list.message = RATE_LIMITED;
       delete list.nextAt;
       this.changed();
+      this.deps.notify(STOPPED_RATE_LIMITED);
       return false;
     }
     const at = this.deps.now() + SLOW_DOWN_WAIT_MINUTES * MINUTE;
@@ -326,6 +421,12 @@ export class ProfileLists {
     this.slowDowns = 0;
     this.nothings = 0;
     this.retried = null;
+  }
+
+  /** A stored time to go on at, no later than the list's longest wait (15 minutes at least) from now: a clock that was wrong doesn't stall it. */
+  private bringNear(list: ProfileListView): void {
+    const latest = this.deps.now() + Math.max(list.wait.max, SLOW_DOWN_WAIT_MINUTES) * MINUTE;
+    if (list.nextAt !== undefined && list.nextAt > latest) list.nextAt = latest;
   }
 
   private changed(): void {

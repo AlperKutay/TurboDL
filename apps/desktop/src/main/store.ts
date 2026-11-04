@@ -1,4 +1,4 @@
-import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 
 /** A JSON file written atomically (tmp + rename) with debounced saves. */
@@ -46,5 +46,15 @@ export class JsonStore<T> {
     const tmp = `${this.file}.tmp`;
     writeFileSync(tmp, JSON.stringify(data, null, 2));
     renameSync(tmp, this.file);
+  }
+
+  /** Deletes the file; a save still pending is dropped. */
+  remove(): void {
+    if (this.timer) {
+      clearTimeout(this.timer);
+      this.timer = null;
+    }
+    this.pending = null;
+    rmSync(this.file, { force: true });
   }
 }

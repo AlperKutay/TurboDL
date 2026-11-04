@@ -16,9 +16,11 @@ import {
   getExtension,
   isJobEnded,
   mediaKinds,
+  parseProfileList,
   sanitizeFilename,
   saveJobOptions,
   saveOptionsProblem,
+  waitProblem,
   type AppEvent,
   type AppSnapshot,
   type BackupPlan,
@@ -44,12 +46,16 @@ import {
   type InstagramLink,
   type InstallResult,
   type Job,
+  type JobProgress,
   type JobRequest,
+  type ListWait,
   type MediaChoice,
   type MediaDecision,
   type MediaRequest,
   type NewDownload,
+  type ParsedProfileList,
   type PendingItem,
+  type ProfileListView,
   type ProfileSaveOptions,
   type Result,
   type ScreenBackupView,
@@ -69,6 +75,7 @@ import { BACKUP_RUNNING, Backups, type StartResult } from "./instagram/backups";
 import { LedgerStore } from "./instagram/ledger";
 import { InstagramPacer, SLOW_DOWN, failedPage } from "./instagram/pacer";
 import { ProfileIndex } from "./instagram/profile-index";
+import { ProfileLists, isProfileListView, listNames, type ProfileRun } from "./instagram/profile-lists";
 import { ProfileService, type ProfileSource } from "./instagram/profile-service";
 import type { TaggedSource } from "./instagram/tagged-feed";
 import { httpGet, type HttpGet } from "./instagram/saved-client";
@@ -103,6 +110,8 @@ export interface ControllerUi {
   closePending(pendingId: string): void;
   showMain(): void;
   notifyCompleted(record: DownloadRecord): void;
+  /** the profile list finished, or stopped by itself: "Profile list finished: 3 backed up, 0 skipped." */
+  notifyListFinished(text: string): void;
   setLaunchAtLogin(enabled: boolean): void;
   quit(): void;
 }
@@ -227,6 +236,10 @@ function profileAccount(targetId: string | undefined): string | undefined {
 
 /** file, page and stream jobs that may probe or ask yt-dlp at once */
 const WEB_JOB_SLOTS = 3;
+/** a profile list's .txt, at most */
+const LIST_FILE_MAX_BYTES = 1024 * 1024;
+const LIST_FILE_UNREADABLE = "TurboDL couldn't read this file.";
+const LIST_FILE_TOO_LARGE = "This file is too large for a list of profiles (over 1 MB).";
 
 export class AppController {
   settings: Settings;
@@ -274,6 +287,10 @@ export class AppController {
   private screenJobId: string | null = null;
   /** that job as the screen sees it, followed to its end; forgotten once another backup starts after it ended */
   private screenBackup: ScreenBackupView | null = null;
+  /** the profile list's file */
+  private readonly listStore: JsonStore<ProfileListView | null>;
+  /** the one list of profiles to back up, each as an ordinary profile job (never a screen's) */
+  private readonly lists: ProfileLists;
 
   constructor(private readonly o: ControllerOptions) {
     this.instagram = o.instagram ?? NO_INSTAGRAM;
@@ -344,6 +361,24 @@ export class AppController {
       settled: () => this.backups.settled(),
     });
     this.jobs = new Jobs({ run: (job) => this.runJob(job) });
+    this.listStore = new JsonStore<ProfileListView | null>(path.join(o.userDataDir, "instagram-profile-list.json"));
+    this.lists = new ProfileLists({
+      runProfile: (username, options) => this.runListProfile(username, options),
+      // its waits hold nothing of the account's: no pacer, no lane, no backup slot
+      wait: (ms, signal) => wait(ms, signal),
+      now: () => (ig.now ? ig.now() : Date.now()),
+      random: Math.random,
+      load: () => {
+        const stored: unknown = this.listStore.load(() => null);
+        return isProfileListView(stored) ? stored : null;
+      },
+      // a closed list's file goes (a store writes no null)
+      save: (list) => (list ? this.listStore.save(list) : this.listStore.remove()),
+      onChange: (list) => this.o.ui.broadcast({ type: "profileList", list }),
+      notify: (text) => this.o.ui.notifyListFinished(text),
+      // the index keeps Instagram's own casing of the name
+      savedTotal: (username) => this.profiles.profilesList().find((entry) => entry.username.toLowerCase() === username.toLowerCase())?.saved,
+    });
     this.defaults = defaultSettings(o.downloadsDir);
     this.settingsStore = new JsonStore<Settings>(path.join(o.userDataDir, "settings.json"));
     this.settings = normalizeSettings(this.settingsStore.load(() => this.defaults), this.defaults);
@@ -398,7 +433,7 @@ export class AppController {
       version: this.o.version,
       instagramBackup: this.backups.view(),
       screenBackup: this.screenBackup,
-      profileList: null,
+      profileList: this.lists.view(),
     };
   }
 
@@ -844,6 +879,74 @@ export class AppController {
     return state !== undefined && !isJobEnded(state);
   }
 
+  /** A profile list's .txt, read and parsed, named by its file; or why not (missing, unreadable, over 1 MB). */
+  async readProfileList(file: string): Promise<{ name: string; list: ParsedProfileList } | { error: string }> {
+    try {
+      if ((await fsp.stat(file)).size > LIST_FILE_MAX_BYTES) return { error: LIST_FILE_TOO_LARGE };
+      return { name: path.basename(file), list: parseProfileList(await fsp.readFile(file, "utf8")) };
+    } catch {
+      return { error: LIST_FILE_UNREADABLE };
+    }
+  }
+
+  /**
+   * Starts a list of profiles to back up one after another, each as an ordinary profile job with the list's options.
+   * Its names are checked again (they may come from outside the app) and kept as Instagram's addresses have them; its
+   * wait and options are what the next list starts with.
+   */
+  async startProfileList(o: { name: string; usernames: string[]; options: ProfileSaveOptions; wait: ListWait }): Promise<Result> {
+    const names = listNames(o.usernames);
+    if ("error" in names) return { ok: false, error: names.error };
+    const problem = waitProblem({ min: o.wait?.min, max: o.wait?.max }) ?? saveOptionsProblem(effectiveSaveOptions(o.options, this.instagramSession.signedIn()));
+    if (problem) return { ok: false, error: problem };
+    const { posts, highlights, tagged, photos, videos } = o.options;
+    const options = { posts, highlights, tagged, photos, videos };
+    const wait = { min: o.wait.min, max: o.wait.max };
+    const started = this.lists.start({ name: o.name.trim() || "Profile list", usernames: names.names, options, wait });
+    // what was ticked, not what a signed-out backup can do: the tick is kept for when there is a session
+    if (started.ok) await this.updateSettings({ listWait: wait, instagramSave: options });
+    return started;
+  }
+
+  /** Stops the list: its wait, or its profile's job, between that job's parts too; resolves once it has stopped. */
+  stopProfileList(): Promise<void> {
+    return this.lists.stop();
+  }
+
+  async continueProfileList(): Promise<Result> {
+    return this.lists.continue();
+  }
+
+  async closeProfileList(): Promise<Result> {
+    return this.lists.close();
+  }
+
+  /** One of the list's profiles as an ordinary profile job (not a screen's): the files it fetched, its progress, its cancel. */
+  private runListProfile(username: string, options: ProfileSaveOptions): ProfileRun {
+    const effective = effectiveSaveOptions(options, this.instagramSession.signedIn());
+    const { id } = this.jobs.create({ url: `https://www.instagram.com/${encodeURIComponent(username)}/`, options: saveJobOptions(effective) });
+    let fetched = 0;
+    let tell: ((p: JobProgress) => void) | undefined;
+    // followed in the turn it was created in: nothing it reports is missed
+    const unsubscribe = this.jobs.subscribe(id, (event) => {
+      // files already in place count as saved, not as fetched
+      if (event.type === "file" && event.existing === false) fetched++;
+      else if (event.type === "progress") tell?.(event.progress);
+    });
+    // a job just created is always kept
+    const ended = this.jobs.ended(id)!;
+    return {
+      ended: ended.then((job) => {
+        unsubscribe?.();
+        return { job, fetched };
+      }),
+      cancel: () => void this.jobs.cancel(id),
+      progress: (listener) => {
+        tell = listener;
+      },
+    };
+  }
+
   async instagramProfiles(): Promise<ProfileEntry[]> {
     return this.profiles.profilesList();
   }
@@ -1062,6 +1165,8 @@ export class AppController {
     this.scheduler.stop();
     await this.manager.shutdown();
     this.settingsStore.flush();
+    // an unfinished list shows as stopped when the app starts again
+    this.listStore.flush();
     await this.bridge?.close();
     this.bridge = null;
   }

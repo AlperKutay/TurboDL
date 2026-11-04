@@ -1,4 +1,4 @@
-import type { Highlight, InstagramItem, InstagramLink, InstagramProfile, ListWait, ProfileListView, ProfileSaveOptions, SavedCollection, SavedPage, SavedSource } from "./instagram";
+import type { Highlight, InstagramItem, InstagramLink, InstagramProfile, ListWait, ParsedProfileList, ProfileListView, ProfileSaveOptions, SavedCollection, SavedPage, SavedSource } from "./instagram";
 import type { BrowserCookie, CaptureSource, MediaItem } from "./protocol";
 
 export type Category = "video" | "music" | "programs" | "archives" | "documents" | "images" | "other";
@@ -390,6 +390,18 @@ export interface TurboApi {
   openHighlightPicks(username: string, ids: string[]): Promise<Result>;
   highlightsBackupPlan(username: string): Promise<BackupPlan>;
   startHighlightsBackup(username: string, kinds: { photos: boolean; videos: boolean }): Promise<Result>;
+  /** the open dialog for a profile list's .txt; null when cancelled */
+  pickProfileListFile(): Promise<string | null>;
+  /** reads (UTF-8) and parses a profile list's .txt; why not when it is missing, unreadable or over 1 MB */
+  readProfileList(path: string): Promise<{ name: string; list: ParsedProfileList } | { error: string }>;
+  /** backs the profiles up one after another, a random wait between them; refused while an unfinished list is there */
+  startProfileList(list: { name: string; usernames: string[]; options: ProfileSaveOptions; wait: ListWait }): Promise<Result>;
+  /** the list's own Stop: its wait, or its profile's backup; resolves once it has stopped */
+  stopProfileList(): Promise<void>;
+  /** runs a stopped list on from its profile */
+  continueProfileList(): Promise<Result>;
+  /** forgets a list that isn't going on by itself */
+  closeProfileList(): Promise<Result>;
   cancelCountdown(): Promise<void>;
   installExtension(): Promise<InstallResult>;
   cliStatus(): Promise<CliStatus>;

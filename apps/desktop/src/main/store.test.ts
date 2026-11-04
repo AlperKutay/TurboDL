@@ -32,6 +32,22 @@ describe("JsonStore", () => {
     expect(existsSync(`${file}.tmp`)).toBe(false);
   });
 
+  it("deletes its file, dropping a save still pending", async () => {
+    const file = path.join(dir, "s.json");
+    const store = new JsonStore<{ n: number }>(file, 50);
+    store.save({ n: 1 });
+    store.flush();
+    store.save({ n: 2 });
+    store.remove();
+    expect(existsSync(file)).toBe(false);
+    await new Promise((r) => setTimeout(r, 120));
+    expect(existsSync(file)).toBe(false);
+    // without a file, nothing happens
+    store.remove();
+    store.flush();
+    expect(existsSync(file)).toBe(false);
+  });
+
   it("backs up a corrupt file and falls back", () => {
     const file = path.join(dir, "s.json");
     writeFileSync(file, "{ not json");
