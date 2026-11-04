@@ -1,5 +1,5 @@
 import path from "node:path";
-import { parseIsoTime, type JobOptions } from "@turbodl/shared";
+import { TAGGED_AVAILABLE, parseIsoTime, type JobOptions } from "@turbodl/shared";
 
 /** One parsed turbodl command line. */
 export type Command =
@@ -12,8 +12,11 @@ export type Command =
   | { type: "help" }
   | { type: "version" };
 
-/** The `--help` text: every command and option. */
-export const HELP = `Usage: turbodl <command> [options]
+const TAGGED_LINE = "  --tagged               Include the posts the profile is tagged in (needs a sign-in)\n";
+
+/** The `--help` text: every command and option (`--tagged` only while tagged posts are available: `tagged`). */
+export function helpText(tagged: boolean = TAGGED_AVAILABLE): string {
+  return `Usage: turbodl <command> [options]
 
 Commands:
   get <link...>          Download the links and wait until they finish
@@ -36,8 +39,7 @@ Options (get and add):
   --highlights           Include highlights (Instagram profiles)
   --highlights-only      Download only the highlights
   --no-posts             Leave out the profile's own posts (Instagram profiles)
-  --tagged               Include the posts the profile is tagged in (needs a sign-in)
-  --photos-only          Save photos only (Instagram profiles)
+${tagged ? TAGGED_LINE : ""}  --photos-only          Save photos only (Instagram profiles)
   --videos-only          Save videos only (Instagram profiles)
   --collection <name>    Download a Saved collection (repeatable)
   --all-collections      Download every Saved collection
@@ -55,13 +57,21 @@ Options (every command):
 Exit codes: 0 ok, 1 failed, 2 usage, 3 sign-in needed, 4 rate limited,
 5 app unreachable, 6 stopped, 130 interrupted.
 `;
+}
+
+/** The `--help` text of this version. */
+export const HELP = helpText();
 
 const VALUE_OPTIONS = new Set(["-d", "--dir", "--name", "--max-height", "--collection", "--since", "--limit"]);
 const FLAG_OPTIONS = new Set(["--audio", "--highlights", "--highlights-only", "--no-posts", "--tagged", "--photos-only", "--videos-only", "--all-collections", "--json"]);
 const COMMANDS = new Set(["get", "add", "list", "status", "wait", "cancel", "instagram", "posts"]);
 
-/** Reads the command line; returns the command or `{ error }` for a usage mistake. */
-export function parseArgs(argv: string[], cwd: string): Command | { error: string } {
+/**
+ * Reads the command line; returns the command or `{ error }` for a usage mistake. `o.tagged`: whether tagged posts are
+ * available (this version's `TAGGED_AVAILABLE` unless given); without them `--tagged` is a usage mistake.
+ */
+export function parseArgs(argv: string[], cwd: string, o: { tagged?: boolean } = {}): Command | { error: string } {
+  const taggedAvailable = o.tagged ?? TAGGED_AVAILABLE;
   const positional: string[] = [];
   const flags = new Set<string>();
   const values = new Map<string, string[]>();
@@ -157,8 +167,9 @@ export function parseArgs(argv: string[], cwd: string): Command | { error: strin
   if (flags.has("--photos-only") && flags.has("--videos-only")) {
     return { error: "--photos-only and --videos-only can't both be set" };
   }
+  if (flags.has("--tagged") && !taggedAvailable) return { error: "--tagged isn't available in this version" };
   if (flags.has("--no-posts") && !flags.has("--highlights") && !flags.has("--tagged") && !flags.has("--highlights-only")) {
-    return { error: "--no-posts needs --highlights or --tagged" };
+    return { error: taggedAvailable ? "--no-posts needs --highlights or --tagged" : "--no-posts needs --highlights" };
   }
   // "highlights only" already leaves the posts out, and the app refuses it combined with `posts`.
   if (flags.has("--no-posts") && !flags.has("--highlights-only")) options.posts = false;

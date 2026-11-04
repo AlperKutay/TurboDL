@@ -1,6 +1,7 @@
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { HELP, parseArgs } from "../../src/cli/args";
+import { TAGGED_AVAILABLE } from "@turbodl/shared";
+import { HELP, helpText, parseArgs } from "../../src/cli/args";
 
 const cwd = path.resolve("work");
 const err = (argv: string[]) => parseArgs(argv, cwd);
@@ -130,6 +131,25 @@ describe("parseArgs errors", () => {
     expect(err(["cancel"])).toEqual({ error: "cancel needs a job id" });
     expect(err(["instagram"])).toEqual({ error: "instagram needs login, logout or status" });
     expect(err(["instagram", "nope"])).toEqual({ error: "instagram needs login, logout or status" });
+  });
+});
+
+describe("tagged posts, on or off in this version", () => {
+  it("takes --tagged and lists it while tagged posts are available", () => {
+    expect(TAGGED_AVAILABLE).toBe(true);
+    expect(parseArgs(["get", "u", "--tagged"], cwd, { tagged: true })).toMatchObject({ options: { tagged: true } });
+    expect(helpText(true)).toContain("--tagged");
+    expect(helpText(true)).toBe(HELP);
+  });
+
+  it("refuses --tagged as a usage mistake and leaves it out of the help when they aren't", () => {
+    const off = { tagged: false };
+    expect(parseArgs(["get", "u", "--tagged"], cwd, off)).toEqual({ error: "--tagged isn't available in this version" });
+    expect(parseArgs(["add", "u", "--no-posts", "--tagged"], cwd, off)).toEqual({ error: "--tagged isn't available in this version" });
+    expect(parseArgs(["get", "u", "--no-posts"], cwd, off)).toEqual({ error: "--no-posts needs --highlights" });
+    expect(parseArgs(["get", "u", "--no-posts", "--highlights"], cwd, off)).toMatchObject({ options: { posts: false, highlights: true } });
+    expect(helpText(false)).not.toContain("--tagged");
+    expect(helpText(false)).toContain("--no-posts");
   });
 });
 
