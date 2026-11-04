@@ -9,6 +9,7 @@ import {
   type ProfileListRow,
   type ProfileListView,
   type ProfileSaveOptions,
+  type Result,
 } from "@turbodl/shared";
 import { belongsTo } from "./saved-state";
 
@@ -72,7 +73,8 @@ export function listStateLine(list: ProfileListView, now: number, backup: Backup
     case "signedOut":
       return list.message ?? "Instagram signed TurboDL out. Sign in, then continue.";
     case "stopped":
-      return "Stopped";
+      // a reason only when something went wrong
+      return list.message ? `Stopped: ${list.message}` : "Stopped";
     case "finished": {
       const rows = (state: ProfileListRow["state"]) => list.rows.filter((r) => r.state === state).length;
       const failed = rows("failed");
@@ -141,6 +143,21 @@ export function invalidLines(list: ParsedProfileList): string[] {
   const lines = list.invalid.slice(0, INVALID_SHOWN).map((l) => `Line ${l.line} isn't a profile: ${l.text}`);
   const more = list.invalid.length - INVALID_SHOWN;
   return more > 0 ? [...lines, `and ${count(more)} more`] : lines;
+}
+
+/**
+ * Runs a list action of the panel or the dialog with `setBusy(true)` meanwhile and `setBusy(false)` however it ends; an
+ * answer that never came (the app threw) is the action's error.
+ */
+export async function whileBusy<T extends Result | void>(setBusy: (busy: boolean) => void, action: () => Promise<T>): Promise<T | Result> {
+  setBusy(true);
+  try {
+    return await action();
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  } finally {
+    setBusy(false);
+  }
 }
 
 /** A wait's field as a number: empty is no number (not 0). */

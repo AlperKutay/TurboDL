@@ -240,6 +240,7 @@ const WEB_JOB_SLOTS = 3;
 const LIST_FILE_MAX_BYTES = 1024 * 1024;
 const LIST_FILE_UNREADABLE = "TurboDL couldn't read this file.";
 const LIST_FILE_TOO_LARGE = "This file is too large for a list of profiles (over 1 MB).";
+const LIST_FILE_NOT_TEXT = "A list of profiles is a .txt file.";
 
 export class AppController {
   settings: Settings;
@@ -879,10 +880,14 @@ export class AppController {
     return state !== undefined && !isJobEnded(state);
   }
 
-  /** A profile list's .txt, read and parsed, named by its file; or why not (missing, unreadable, over 1 MB). */
+  /** A profile list's .txt, read and parsed, named by its file; or why not (not a .txt file, missing, unreadable, over 1 MB). */
   async readProfileList(file: string): Promise<{ name: string; list: ParsedProfileList } | { error: string }> {
+    // the path comes from the renderer: nothing but a .txt file is read
+    if (path.extname(file).toLowerCase() !== ".txt") return { error: LIST_FILE_NOT_TEXT };
     try {
-      if ((await fsp.stat(file)).size > LIST_FILE_MAX_BYTES) return { error: LIST_FILE_TOO_LARGE };
+      const stat = await fsp.stat(file);
+      if (!stat.isFile()) return { error: LIST_FILE_UNREADABLE };
+      if (stat.size > LIST_FILE_MAX_BYTES) return { error: LIST_FILE_TOO_LARGE };
       return { name: path.basename(file), list: parseProfileList(await fsp.readFile(file, "utf8")) };
     } catch {
       return { error: LIST_FILE_UNREADABLE };
@@ -1175,6 +1180,8 @@ export class AppController {
   }
 
   async shutdown(): Promise<void> {
+    // the list first: the profile it is at comes back as waiting (Continue runs it again), not as an outcome of the quit
+    await Promise.race([this.lists.stop(), new Promise((r) => setTimeout(r, 3000))]);
     // a backup's item in flight removes its temporary file before the app goes
     await Promise.race([this.backups.stop(), new Promise((r) => setTimeout(r, 3000))]);
     this.profiles.closeAll();

@@ -48,13 +48,13 @@ export class JsonStore<T> {
     renameSync(tmp, this.file);
   }
 
-  /** Deletes the file; a save still pending is dropped. */
+  /** Deletes the file; a save still pending is dropped then (kept when the file couldn't be deleted). */
   remove(): void {
+    rmSync(this.file, { force: true });
     if (this.timer) {
       clearTimeout(this.timer);
       this.timer = null;
     }
     this.pending = null;
-    rmSync(this.file, { force: true });
   }
 }

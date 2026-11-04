@@ -13,6 +13,7 @@ import {
   namesPreview,
   rowText,
   waitNumber,
+  whileBusy,
 } from "./profile-list-state";
 
 const NOW = 1_700_000_000_000;
@@ -76,6 +77,8 @@ describe("profile-list-state", () => {
     expect(listStateLine(list({ state: "rateLimited", message: "Slow down 3 times." }), NOW)).toBe("Slow down 3 times.");
     expect(listStateLine(list({ state: "signedOut", message: "Signed out." }), NOW)).toBe("Signed out.");
     expect(listStateLine(list({ state: "stopped" }), NOW)).toBe("Stopped");
+    // stopped by something that went wrong: its reason
+    expect(listStateLine(list({ state: "stopped", message: "The clock broke." }), NOW)).toBe("Stopped: The clock broke.");
     const finished = list({
       state: "finished",
       index: 3,
@@ -158,5 +161,16 @@ describe("profile-list-state", () => {
     expect(listStartProblem({ ...ok, options: taggedOnly })).toBeNull();
     expect(listStartProblem({ ...ok, options: taggedOnly, signedIn: false })).toBe("Pick at least one of posts, highlights and tagged posts.");
     expect(waitNumber(" 4 ")).toBe(4);
+  });
+
+  it("is busy only while an action runs, however it ends", async () => {
+    const seen: boolean[] = [];
+    const setBusy = (busy: boolean) => seen.push(busy);
+    expect(await whileBusy(setBusy, async () => ({ ok: true }))).toEqual({ ok: true });
+    expect(await whileBusy(setBusy, async () => ({ ok: false, error: "Stop the list first." }))).toEqual({ ok: false, error: "Stop the list first." });
+    expect(await whileBusy(setBusy, async () => undefined)).toBeUndefined();
+    // the app's answer never came: its error is the action's
+    expect(await whileBusy(setBusy, () => Promise.reject(new Error("EBUSY: resource busy or locked")))).toEqual({ ok: false, error: "EBUSY: resource busy or locked" });
+    expect(seen).toEqual([true, false, true, false, true, false, true, false]);
   });
 });

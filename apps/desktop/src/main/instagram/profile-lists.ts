@@ -47,6 +47,8 @@ const RATE_LIMITED = "Instagram asked TurboDL to slow down 3 times in a row. Con
 const SIGNED_OUT = "Instagram signed TurboDL out. Sign in, then continue.";
 const STOPPED_RATE_LIMITED = "Profile list stopped: Instagram asked TurboDL to slow down 3 times in a row.";
 const STOPPED_SIGNED_OUT = "Profile list stopped: Instagram signed TurboDL out.";
+const STOPPED_BROKE = "Profile list stopped: something went wrong; continue it in TurboDL.";
+const UNDELETABLE = "TurboDL couldn't delete the list's file. Try again.";
 export const UNFINISHED = "Close the list that is there first.";
 export const STOP_FIRST = "Stop the list first.";
 const NO_LIST = "There is no list.";
@@ -219,13 +221,18 @@ export class ProfileLists {
     return { ok: true };
   }
 
-  /** Forgets a list that isn't going on by itself. */
+  /** Forgets a list that isn't going on by itself: its file first, so a file that stays keeps the list too. */
   close(): Result {
     if (!this.list) return { ok: false, error: NO_LIST };
     if (ACTIVE.has(this.list.state)) return { ok: false, error: STOP_FIRST };
+    try {
+      this.deps.save(null);
+    } catch (err) {
+      console.error("The profile list's file couldn't be deleted:", err);
+      return { ok: false, error: UNDELETABLE };
+    }
     this.list = null;
     this.recount();
-    this.deps.save(null);
     this.deps.onChange(null);
     return { ok: true };
   }
@@ -399,10 +406,12 @@ export class ProfileLists {
     return true;
   }
 
-  private stopped(list: ProfileListView): void {
+  /** The list stopped: by Stop, or with `reason` when something went wrong. */
+  private stopped(list: ProfileListView, reason?: string): void {
     for (const row of list.rows) if (row.state === "running") row.state = "waiting";
     list.state = "stopped";
-    delete list.message;
+    if (reason !== undefined) list.message = reason;
+    else delete list.message;
     delete list.progress;
     this.changed();
   }
@@ -418,10 +427,12 @@ export class ProfileLists {
     this.deps.notify(`Profile list finished: ${count("done")} backed up, ${count("skipped")} skipped${failed ? `, ${failed} failed` : ""}.`);
   }
 
-  /** Something the list's run didn't expect: the list stops rather than stalling as if it ran. */
+  /** Something the list's run didn't expect: the list stops rather than stalling as if it ran, and says why. */
   private broke(err: unknown): void {
     console.error("The profile list stopped:", err);
-    if (this.list && ACTIVE.has(this.list.state)) this.stopped(this.list);
+    if (!this.list || !ACTIVE.has(this.list.state)) return;
+    this.stopped(this.list, err instanceof Error ? err.message : String(err));
+    this.deps.notify(STOPPED_BROKE);
   }
 
   private recount(): void {

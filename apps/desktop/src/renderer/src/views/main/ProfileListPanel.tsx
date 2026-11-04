@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import type { BackupView, ProfileListView, Result } from "@turbodl/shared";
 import { api } from "../../api";
-import { listActions, listPosition, listStateLine, rowText } from "../../profile-list-state";
+import { listActions, listPosition, listStateLine, rowText, whileBusy } from "../../profile-list-state";
 
 /**
  * The profile list on the Profiles screen: its file, where it is, its state (the wait before the next profile counting
@@ -23,10 +23,8 @@ export function ProfileListPanel({ list, backup, onOpen }: { list: ProfileListVi
   }, [ticking]);
 
   const act = async (what: () => Promise<Result | void>) => {
-    setBusy(true);
     setError(null);
-    const res = await what();
-    setBusy(false);
+    const res = await whileBusy(setBusy, what);
     if (res && !res.ok) setError(res.error);
   };
   // signed out midway: sign in, then Continue goes on from the profile it stopped at

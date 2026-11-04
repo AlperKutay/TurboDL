@@ -253,6 +253,24 @@ describe("ProfileLists", () => {
     expect(h.lists.view()!.state).toBe("finished");
   });
 
+  it("stops with the reason, and says so, when its run breaks", async () => {
+    const h = harness();
+    h.deps.wait = () => Promise.reject(new Error("The clock broke."));
+    start(h, ["first.one", "second.one"], { min: 1, max: 1 });
+    await flush();
+    const view = h.lists.view()!;
+    expect(view).toMatchObject({ state: "stopped", index: 1, message: "The clock broke.", rows: [{ state: "done" }, { state: "waiting" }] });
+    expect(h.saved.at(-1)).toEqual(view);
+    expect(h.changes.at(-1)).toEqual(view);
+    expect(h.notes).toEqual(["Profile list stopped: something went wrong; continue it in TurboDL."]);
+    // Continue goes on, the reason gone
+    h.deps.wait = h.clock.wait;
+    expect(h.lists.continue()).toEqual({ ok: true });
+    expect(h.lists.view()!.message).toBeUndefined();
+    await settle(h);
+    expect(h.lists.view()).toMatchObject({ state: "finished", rows: [{ state: "done" }, { state: "done" }] });
+  });
+
   it("waits 15 minutes on a slow-down and runs the same profile again", async () => {
     const h = harness({ script: { "first.one": [SLOWED, DONE] } });
     start(h, ["first.one", "second.one"]);
@@ -593,6 +611,28 @@ describe("ProfileLists", () => {
     expect(h.lists.view()!.state).toBe("finished");
     expect(h.lists.close()).toEqual({ ok: true });
     expect(h.lists.view()).toBeNull();
+  });
+
+  it("keeps the list when its file can't be deleted on close()", async () => {
+    const h = harness();
+    start(h, ["first.one"]);
+    await settle(h);
+    const view = h.lists.view()!;
+    const told = h.changes.length;
+    const save = h.deps.save;
+    h.deps.save = (list) => {
+      if (list === null) throw Object.assign(new Error("EBUSY: resource busy or locked"), { code: "EBUSY" });
+      save(list);
+    };
+    expect(h.lists.close()).toEqual({ ok: false, error: "TurboDL couldn't delete the list's file. Try again." });
+    expect(h.lists.view()).toEqual(view);
+    expect(h.changes.length).toBe(told);
+    // once it can, it goes
+    h.deps.save = save;
+    expect(h.lists.close()).toEqual({ ok: true });
+    expect(h.lists.view()).toBeNull();
+    expect(h.saved.at(-1)).toBeNull();
+    expect(h.changes.at(-1)).toBeNull();
   });
 
   it("continues only a list that stopped", async () => {

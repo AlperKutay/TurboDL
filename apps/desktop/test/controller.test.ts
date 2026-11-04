@@ -1487,10 +1487,22 @@ describe("Instagram profiles", () => {
         name: "friends.txt",
         list: { usernames: ["sample.user", "other.user"], invalid: [{ line: 3, text: "not a name!" }], tooMany: false },
       });
+      // .txt in any case
+      const upper = path.join(root, "FRIENDS.TXT");
+      writeFileSync(upper, "sample.user\n");
+      expect(await c.readProfileList(upper)).toEqual({ name: "FRIENDS.TXT", list: { usernames: ["sample.user"], invalid: [], tooMany: false } });
       const unreadable = { error: "TurboDL couldn't read this file." };
       expect(await c.readProfileList(path.join(root, "missing.txt"))).toEqual(unreadable);
-      expect(await c.readProfileList(root)).toEqual(unreadable);
-      expect(await c.readProfileList("")).toEqual(unreadable);
+      // a folder named like a list isn't read
+      mkdirSync(path.join(root, "folder.txt"));
+      expect(await c.readProfileList(path.join(root, "folder.txt"))).toEqual(unreadable);
+      // nothing but a .txt is read, whatever it holds
+      const notText = { error: "A list of profiles is a .txt file." };
+      const csv = path.join(root, "friends.csv");
+      writeFileSync(csv, "sample.user\n");
+      expect(await c.readProfileList(csv)).toEqual(notText);
+      expect(await c.readProfileList(root)).toEqual(notText);
+      expect(await c.readProfileList("")).toEqual(notText);
       const large = path.join(root, "large.txt");
       writeFileSync(large, "sample.user\n".repeat(100_000));
       expect(await c.readProfileList(large)).toEqual({ error: "This file is too large for a list of profiles (over 1 MB)." });
@@ -1617,6 +1629,29 @@ describe("Instagram profiles", () => {
         await c.shutdown();
         controller = null;
       }
+    });
+
+    it("stops the list first when the app quits: the profile it was at runs again on Continue", async () => {
+      const ig = fakeProfiles({ "sample.user": SAMPLE, "other.user": OTHER() });
+      stoppableFetch(ig.deps);
+      const c = await signedIn(ig.deps);
+      // a backup from the screen runs; the list's first profile waits its turn
+      expect(await c.startProfileBackup("sample.user", POSTS_ONLY)).toEqual({ ok: true });
+      expect(await c.startProfileList(list(["other.user", "sample.user"]))).toEqual({ ok: true });
+      await new Promise((r) => setTimeout(r, 50));
+      expect(c.snapshot().profileList).toMatchObject({ state: "running", index: 0, rows: [{ state: "running" }, { state: "waiting" }] });
+      await c.shutdown();
+      controller = null;
+      expect(JSON.parse(readFileSync(listFile(), "utf8"))).toMatchObject({
+        state: "stopped",
+        index: 0,
+        rows: [
+          { username: "other.user", state: "waiting" },
+          { username: "sample.user", state: "waiting" },
+        ],
+      });
+      // no backup of the list's started while the app quit
+      expect(ig.opened).not.toContain("other.user");
     });
 
     it("writes the list's last change when the app quits", async () => {
