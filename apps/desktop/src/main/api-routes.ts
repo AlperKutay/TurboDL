@@ -1,6 +1,7 @@
 import http from "node:http";
 import path from "node:path";
 import {
+  TAGGED_AVAILABLE,
   isJobEnded,
   parseIsoTime,
   type ApiInfo,
@@ -64,7 +65,7 @@ export function isApiPath(p: string): boolean {
   return p === "/v1/info" || p === "/v1/jobs" || p.startsWith("/v1/jobs/") || p.startsWith("/v1/instagram/");
 }
 
-const BOOLEAN_OPTIONS = ["highlights", "highlightsOnly", "allCollections", "audio", "postsOnly"] as const;
+const BOOLEAN_OPTIONS = ["highlights", "highlightsOnly", "allCollections", "audio", "postsOnly", "posts", "tagged", "photos", "videos"] as const;
 
 function parseOptions(v: unknown): JobOptions | string {
   if (!isObj(v)) return "options";
@@ -106,6 +107,15 @@ function parseOptions(v: unknown): JobOptions | string {
   }
   if (out.postsOnly && (out.highlights || out.highlightsOnly || out.collections || out.allCollections)) {
     return "postsOnly can't be combined with highlights or collections";
+  }
+  if (out.postsOnly && (out.posts !== undefined || out.tagged !== undefined || out.photos !== undefined || out.videos !== undefined)) {
+    return "postsOnly can't be combined with posts, tagged, photos or videos";
+  }
+  if (out.highlightsOnly && out.posts !== undefined) return "highlightsOnly can't be combined with posts";
+  if (out.tagged && !TAGGED_AVAILABLE) return "tagged isn't available in this version";
+  if (out.photos === false && out.videos === false) return "photos and videos can't both be off";
+  if (out.posts === false && !out.highlights && !out.tagged && !out.highlightsOnly) {
+    return "nothing to save: posts is off and neither highlights nor tagged is on";
   }
   if (out.highlights && out.highlightsOnly) return "highlights and highlightsOnly can't both be set";
   if (out.collections && out.allCollections) return "collections and allCollections can't both be set";

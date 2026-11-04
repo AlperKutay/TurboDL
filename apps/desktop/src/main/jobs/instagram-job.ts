@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs";
 import path from "node:path";
-import { formatBytes, type BackupPlan, type BackupView, type InstagramItem, type InstagramLink, type JobReason, type SavedCollection, type Settings } from "@turbodl/shared";
+import { formatBytes, mediaKinds, type BackupPlan, type BackupView, type InstagramItem, type InstagramLink, type InstagramMediaKind, type JobOptions, type JobReason, type SavedCollection, type Settings } from "@turbodl/shared";
 import type { Backups, StartResult } from "../instagram/backups";
 import type { FindOutcome } from "../instagram/finder";
 import { instagramFolder } from "../instagram/folders";
@@ -79,23 +79,32 @@ async function linkJob(job: JobRecord, link: Exclude<InstagramLink, { kind: "pro
   if (await saveItems(job, deps, outcome.items, where)) job.end({ state: "done" });
 }
 
+/** What a profile job's options ask of a profile: its posts, highlights and tagged posts, and the media kinds to save. */
+export function profileParts(o: JobOptions): { posts: boolean; highlights: boolean; tagged: boolean; kinds: InstagramMediaKind[] } {
+  const highlightsOnly = o.highlightsOnly === true;
+  return {
+    posts: !highlightsOnly && o.posts !== false,
+    highlights: highlightsOnly || o.highlights === true,
+    tagged: o.tagged === true,
+    kinds: mediaKinds({ photos: o.photos !== false, videos: o.videos !== false }),
+  };
+}
+
 /** A profile: its posts' backup, then its highlights' when asked; both work without a session. */
 async function profileJob(job: JobRecord, username: string, deps: InstagramJobDeps): Promise<void> {
   const { profiles } = deps;
-  const options = job.request.options ?? {};
-  const highlightsOnly = options.highlightsOnly === true;
-  const highlights = highlightsOnly || options.highlights === true;
+  const { posts: wantsPosts, highlights, kinds } = profileParts(job.request.options ?? {});
   const skipped = { signInOnly: 0 };
   let missedPosts = 0;
-  if (!highlightsOnly) {
-    const posts = await backup(job, deps, () => profiles.startBackup(username), async () => job.warn(planWarning(await profiles.plan(username))), skipped);
+  if (wantsPosts) {
+    const posts = await backup(job, deps, () => profiles.startBackup(username, kinds), async () => job.warn(planWarning(await profiles.plan(username))), skipped);
     if (posts === null) return;
     if (typeof posts !== "number") return refused(job, deps, posts);
     missedPosts = posts;
   }
   let missedHighlights = 0;
   if (highlights) {
-    const stories = await backup(job, deps, () => profiles.startHighlightsBackup(username));
+    const stories = await backup(job, deps, () => profiles.startHighlightsBackup(username, kinds));
     if (stories === null) return;
     if (typeof stories === "number") missedHighlights = stories;
     else if (stories.reason === "empty") job.warn(NO_HIGHLIGHTS);

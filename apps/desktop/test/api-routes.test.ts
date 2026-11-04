@@ -196,6 +196,30 @@ describe("jobs", () => {
     expect(requests).toEqual([]);
   });
 
+  it("refuses profile options that save nothing or contradict each other", async () => {
+    const err = async (options: unknown) => {
+      const res = await post("/v1/jobs", { url: "https://example.com/a", options });
+      expect(res.status).toBe(400);
+      return res.json.error;
+    };
+    expect(await err({ photos: false, videos: false })).toBe("photos and videos can't both be off");
+    expect(await err({ posts: false })).toBe("nothing to save: posts is off and neither highlights nor tagged is on");
+    expect(await err({ highlightsOnly: true, posts: false })).toBe("highlightsOnly can't be combined with posts");
+    expect(await err({ highlightsOnly: true, posts: true })).toBe("highlightsOnly can't be combined with posts");
+    for (const extra of [{ posts: true }, { tagged: true }, { photos: false }, { videos: false }]) {
+      expect(await err({ postsOnly: true, ...extra })).toBe("postsOnly can't be combined with posts, tagged, photos or videos");
+    }
+    expect(await err({ posts: "no" })).toBe("options");
+  });
+
+  it("accepts profile options that leave something to save", async () => {
+    for (const options of [{ posts: false, tagged: true }, { posts: false, highlights: true }, { photos: false }, { videos: false, tagged: false }]) {
+      const res = await post("/v1/jobs", { url: "https://example.com/a", options });
+      expect(res.status).toBe(201);
+    }
+    expect(requests.map((r) => r.options)).toEqual([{ posts: false, tagged: true }, { posts: false, highlights: true }, { photos: false }, { videos: false, tagged: false }]);
+  });
+
   it("accepts a posts-only request with since, limit and known", async () => {
     const res = await post("/v1/jobs", {
       url: "https://www.instagram.com/someone/",

@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { SavedError, type InstagramItem, type InstagramProfile, type Job, type JobEvent, type JobRequest, type SavedPost } from "@turbodl/shared";
 import type { AppController, InstagramDeps } from "../../src/main/controller";
 import { FakeUi, SESSION, startApp } from "../fixtures/instagram-app";
+import { profileParts } from "../../src/main/jobs/instagram-job";
 import { fakeProfiles, fakeSignedOut, savedGet, signedOutCover } from "../fixtures/instagram-fakes";
 import { startTestServer, type TestServer } from "../fixtures/test-server";
 
@@ -287,6 +288,42 @@ describe("Instagram profile jobs", () => {
     expect(readdirSync(dl("sample.user", "Highlights")).sort()).toEqual(["s1.jpg", "s2.jpg"]);
     const kinds = ui.events.flatMap((e) => (e.type === "instagramBackup" && e.backup ? [e.backup.kind] : []));
     expect([...new Set(kinds)]).toEqual(["profile", "highlights"]);
+  });
+
+  it("backs up only a profile's photos when videos is off", async () => {
+    const clip: SavedPost = { id: "2", cover: "https://cdn.example/2.jpg", items: [{ kind: "video", url: server.url("/ig/2.mp4"), mediaId: "2" }] };
+    const ig = fakeProfiles({ "sample.user": { profile: person("5100000000000000001", "sample.user", { postCount: 2 }), pages: [[photo("1"), clip]] } });
+    const c = await signedIn(ig.deps);
+    const job = await run(c, { url: PROFILE_URL, options: { videos: false } });
+    expect(job).toMatchObject({ state: "done", failedItems: 0 });
+    expect(job.files).toEqual([dl("sample.user", "1.jpg")]);
+  });
+
+  it("treats posts off with highlights on as highlights only", async () => {
+    const ig = fakeProfiles({ "sample.user": SAMPLE() });
+    ig.deps.find = async (link) => (link.kind === "highlight" ? { type: "items", items: [story("s1")] } : { type: "nothing" });
+    const c = await signedIn(ig.deps);
+    const job = await run(c, { url: PROFILE_URL, options: { posts: false, highlights: true } });
+    expect(job).toMatchObject({ state: "done", files: [dl("sample.user", "Highlights", "s1.jpg")] });
+  });
+
+  describe("profileParts", () => {
+    it("takes posts and both kinds by default", () => {
+      expect(profileParts({})).toEqual({ posts: true, highlights: false, tagged: false, kinds: ["image", "video"] });
+    });
+    it("reads highlightsOnly as highlights without posts", () => {
+      expect(profileParts({ highlightsOnly: true })).toMatchObject({ posts: false, highlights: true });
+    });
+    it("reads posts false with highlights true", () => {
+      expect(profileParts({ posts: false, highlights: true })).toMatchObject({ posts: false, highlights: true });
+    });
+    it("narrows the kinds", () => {
+      expect(profileParts({ videos: false }).kinds).toEqual(["image"]);
+      expect(profileParts({ photos: false }).kinds).toEqual(["video"]);
+    });
+    it("passes tagged on", () => {
+      expect(profileParts({ tagged: true }).tagged).toBe(true);
+    });
   });
 
   it("reports nothing of its backup before it is running", async () => {

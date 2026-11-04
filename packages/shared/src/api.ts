@@ -1,3 +1,5 @@
+import { TAGGED_AVAILABLE } from "./instagram/options";
+
 /** Version of the local jobs API; clients check it against `api.json`. */
 export const API_VERSION = 1;
 /** Name of the file in the user data folder that tells clients how to reach the app. */
@@ -121,7 +123,7 @@ export interface ApiInfo {
 }
 
 /** The features this version reports in `ApiInfo.features`. */
-export const API_FEATURES: readonly string[] = ["posts"];
+export const API_FEATURES: readonly string[] = ["posts", "profileOptions", ...(TAGGED_AVAILABLE ? ["tagged"] : [])];
 
 /** The command that starts the app in the background. */
 export interface ApiLaunch {

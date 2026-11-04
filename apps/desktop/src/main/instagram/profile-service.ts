@@ -1,4 +1,5 @@
 import {
+  MEDIA_KINDS,
   SavedError,
   isLocked,
   type BackupPlan,
@@ -6,6 +7,7 @@ import {
   type Highlight,
   type HighlightResult,
   type InstagramItem,
+  type InstagramMediaKind,
   type InstagramPostInfo,
   type InstagramPostItem,
   type InstagramProfile,
@@ -355,7 +357,7 @@ export class ProfileService {
    * (with or without a session), each post's items are read from its own page, and every page it reads (its listing's
    * next pages too) takes the shared read slot.
    */
-  async startBackup(username: string): Promise<StartResult> {
+  async startBackup(username: string, kinds: readonly InstagramMediaKind[] = MEDIA_KINDS): Promise<StartResult> {
     if (this.deps.backups.isRunning()) return { ok: false, error: "A backup is already running.", reason: "busy" };
     // no page is opened for a backup that wouldn't start
     if (this.deps.pacer.held()) return SLOWED_DOWN;
@@ -377,11 +379,12 @@ export class ProfileService {
         ...(profile.postCount !== undefined ? { count: profile.postCount } : {}),
         dir: this.folder(profile.username),
         allowsEarlyStop: true,
+        kinds,
         // the signed-out listing may end short of the count
         ...(limited ? { checkCount: true } : {}),
       },
       (cursor, signal) => (limited && cursor !== undefined ? this.deps.read(() => this.paged(source, cursor, signal), signal) : this.paged(source, cursor, signal)),
-      () => this.startBackup(key),
+      () => this.startBackup(key, kinds),
       limited ? (post, signal) => this.readPost(post, signal) : undefined,
     );
     if (!result.ok) {
@@ -441,7 +444,7 @@ export class ProfileService {
    * Backs up every story of every highlight, one highlight per page (its own page load, 3–6 s apart), into its own
    * folder. New stories land in old highlights, so every run goes through all of them: no early stop.
    */
-  async startHighlightsBackup(username: string): Promise<StartResult> {
+  async startHighlightsBackup(username: string, kinds: readonly InstagramMediaKind[] = MEDIA_KINDS): Promise<StartResult> {
     if (this.deps.backups.isRunning()) return { ok: false, error: "A backup is already running.", reason: "busy" };
     if (this.deps.pacer.held()) return SLOWED_DOWN;
     const key = username.toLowerCase();
@@ -473,6 +476,7 @@ export class ProfileService {
         ...(counted ? { count: tray.length } : {}),
         dir: this.highlightsFolder(profile.username),
         allowsEarlyStop: false,
+        kinds,
         pageGap: [3000, 6000],
         endNote: () => (source.limited && source.trayCursor !== undefined && (trayPages >= TRAY_PAGES || stalled) ? "Instagram has more highlights than TurboDL read in one run." : undefined),
       },
@@ -494,7 +498,7 @@ export class ProfileService {
         const items = found.map((item) => ({ ...item, mediaId: item.mediaId ?? lastSegment(item.url) }));
         return { posts: [{ id: highlight.id, ...(highlight.cover ? { cover: highlight.cover } : {}), items }], ...(index + 1 < tray.length || moreTray() ? { next: String(index + 1) } : {}) };
       },
-      () => this.startHighlightsBackup(key),
+      () => this.startHighlightsBackup(key, kinds),
     );
     if (!result.ok) {
       this.letGo(source);
