@@ -324,7 +324,7 @@ async function readProfiles(io: CliIo, out: Output, file: string): Promise<strin
     return EXIT.usage;
   }
   const list = parseProfileList(text);
-  for (const line of list.invalid) out.warning(`line ${line.line} isn't a profile: ${line.text}`);
+  for (const line of list.invalid) out.warning(`Line ${line.line} isn't a profile: ${line.text}`);
   if (list.tooMany) {
     out.error(LIST_TOO_MANY);
     return EXIT.usage;

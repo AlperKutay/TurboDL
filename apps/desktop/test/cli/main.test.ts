@@ -592,11 +592,11 @@ describe("turbodl get --from-file", () => {
       .split("\n")
       .map((l) => JSON.parse(l) as unknown);
     expect(lines).toEqual([
-      { type: "warning", message: "line 2 isn't a profile: bad name" },
+      { type: "warning", message: "Line 2 isn't a profile: bad name" },
       { username: "nasa", state: "done", files: 1, fetched: 1 },
       { list: fake.list },
     ]);
-    expect(c.stderr.text).toBe("turbodl: warning: line 2 isn't a profile: bad name\n");
+    expect(c.stderr.text).toBe("turbodl: warning: Line 2 isn't a profile: bad name\n");
   });
 
   it("warns about the lines that aren't profiles and backs up the rest", async () => {
@@ -606,7 +606,7 @@ describe("turbodl get --from-file", () => {
     });
     expect(await c.done).toBe(0);
     expect(c.stderr.text).toBe(
-      "turbodl: warning: line 2 isn't a profile: not a name!\nturbodl: warning: line 3 isn't a profile: https://www.instagram.com/p/C1/\nFinished: 1 backed up, 0 skipped\n",
+      "turbodl: warning: Line 2 isn't a profile: not a name!\nturbodl: warning: Line 3 isn't a profile: https://www.instagram.com/p/C1/\nFinished: 1 backed up, 0 skipped\n",
     );
     expect(fake.listRequests[0].usernames).toEqual(["nasa"]);
   });
@@ -698,7 +698,7 @@ describe("turbodl get --from-file", () => {
       const cases: [string | undefined, string][] = [
         [undefined, `turbodl: Couldn't read ${listFile}.\n`],
         ["# nothing here\n\n", "turbodl: The file holds no profiles.\n"],
-        ["bad!\n", "turbodl: warning: line 1 isn't a profile: bad!\nturbodl: The file holds no profiles.\n"],
+        ["bad!\n", "turbodl: warning: Line 1 isn't a profile: bad!\nturbodl: The file holds no profiles.\n"],
         [many, "turbodl: A list can hold at most 1,000 profiles.\n"],
       ];
       for (const [text, stderr] of cases) {

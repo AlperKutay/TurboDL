@@ -13,8 +13,8 @@ GOES_ON = ("running", "waiting", "slowedDown")
 CLOSED = "The list was closed in TurboDL."
 
 # What JavaScript's trim() takes off (Python's strip() differs: it keeps U+FEFF and takes U+001C-U+001F and U+0085).
-_JS_SPACE = ("\t\n\v\f\r              "
-             "    　﻿")
+_JS_SPACE = ("\t\n\v\f\r \u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a"
+             "\u2028\u2029\u202f\u205f\u3000\ufeff")
 _LINE_BREAK = re.compile(r"\r\n|\n|\r")
 _LINK = re.compile(r"https?://", re.IGNORECASE | re.ASCII)
 _USERNAME = re.compile(r"[a-z0-9._]{1,30}", re.IGNORECASE | re.ASCII)
@@ -61,8 +61,12 @@ def _link_username(address: str) -> Optional[str]:
     post_at = next((i for i, p in enumerate(parts) if p in _POST_PARTS), -1)
     if 0 <= post_at <= 1 and post_at + 1 < len(parts):
         return None  # a post, under a username or not
-    name = parts[0].lower() if parts else ""
-    if not name or name in _RESERVED or not _USERNAME.fullmatch(name):
+    # matched before lowercasing: a browser keeps other letters in a path percent-encoded, so one whose lowercase is
+    # ASCII (the Kelvin sign's is "k") is never a username there
+    if not parts or not _USERNAME.fullmatch(parts[0]):
+        return None
+    name = parts[0].lower()
+    if name in _RESERVED:
         return None
     if len(parts) == 1 or (len(parts) == 2 and parts[1] in ("reels", "tagged")):
         return name
@@ -83,10 +87,10 @@ def read_profile_list(path: Union[str, "os.PathLike[str]"]) -> List[str]:
 
     Blank lines and `#` comments are skipped, a name written twice is kept once (in its first place), and the
     names come lowercased. A line that isn't a profile raises ValueError naming every such line ("Line 3 isn't a
-    profile: …"). The app takes at most 1000 profiles in a list; `TurboDL.backup_profiles()` raises for more."""
+    profile: ..."). The app takes at most 1000 profiles in a list; `TurboDL.backup_profiles()` raises for more."""
     with open(path, "rb") as f:
         text = f.read().decode("utf-8", "replace")
-    if text.startswith("﻿"):
+    if text.startswith("\ufeff"):
         text = text[1:]
     names = []  # type: List[str]
     seen = set()

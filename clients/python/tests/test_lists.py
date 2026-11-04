@@ -18,7 +18,7 @@ class ReadProfileListTests(JobCase):
         return read_profile_list(path)
 
     def test_reads_every_way_a_profile_can_be_written(self) -> None:
-        text = ("﻿nasa\r\n@NatGeo\r\n\r\n# a comment\r\nhttps://www.instagram.com/iremyigtt/?igsh=x\r\n"
+        text = ("\ufeffnasa\r\n@NatGeo\r\n\r\n# a comment\r\nhttps://www.instagram.com/iremyigtt/?igsh=x\r\n"
                 "https://instagram.com/natgeo/reels/\r\nNASA\r\n")
         self.assertEqual(self.read(text), ["nasa", "natgeo", "iremyigtt"])
 
@@ -43,12 +43,14 @@ class ReadProfileListTests(JobCase):
                      "https://www.instagram.com/s/aGlnaGxpZ2h0OjE=", "https://notinstagram.com/nasa/",
                      "https://www.instagram.com/nasa/reels/x/", "https://www.instagram.com/nasa/Reels/",
                      "https://www.instagram.com/", "https://www.instagram.com:x/nasa/", "ftp://instagram.com/nasa",
-                     "@", "a" * 31, "naKsa", "\x1cnasa", "two words"]:
+                     "@", "a" * 31, "na\u212asa", "\x1cnasa", "two words",
+                     # the Kelvin sign lowercases to "k", but a browser keeps it in a link's path (percent-encoded)
+                     "https://www.instagram.com/" + chr(0x212A) + "asa/", "https://www.instagram.com/na" + chr(0x17F) + "a"]:
             with self.assertRaises(ValueError, msg=line):
                 self.read(line)
 
     def test_trims_as_the_app_does(self) -> None:
-        self.assertEqual(self.read("a\n﻿b\n c　\n@" + "d" * 30), ["a", "b", "c", "d" * 30])
+        self.assertEqual(self.read("a\n\ufeffb\n\u00a0c\u3000\n@" + "d" * 30), ["a", "b", "c", "d" * 30])
 
     def test_keeps_the_first_of_names_written_twice(self) -> None:
         self.assertEqual(self.read("NASA\nb\n@Nasa\nhttps://www.instagram.com/nasa/"), ["nasa", "b"])
@@ -85,10 +87,18 @@ class BackupProfilesTests(JobCase):
         t.backup_profiles(["nasa"], 3, posts=False, tagged=True, photos=False)
         self.assertEqual(self.stub.list_posted[0], {
             "profiles": ["nasa"], "wait": {"min": 2, "max": 5},
-            "options": {"posts": True, "highlights": True, "tagged": False, "photos": True, "videos": True}})
+            "options": {"posts": True, "highlights": False, "tagged": False, "photos": True, "videos": True}})
         self.assertEqual(self.stub.list_posted[1]["wait"], {"min": 3, "max": 3})
         self.assertEqual(self.stub.list_posted[1]["options"],
-                         {"posts": False, "highlights": True, "tagged": True, "photos": False, "videos": True})
+                         {"posts": False, "highlights": False, "tagged": True, "photos": False, "videos": True})
+
+    def test_a_single_string_is_refused_before_anything_is_sent(self) -> None:
+        t = self.serve()
+        for profiles in ("nasa", "https://www.instagram.com/nasa/"):
+            with self.assertRaises(TypeError) as cm:
+                t.backup_profiles(profiles)
+            self.assertEqual(str(cm.exception), "profiles must be a list of usernames or links, not a single string")
+        self.assertEqual(self.stub.list_posted, [])
 
     def test_wait_polls_until_the_list_finished(self) -> None:
         t = self.serve()

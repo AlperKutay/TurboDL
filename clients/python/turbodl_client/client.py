@@ -158,16 +158,19 @@ class TurboDL:
         return PostList(self, job)
 
     def backup_profiles(self, profiles: Iterable[str], wait: Union[Tuple[int, int], int] = (2, 5), *,
-                        posts: bool = True, highlights: bool = True, tagged: bool = False, photos: bool = True,
+                        posts: bool = True, highlights: bool = False, tagged: bool = False, photos: bool = True,
                         videos: bool = True, name: Optional[str] = None) -> ProfileListRun:
         """Starts TurboDL's list of profiles: backs them up one after another, as the Profiles screen's list does.
 
-        `profiles` are names, `@names` or profile links (`read_profile_list()` reads them from a .txt), at most
-        1000. `wait` is the random wait between two profiles in whole minutes, (least, most) or one number;
-        `name` is what the app shows for the list ("API list" when None). Every save option is sent as given: unlike
-        a single profile's `add()`, highlights are on unless `highlights=False`. Returns a ProfileListRun to follow
-        or stop it. The app refuses a second list while one is unfinished (TurboDLError with its message). Needs
-        TurboDL 0.9.0 or newer."""
+        `profiles` is a list of names, `@names` or profile links (`read_profile_list()` reads them from a .txt), at
+        most 1000; a single string raises TypeError. `wait` is the random wait between two profiles in whole minutes,
+        (least, most) or one number; `name` is what the app shows for the list ("API list" when None). Every save
+        option is sent as given, with the same defaults as `add()`. Returns a ProfileListRun to follow or stop it.
+        The app refuses a second list while one is unfinished (TurboDLError with its message). Needs TurboDL 0.9.0
+        or newer."""
+        if isinstance(profiles, str):
+            # list("nasa") would be the profiles n, a, s
+            raise TypeError("profiles must be a list of usernames or links, not a single string")
         if "lists" not in (self.info().get("features") or []):
             raise TurboDLError("Update TurboDL to 0.9.0 or newer to back up a list of profiles.")
         least, most = (wait, wait) if isinstance(wait, int) else wait
