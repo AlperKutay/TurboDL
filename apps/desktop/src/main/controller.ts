@@ -7,12 +7,20 @@ import {
   type ApiLaunch,
   type InstagramLoginResult,
   CATEGORY_LABELS,
+  DEFAULT_SAVE_OPTIONS,
   EXTENSION_ORIGIN,
   categorize,
   clipboardLink,
+  effectiveSaveOptions,
   extensionFromMime,
   getExtension,
+  isJobEnded,
+  mediaKinds,
+  parseProfileList,
   sanitizeFilename,
+  saveJobOptions,
+  saveOptionsProblem,
+  waitProblem,
   type AppEvent,
   type AppSnapshot,
   type BackupPlan,
@@ -37,12 +45,20 @@ import {
   type InstagramItem,
   type InstagramLink,
   type InstallResult,
+  type Job,
+  type JobProgress,
+  type JobRequest,
+  type ListWait,
   type MediaChoice,
   type MediaDecision,
   type MediaRequest,
   type NewDownload,
+  type ParsedProfileList,
   type PendingItem,
+  type ProfileListView,
+  type ProfileSaveOptions,
   type Result,
+  type ScreenBackupView,
   type Settings,
   type BrowserCookie,
   SavedError,
@@ -55,18 +71,20 @@ import { HttpDownloadTask } from "./engine/download-task";
 import { delay } from "./engine/http";
 import { fetchMedia } from "./instagram/fetch-media";
 import { itemDownload } from "./instagram/item-download";
-import { Backups, type StartResult } from "./instagram/backups";
+import { BACKUP_RUNNING, Backups, type StartResult } from "./instagram/backups";
 import { LedgerStore } from "./instagram/ledger";
 import { InstagramPacer, SLOW_DOWN, failedPage } from "./instagram/pacer";
 import { ProfileIndex } from "./instagram/profile-index";
+import { ProfileLists, isProfileListView, listNames, type ProfileRun } from "./instagram/profile-lists";
 import { ProfileService, type ProfileSource } from "./instagram/profile-service";
+import type { TaggedSource } from "./instagram/tagged-feed";
 import { httpGet, type HttpGet } from "./instagram/saved-client";
 import { SavedService } from "./instagram/saved-service";
 import type { FindOutcome } from "./instagram/finder";
 import { InstagramSession, type Crypt } from "./instagram/session";
 import { probe } from "./engine/probe";
 import { Gate } from "./jobs/gate";
-import { runInstagramJob } from "./jobs/instagram-job";
+import { isPlanWarning, runInstagramJob } from "./jobs/instagram-job";
 import { POSTS_UNSUPPORTED } from "./jobs/posts-job";
 import { InstagramLane } from "./jobs/instagram-lane";
 import { Jobs } from "./jobs/jobs";
@@ -92,6 +110,8 @@ export interface ControllerUi {
   closePending(pendingId: string): void;
   showMain(): void;
   notifyCompleted(record: DownloadRecord): void;
+  /** the profile list finished, or stopped by itself: "Profile list finished: 3 backed up, 0 skipped." */
+  notifyListFinished(text: string): void;
   setLaunchAtLogin(enabled: boolean): void;
   quit(): void;
 }
@@ -139,6 +159,8 @@ export interface InstagramDeps {
   signOut?(): Promise<void>;
   /** a profile's page, read with the session */
   openProfile?(username: string, cookies: BrowserCookie[]): ProfileSource;
+  /** a profile's tagged page, read with the session (there is none signed out) */
+  openTagged?(username: string, cookies: BrowserCookie[]): TaggedSource;
 }
 
 /** Without Instagram (tests that don't need it): no profile ever loads. */
@@ -148,6 +170,13 @@ const NO_PROFILE: ProfileSource = {
   limited: false,
   page: () => Promise.reject(new SavedError("badAnswer")),
   moreHighlights: async () => null,
+  close: () => undefined,
+};
+
+/** Without Instagram: no tagged page is ever read. */
+const NO_TAGGED_PAGE: TaggedSource = {
+  load: () => Promise.reject(new SavedError("badAnswer")),
+  page: () => Promise.reject(new SavedError("badAnswer")),
   close: () => undefined,
 };
 
@@ -197,8 +226,21 @@ function newId(): string {
 }
 
 const HTTP_URL = /^https?:\/\//i;
+/** what nothing else starts while a screen's profile job goes on: its parts are one backup */
+const SCREEN_JOB_GOES_ON: StartResult = { ok: false, error: BACKUP_RUNNING, reason: "busy" };
+
+/** The account number a profile's backup ledger is named by (`profile-`, `highlights-` or `tagged-<number>`); none for Saved's. */
+function profileAccount(targetId: string | undefined): string | undefined {
+  return targetId ? /^(?:profile|highlights|tagged)-(.+)$/.exec(targetId)?.[1] : undefined;
+}
+
 /** file, page and stream jobs that may probe or ask yt-dlp at once */
 const WEB_JOB_SLOTS = 3;
+/** a profile list's .txt, at most */
+const LIST_FILE_MAX_BYTES = 1024 * 1024;
+const LIST_FILE_UNREADABLE = "TurboDL couldn't read this file.";
+const LIST_FILE_TOO_LARGE = "This file is too large for a list of profiles (over 1 MB).";
+const LIST_FILE_NOT_TEXT = "A list of profiles is a .txt file.";
 
 export class AppController {
   settings: Settings;
@@ -236,6 +278,20 @@ export class AppController {
   private readonly lane: InstagramLane;
   /** file, page and stream jobs probing or asking yt-dlp at once, at most */
   private readonly webSlots = new Gate(WEB_JOB_SLOTS);
+  /**
+   * The last profile job a screen started that got as far as a backup, and the account its backups are kept under:
+   * Continue starts that job again while the last backup is one of its parts. Saved's and the Highlights tab's own
+   * backups forget it.
+   */
+  private lastScreen: { request: JobRequest; username: string; account: string; jobId: string } | null = null;
+  /** the profile job a screen started last; until it ends, no other backup starts from the screens */
+  private screenJobId: string | null = null;
+  /** that job as the screen sees it, followed to its end; forgotten once another backup starts after it ended */
+  private screenBackup: ScreenBackupView | null = null;
+  /** the profile list's file */
+  private readonly listStore: JsonStore<ProfileListView | null>;
+  /** the one list of profiles to back up, each as an ordinary profile job (never a screen's) */
+  private readonly lists: ProfileLists;
 
   constructor(private readonly o: ControllerOptions) {
     this.instagram = o.instagram ?? NO_INSTAGRAM;
@@ -251,7 +307,11 @@ export class AppController {
       wait,
       headers: () => ({ Referer: "https://www.instagram.com/", ...(ig.agent ? { "User-Agent": ig.agent } : {}) }),
       held: () => this.pacer.held(),
-      onBackup: (backup) => this.o.ui.broadcast({ type: "instagramBackup", backup }),
+      onBackup: (backup) => {
+        // a backup that isn't the screen job's (Saved's, a tab's, an API job's): the screen's ended one is old news
+        if (backup?.state === "running" && this.screenBackup && this.screenBackup.state !== "running" && !this.screenJobGoesOn()) this.tellScreen(null);
+        this.o.ui.broadcast({ type: "instagramBackup", backup });
+      },
     });
     this.saved = new SavedService({
       session: this.instagramSession,
@@ -267,6 +327,7 @@ export class AppController {
     this.profiles = new ProfileService({
       session: this.instagramSession,
       open: (username, cookies) => (ig.openProfile ? ig.openProfile(username, cookies) : NO_PROFILE),
+      openTagged: (username, cookies) => (ig.openTagged ? ig.openTagged(username, cookies) : NO_TAGGED_PAGE),
       findHighlight: async (id, signal) => {
         const outcome = await ig.find({ kind: "highlight", id }, this.instagramSession.cookies(), signal);
         if (outcome.type === "signedOut") throw this.wallOrExpired();
@@ -301,6 +362,24 @@ export class AppController {
       settled: () => this.backups.settled(),
     });
     this.jobs = new Jobs({ run: (job) => this.runJob(job) });
+    this.listStore = new JsonStore<ProfileListView | null>(path.join(o.userDataDir, "instagram-profile-list.json"));
+    this.lists = new ProfileLists({
+      runProfile: (username, options) => this.runListProfile(username, options),
+      // its waits hold nothing of the account's: no pacer, no lane, no backup slot
+      wait: (ms, signal) => wait(ms, signal),
+      now: () => (ig.now ? ig.now() : Date.now()),
+      random: Math.random,
+      load: () => {
+        const stored: unknown = this.listStore.load(() => null);
+        return isProfileListView(stored) ? stored : null;
+      },
+      // a closed list's file goes (a store writes no null)
+      save: (list) => (list ? this.listStore.save(list) : this.listStore.remove()),
+      onChange: (list) => this.o.ui.broadcast({ type: "profileList", list }),
+      notify: (text) => this.o.ui.notifyListFinished(text),
+      // the index keeps Instagram's own casing of the name
+      savedTotal: (username) => this.profiles.profilesList().find((entry) => entry.username.toLowerCase() === username.toLowerCase())?.saved,
+    });
     this.defaults = defaultSettings(o.downloadsDir);
     this.settingsStore = new JsonStore<Settings>(path.join(o.userDataDir, "settings.json"));
     this.settings = normalizeSettings(this.settingsStore.load(() => this.defaults), this.defaults);
@@ -354,6 +433,8 @@ export class AppController {
       countdown: this.countdown,
       version: this.o.version,
       instagramBackup: this.backups.view(),
+      screenBackup: this.screenBackup,
+      profileList: this.lists.view(),
     };
   }
 
@@ -597,16 +678,38 @@ export class AppController {
   }
 
   async startBackup(collectionId: string): Promise<StartResult> {
-    return this.saved.startBackup(collectionId);
+    if (this.screenJobGoesOn()) return SCREEN_JOB_GOES_ON;
+    const result = await this.saved.startBackup(collectionId);
+    if (result.ok) this.lastScreen = null;
+    return result;
   }
 
-  stopBackup(): Promise<void> {
-    return this.backups.stop();
+  /**
+   * Stops the backup running (a screen job's part ends its job with it); between a screen job's parts, when no backup
+   * runs, cancels the job and resolves once it has ended.
+   */
+  async stopBackup(): Promise<void> {
+    const id = this.screenJobId;
+    if (this.backups.isRunning() || id === null || !this.screenJobGoesOn()) return this.backups.stop();
+    this.jobs.cancel(id);
+    await this.jobs.ended(id);
   }
 
-  /** Starts the last backup again (Continue), whatever it backs up. */
-  continueBackup(): Promise<Result> {
-    return this.backups.continueLast();
+  /**
+   * Starts the last backup again (Continue), whatever it backs up; when it was a part of a profile job a screen
+   * started, that job again, so every part runs in turn (those done go fast: their ledgers know what is saved).
+   */
+  async continueBackup(): Promise<Result> {
+    const screen = this.lastScreen;
+    if (!screen || profileAccount(this.backups.target()?.id) !== screen.account) {
+      return this.screenJobGoesOn() ? { ok: false, error: BACKUP_RUNNING } : this.backups.continueLast();
+    }
+    if (this.backups.isRunning()) return { ok: false, error: BACKUP_RUNNING };
+    // a job whose backup was stopped (or pushed back) ends as that backup settles; one between its parts goes on
+    if (this.backups.view()?.state !== "finished") await this.jobs.ended(screen.jobId);
+    // something may have started meanwhile
+    if (this.backups.isRunning() || this.screenJobGoesOn() || this.lane.busy()) return { ok: false, error: BACKUP_RUNNING };
+    return this.startScreenJob(screen.request, screen.username);
   }
 
   profileLoad(username: string): Promise<ProfileResult> {
@@ -668,16 +771,201 @@ export class AppController {
     return this.profiles.highlightsPlan(username);
   }
 
-  startHighlightsBackup(username: string): Promise<StartResult> {
-    return this.profiles.startHighlightsBackup(username);
+  /** The Highlights tab's own backup: every highlight's stories of the kinds picked. */
+  async startHighlightsBackup(username: string, kinds: { photos: boolean; videos: boolean }): Promise<StartResult> {
+    const problem = saveOptionsProblem({ ...DEFAULT_SAVE_OPTIONS, photos: kinds.photos, videos: kinds.videos });
+    if (problem) return { ok: false, error: problem, reason: "error" };
+    if (this.screenJobGoesOn()) return SCREEN_JOB_GOES_ON;
+    const result = await this.profiles.startHighlightsBackup(username, mediaKinds(kinds));
+    if (result.ok) this.lastScreen = null;
+    return result;
   }
 
   profileBackupPlan(username: string): Promise<BackupPlan> {
     return this.profiles.plan(username);
   }
 
-  startProfileBackup(username: string): Promise<StartResult> {
-    return this.profiles.startBackup(username);
+  /**
+   * "Back up this profile": the ticked parts in turn (posts, highlights, tagged posts) as one profile job, the
+   * sequence API jobs run too. Answered once its first backup runs, or with the error the job ended with first.
+   */
+  async startProfileBackup(username: string, options: ProfileSaveOptions): Promise<Result> {
+    const effective = effectiveSaveOptions(options, this.instagramSession.signedIn());
+    const problem = saveOptionsProblem(effective);
+    if (problem) return { ok: false, error: problem };
+    // a job holding the lane's turn would have this backup come between its parts
+    if (this.backups.isRunning() || this.lane.busy()) return { ok: false, error: BACKUP_RUNNING };
+    return this.startScreenJob({ url: `https://www.instagram.com/${encodeURIComponent(username)}/`, options: saveJobOptions(effective) }, username);
+  }
+
+  /**
+   * A profile job for a screen: answered once it runs (Continue starts it again from then on), or as it ended first;
+   * done without a backup is answered with why (its warnings: "This profile has no highlights."). The screen hears of
+   * it until it ends (`screenBackup`).
+   */
+  private startScreenJob(request: JobRequest, username: string): Promise<Result> {
+    const { id } = this.jobs.create(request);
+    this.screenJobId = id;
+    this.followScreenJob(id, username);
+    return new Promise((resolve) => {
+      let answered = false;
+      let unsubscribe: (() => void) | undefined;
+      const answer = (result: Result) => {
+        if (answered) return;
+        answered = true;
+        unsubscribe?.();
+        resolve(result);
+      };
+      // running once its first backup started: the backup going on is the job's
+      const running = () => {
+        const account = profileAccount(this.backups.target()?.id);
+        if (account) this.lastScreen = { request, username, account, jobId: id };
+        answer({ ok: true });
+      };
+      unsubscribe = this.jobs.subscribe(id, (event) => {
+        if (event.type === "state" && event.state === "running") running();
+      });
+      if (this.jobs.get(id)?.state === "running") running();
+      // it may have ended already, asking Instagram nothing (its slow-down holds)
+      void this.jobs.ended(id)?.then((job) =>
+        answer({ ok: false, error: job.state === "done" ? job.warnings.join(" ") || "Nothing to back up." : (job.error ?? "The backup was cancelled.") }),
+      );
+    });
+  }
+
+  /**
+   * Tells the screen of its job on every change to its end: running (between its parts too), each warning as it comes
+   * (not its posts' plan, which the screen showed before the start), and how it ended.
+   */
+  private followScreenJob(id: string, username: string): void {
+    const job = this.jobs.get(id);
+    if (!job) return;
+    // a job runs once its first backup started
+    let ran = job.state === "running";
+    const ended = (j: Job) =>
+      this.tellScreen({
+        username,
+        state: j.state === "queued" ? "running" : j.state,
+        warnings: j.warnings.filter((w) => !isPlanWarning(w)),
+        ...(j.state !== "done" && j.error ? { error: j.error } : {}),
+        ran,
+      });
+    if (isJobEnded(job.state)) return ended(job);
+    let view: ScreenBackupView = { username, state: "running", warnings: job.warnings.filter((w) => !isPlanWarning(w)), ran };
+    this.tellScreen(view);
+    let unsubscribe: (() => void) | undefined;
+    unsubscribe = this.jobs.subscribe(id, (event) => {
+      if (event.type === "state" && event.state === "running") {
+        ran = true;
+        view = { ...view, ran };
+        if (this.screenJobId === id) this.tellScreen(view);
+      } else if (event.type === "warning" && !isPlanWarning(event.message)) {
+        view = { ...view, warnings: [...view.warnings, event.message] };
+        if (this.screenJobId === id) this.tellScreen(view);
+      } else if (event.type === "end") {
+        unsubscribe?.();
+        if (this.screenJobId === id) ended(event.job);
+      }
+    });
+  }
+
+  private tellScreen(view: ScreenBackupView | null): void {
+    this.screenBackup = view;
+    this.o.ui.broadcast({ type: "screenBackup", screenBackup: view });
+  }
+
+  /** The profile job a screen started last hasn't ended: it may be between its parts, when no backup runs. */
+  private screenJobGoesOn(): boolean {
+    const state = this.screenJobId === null ? undefined : this.jobs.get(this.screenJobId)?.state;
+    return state !== undefined && !isJobEnded(state);
+  }
+
+  /** A profile list's .txt, read and parsed, named by its file; or why not (not a .txt file, missing, unreadable, over 1 MB). */
+  async readProfileList(file: string): Promise<{ name: string; list: ParsedProfileList } | { error: string }> {
+    // the path comes from the renderer: nothing but a .txt file is read
+    if (path.extname(file).toLowerCase() !== ".txt") return { error: LIST_FILE_NOT_TEXT };
+    try {
+      const stat = await fsp.stat(file);
+      if (!stat.isFile()) return { error: LIST_FILE_UNREADABLE };
+      if (stat.size > LIST_FILE_MAX_BYTES) return { error: LIST_FILE_TOO_LARGE };
+      return { name: path.basename(file), list: parseProfileList(await fsp.readFile(file, "utf8")) };
+    } catch {
+      return { error: LIST_FILE_UNREADABLE };
+    }
+  }
+
+  /**
+   * The Profiles screen's list (its dialog): it saves what the dialog showed ticked (tagged posts only with a session),
+   * and its wait and options are what the next list starts with.
+   */
+  async startProfileList(o: { name: string; usernames: string[]; options: ProfileSaveOptions; wait: ListWait }): Promise<Result> {
+    const signedIn = this.instagramSession.signedIn();
+    const options = effectiveSaveOptions(o.options, signedIn);
+    const started = this.beginProfileList({ ...o, options });
+    if (!started.ok) return started;
+    // signed out, Tagged can't be ticked or unticked: the tick from before is kept for when there is a session
+    const remembered = signedIn ? options : { ...options, tagged: this.settings.instagramSave.tagged };
+    await this.updateSettings({ listWait: { min: o.wait.min, max: o.wait.max }, instagramSave: remembered });
+    return started;
+  }
+
+  /**
+   * Starts a list of profiles to back up one after another, each as an ordinary profile job with the list's options
+   * (an API client's as it sent them; nothing of its list is remembered for the screen's next one). Its names are
+   * checked again (they may come from outside the app) and kept as Instagram's addresses have them.
+   */
+  private beginProfileList(o: { name: string; usernames: string[]; options: ProfileSaveOptions; wait: ListWait }): Result {
+    const names = listNames(o.usernames);
+    if ("error" in names) return { ok: false, error: names.error };
+    const problem = waitProblem({ min: o.wait?.min, max: o.wait?.max }) ?? saveOptionsProblem(effectiveSaveOptions(o.options, this.instagramSession.signedIn()));
+    if (problem) return { ok: false, error: problem };
+    const { posts, highlights, tagged, photos, videos } = o.options;
+    const options = { posts, highlights, tagged, photos, videos };
+    const wait = { min: o.wait.min, max: o.wait.max };
+    return this.lists.start({ name: o.name.trim() || "Profile list", usernames: names.names, options, wait });
+  }
+
+  /** Stops the list: its wait, or its profile's job, between that job's parts too; resolves once it has stopped. */
+  stopProfileList(): Promise<void> {
+    return this.lists.stop();
+  }
+
+  /** Runs the stopped list on; not while it could save nothing (tagged posts alone, signed out). */
+  async continueProfileList(): Promise<Result> {
+    return this.lists.continue((list) => saveOptionsProblem(effectiveSaveOptions(list.options, this.instagramSession.signedIn())));
+  }
+
+  async closeProfileList(): Promise<Result> {
+    return this.lists.close();
+  }
+
+  /**
+   * One of the list's profiles as an ordinary profile job (not a screen's): the files it fetched, its progress, its
+   * cancel. Its options are the list's as they are: tagged posts asked for without a session are skipped by the job
+   * with a warning, which the profile's row shows.
+   */
+  private runListProfile(username: string, options: ProfileSaveOptions): ProfileRun {
+    const { id } = this.jobs.create({ url: `https://www.instagram.com/${encodeURIComponent(username)}/`, options: saveJobOptions(options) });
+    let fetched = 0;
+    let tell: ((p: JobProgress) => void) | undefined;
+    // followed in the turn it was created in: nothing it reports is missed
+    const unsubscribe = this.jobs.subscribe(id, (event) => {
+      // files already in place count as saved, not as fetched
+      if (event.type === "file" && event.existing === false) fetched++;
+      else if (event.type === "progress") tell?.(event.progress);
+    });
+    // a job just created is always kept
+    const ended = this.jobs.ended(id)!;
+    return {
+      ended: ended.then((job) => {
+        unsubscribe?.();
+        return { job, fetched };
+      }),
+      cancel: () => void this.jobs.cancel(id),
+      progress: (listener) => {
+        tell = listener;
+      },
+    };
   }
 
   async instagramProfiles(): Promise<ProfileEntry[]> {
@@ -892,12 +1180,16 @@ export class AppController {
   }
 
   async shutdown(): Promise<void> {
+    // the list first: the profile it is at comes back as waiting (Continue runs it again), not as an outcome of the quit
+    await Promise.race([this.lists.stop(), new Promise((r) => setTimeout(r, 3000))]);
     // a backup's item in flight removes its temporary file before the app goes
     await Promise.race([this.backups.stop(), new Promise((r) => setTimeout(r, 3000))]);
     this.profiles.closeAll();
     this.scheduler.stop();
     await this.manager.shutdown();
     this.settingsStore.flush();
+    // an unfinished list shows as stopped when the app starts again
+    this.listStore.flush();
     await this.bridge?.close();
     this.bridge = null;
   }
@@ -998,6 +1290,11 @@ export class AppController {
         return this.instagramApiAccount();
       },
       instagramLogout: () => this.instagramSignOut(),
+      list: () => this.lists.view(),
+      startList: async (request) => this.beginProfileList(request),
+      stopList: () => this.stopProfileList(),
+      continueList: () => this.continueProfileList(),
+      closeList: () => this.closeProfileList(),
     };
   }
 

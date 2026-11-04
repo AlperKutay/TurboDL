@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import type { SavedPage, SavedPost } from "@turbodl/shared";
-import { backupAction, canLoadMore, initialSaved, pageArrived, pageFailed, profileName, sameFeed, select, toggle } from "./saved-state";
+import type { BackupView, SavedPage, SavedPost, ScreenBackupView } from "@turbodl/shared";
+import { backupAction, canLoadMore, initialSaved, pageArrived, pageFailed, panelState, panelWarnings, sameFeed, select, toggle } from "./saved-state";
 
 const post = (id: string): SavedPost => ({ id, items: [{ kind: "image", url: `https://cdn.example/${id}.jpg`, mediaId: id }] });
 const page = (ids: string[], next?: string): SavedPage => ({ posts: ids.map(post), ...(next ? { next } : {}) });
@@ -39,13 +39,6 @@ describe("saved-state", () => {
     expect(trips.source).toEqual({ kind: "collection", id: "102" });
   });
 
-  it("takes a profile link or a username typed in, and nothing else", () => {
-    expect(profileName("https://www.instagram.com/Sample.User/?igsh=x")).toBe("sample.user");
-    expect(profileName(" @sample_user.2 ")).toBe("sample_user.2");
-    expect(profileName("sample.user")).toBe("sample.user");
-    for (const text of ["https://www.instagram.com/p/C1abcDEF/", "https://example.com/sample.user", "not a name!", "", "@"]) expect(profileName(text), text).toBeNull();
-  });
-
     it("keeps a profile's feed apart from Saved's", () => {
     const all = pageArrived(select(initialSaved(), { kind: "all" }), 1, page(["1"]));
     const profile = select(all, { kind: "profile", username: "sample.user" });
@@ -60,6 +53,64 @@ describe("saved-state", () => {
     expect(backupAction("signedOut")).toBe("signIn");
     for (const state of ["stopped", "rateLimited", "failed"] as const) expect(backupAction(state)).toBe("continue");
     expect(backupAction("finished")).toBe("none");
+    // a profile list's backup the list goes on with by itself: Stop at most
+    expect(backupAction("running", "active")).toBe("stop");
+    for (const state of ["stopped", "rateLimited", "failed", "signedOut", "finished"] as const) expect(backupAction(state, "active")).toBe("none");
+    // one the list's Continue goes on with offers the same as any
+    expect(backupAction("stopped", "resumable")).toBe("continue");
+    expect(backupAction("signedOut", "resumable")).toBe("signIn");
+  });
+
+  it("shows a screen's profile backup going on between its parts, and how it ended after its last part finished", () => {
+    const finished: BackupView = { targetId: "profile-51", kind: "profile", name: "sample.user", state: "finished", done: 3, failed: 0, saved: 3, progress: 0 };
+    const screen = (state: ScreenBackupView["state"], error?: string): ScreenBackupView => ({ username: "sample.user", state, warnings: [], ran: true, ...(error ? { error } : {}) });
+    expect(panelState(finished, null)).toEqual({ state: "finished" });
+    // between its parts no backup runs, but it goes on: Stop
+    expect(panelState(finished, screen("running"))).toEqual({ state: "running" });
+    // stopped between parts: Continue
+    expect(panelState(finished, screen("cancelled", "The backup was stopped in TurboDL."))).toEqual({ state: "stopped" });
+    // a later part refused
+    expect(panelState(finished, screen("failed", "Sign in to Instagram again."))).toEqual({ state: "failed", error: "Sign in to Instagram again." });
+    expect(panelState(finished, screen("done"))).toEqual({ state: "finished" });
+    // a part that didn't finish says itself how it ended
+    const slowed: BackupView = { ...finished, state: "rateLimited" };
+    expect(panelState(slowed, screen("failed", "Instagram asked TurboDL to slow down. Try again in a few minutes."))).toEqual({ state: "rateLimited" });
+    const broken: BackupView = { ...finished, state: "failed", error: "boom" };
+    expect(panelState(broken, screen("failed", "boom"))).toEqual({ state: "failed", error: "boom" });
+  });
+
+  it("lets a screen backup that never ran, or ran for another profile, leave a backup's panel alone", () => {
+    const finished: BackupView = { targetId: "profile-51", kind: "profile", name: "sample.user", state: "finished", done: 3, failed: 0, saved: 3, progress: 0 };
+    const screen = (username: string, state: ScreenBackupView["state"], ran: boolean, error?: string): ScreenBackupView => ({ username, state, warnings: [], ran, ...(error ? { error } : {}) });
+    // refused before its first part: the other profile's panel stays as it was
+    expect(panelState(finished, screen("other.user", "failed", false, "This account is private."))).toEqual({ state: "finished" });
+    expect(panelState(finished, screen("sample.user", "failed", false, "x"))).toEqual({ state: "finished" });
+    expect(panelState(finished, screen("sample.user", "running", false))).toEqual({ state: "finished" });
+    // it ran, but for someone else
+    expect(panelState(finished, screen("other.user", "cancelled", true))).toEqual({ state: "finished" });
+    // a collection's backup is nobody's profile
+    const collection: BackupView = { ...finished, kind: "collection", name: "sample.user" };
+    expect(panelState(collection, screen("sample.user", "failed", true, "x"))).toEqual({ state: "finished" });
+    // its own parts, whatever their kind, follow it (names differ in case: Instagram's own spelling)
+    for (const [kind, name] of [["profile", "Sample.User"], ["highlights", "sample.user · Highlights"], ["tagged", "sample.user · Tagged"]] as const) {
+      const part: BackupView = { ...finished, kind, name };
+      expect(panelState(part, screen("sample.user", "cancelled", true))).toEqual({ state: "stopped" });
+    }
+    expect(panelState({ ...finished, kind: "highlights", name: "other.user · Highlights" }, screen("other.user", "failed", true, "x"))).toEqual({ state: "failed", error: "x" });
+    expect(panelState({ ...finished, kind: "highlights", name: "sample.user · Highlights" }, screen("sample.user", "failed", true, "x"))).toEqual({ state: "failed", error: "x" });
+    // a backup that isn't the screen job's (an API job's) is shown by its own state, whatever the screen did
+    expect(panelState({ ...finished, state: "rateLimited" }, screen("other.user", "running", true))).toEqual({ state: "rateLimited" });
+  });
+
+  it("shows a screen backup's warnings once, under its own profile's backup only", () => {
+    const part: BackupView = { targetId: "profile-51", kind: "profile", name: "sample.user", state: "finished", done: 3, failed: 0, saved: 3, progress: 0, warning: "Skipped 2 posts." };
+    const screen = (username: string, ran: boolean): ScreenBackupView => ({ username, state: "done", warnings: ["Skipped 2 posts.", "This profile has no highlights."], ran });
+    // the part's own warning isn't repeated
+    expect(panelWarnings(part, screen("sample.user", true))).toEqual(["This profile has no highlights."]);
+    // a job that never ran, or ran for someone else, says nothing under this backup
+    expect(panelWarnings(part, screen("sample.user", false))).toEqual([]);
+    expect(panelWarnings(part, screen("other.user", true))).toEqual([]);
+    expect(panelWarnings(part, null)).toEqual([]);
   });
 
   it("stops asking after Instagram pushes back, until asked again", () => {

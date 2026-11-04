@@ -44,6 +44,11 @@ export class InstagramLane {
 
   constructor(private readonly o: InstagramLaneDeps) {}
 
+  /** A job holds the turn or waits for it: a backup started outside the lane now would come between its parts. */
+  busy(): boolean {
+    return this.holder !== null || this.queue.length > 0;
+  }
+
   /**
    * Starts a backup in its turn: one lane job at a time in arrival order, then once the backup slot is free (also of
    * the screens' backups); "busy" means a screen started one first, so it waits again. "cancelled" when the job is.

@@ -1,3 +1,6 @@
+import type { ListWait, ProfileSaveOptions } from "./instagram";
+import { TAGGED_AVAILABLE } from "./instagram/options";
+
 /** Version of the local jobs API; clients check it against `api.json`. */
 export const API_VERSION = 1;
 /** Name of the file in the user data folder that tells clients how to reach the app. */
@@ -17,6 +20,14 @@ export type JobReason = "signInRequired" | "rateLimited" | "private" | "notFound
 /** Per-job switches; each applies only to the kinds it makes sense for. */
 export interface JobOptions {
   highlights?: boolean;
+  /** a profile: save its posts (default true) */
+  posts?: boolean;
+  /** a profile: save the posts it is tagged in (default false; needs a session) */
+  tagged?: boolean;
+  /** a profile: save photos (default true) */
+  photos?: boolean;
+  /** a profile: save videos (default true) */
+  videos?: boolean;
   highlightsOnly?: boolean;
   collections?: string[];
   allCollections?: boolean;
@@ -88,6 +99,11 @@ export interface Job {
   warnings: string[];
   files: string[];
   failedItems: number;
+  /**
+   * A backup job that failed only because its backups couldn't save these posts (or stories): everything else was
+   * saved, and they're tried again on the next run. Absent when it failed for anything else.
+   */
+  missedItems?: number;
   progress: JobProgress;
   createdAt: number;
   endedAt?: number;
@@ -113,7 +129,7 @@ export interface ApiInfo {
 }
 
 /** The features this version reports in `ApiInfo.features`. */
-export const API_FEATURES: readonly string[] = ["posts"];
+export const API_FEATURES: readonly string[] = ["posts", "profileOptions", "lists", ...(TAGGED_AVAILABLE ? ["tagged"] : [])];
 
 /** The command that starts the app in the background. */
 export interface ApiLaunch {
@@ -169,4 +185,16 @@ export function parseIsoTime(s: string): string | undefined {
     return undefined;
   }
   return new Date(ms).toISOString();
+}
+
+/** What a client sends to start the profile list (`POST /v1/lists`); what it leaves out takes the list defaults. */
+export interface ListRequest {
+  /** 1 to 1000 profiles: names, `@names` or profile links */
+  profiles: string[];
+  /** posts, highlights and photos and videos on, tagged off, unless given */
+  options?: Partial<ProfileSaveOptions>;
+  /** minutes between profiles, default 2 to 5 */
+  wait?: ListWait;
+  /** default "API list" */
+  name?: string;
 }

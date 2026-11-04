@@ -1,5 +1,5 @@
 import http from "node:http";
-import type { ApiInfo, InstagramLoginResult, Job, JobEvent, JobRequest } from "@turbodl/shared";
+import type { ApiInfo, InstagramLoginResult, Job, JobEvent, JobRequest, ListRequest, ProfileListView } from "@turbodl/shared";
 import type { Connection } from "./discover";
 
 /** A failed API call; status 0 means the connection itself failed. */
@@ -137,6 +137,21 @@ export class ApiClient {
     } finally {
       res.destroy();
     }
+  }
+
+  /** Starts the app's profile list; a refused list rejects with the API's own message (409: another one is unfinished). */
+  async startList(request: ListRequest): Promise<ProfileListView> {
+    return ((await this.ok("POST", "/v1/lists", request)) as { list: ProfileListView }).list;
+  }
+
+  /** The app's profile list, or null when there is none. */
+  async currentList(): Promise<ProfileListView | null> {
+    return ((await this.ok("GET", "/v1/lists/current")) as { list: ProfileListView | null }).list;
+  }
+
+  /** Stops the profile list; resolves with it once it stopped (null when there is none). */
+  async stopList(): Promise<ProfileListView | null> {
+    return ((await this.ok("POST", "/v1/lists/current/stop", {})) as { list: ProfileListView | null }).list;
   }
 
   /** Opens Instagram's sign-in in the app and resolves with the outcome. */

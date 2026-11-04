@@ -37,6 +37,18 @@ describe("settings", () => {
     expect(normalizeSettings({ instagramByAccount: "no" }, defaults).instagramByAccount).toBe(true);
   });
 
+  it("saves everything of a profile unless told otherwise", () => {
+    expect(defaults.instagramSave).toEqual({ posts: true, highlights: true, tagged: true, photos: true, videos: true });
+    expect(normalizeSettings({ instagramSave: { posts: "x", videos: false } }, defaults).instagramSave).toEqual({ posts: true, highlights: true, tagged: true, photos: true, videos: false });
+  });
+
+  it("waits two to five minutes between a list's profiles unless the range is valid", () => {
+    expect(defaults.listWait).toEqual({ min: 2, max: 5 });
+    expect(normalizeSettings({ listWait: { min: 9, max: 1 } }, defaults).listWait).toEqual({ min: 2, max: 5 });
+    expect(normalizeSettings({ listWait: { min: 0, max: 30 } }, defaults).listWait).toEqual({ min: 0, max: 30 });
+    expect(normalizeSettings({ listWait: "x" }, defaults).listWait).toEqual({ min: 2, max: 5 });
+  });
+
   it("validates scheduler times", () => {
     const s = normalizeSettings({ scheduler: { enabled: true, startTime: "25:00", stopTime: "07:30", afterAll: "explode" } }, defaults);
     expect(s.scheduler).toEqual({ enabled: true, startTime: "02:00", stopTime: "07:30", afterAll: "none" });

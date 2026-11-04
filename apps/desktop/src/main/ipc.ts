@@ -1,8 +1,20 @@
 import { existsSync } from "node:fs";
 import { app, BrowserWindow, clipboard, dialog, ipcMain, shell, type OpenDialogOptions } from "electron";
-import { RELEASES_URL, type DownloadDecision, type MediaChoice, type MediaDecision, type SavedSource, type Settings } from "@turbodl/shared";
+import {
+  DEFAULT_SAVE_OPTIONS,
+  RELEASES_URL,
+  waitProblem,
+  type DownloadDecision,
+  type ListWait,
+  type MediaChoice,
+  type MediaDecision,
+  type ProfileSaveOptions,
+  type SavedSource,
+  type Settings,
+} from "@turbodl/shared";
 import { cliStatus, installCli, realCliDeps, removeCli } from "./cli-install";
 import type { AppController } from "./controller";
+import { listNames } from "./instagram/profile-lists";
 
 export const EVENT_CHANNEL = "turbodl:event";
 
@@ -10,6 +22,42 @@ export const EVENT_CHANNEL = "turbodl:event";
 function savedSource(v: unknown): SavedSource {
   const o = v as { kind?: unknown; id?: unknown } | null;
   return o?.kind === "collection" && typeof o.id === "string" ? { kind: "collection", id: o.id } : { kind: "all" };
+}
+
+/** A profile backup's save options as the renderer sent them: each one that isn't a boolean is its default. */
+export function saveOptionsArg(v: unknown): ProfileSaveOptions {
+  const o = (v !== null && typeof v === "object" ? v : {}) as Record<string, unknown>;
+  const pick = (key: keyof ProfileSaveOptions): boolean => {
+    const value = o[key];
+    return typeof value === "boolean" ? value : DEFAULT_SAVE_OPTIONS[key];
+  };
+  return { posts: pick("posts"), highlights: pick("highlights"), tagged: pick("tagged"), photos: pick("photos"), videos: pick("videos") };
+}
+
+/** The kinds of media a highlights backup saves, as the renderer sent them; likewise. */
+export function mediaKindsArg(v: unknown): { photos: boolean; videos: boolean } {
+  const { photos, videos } = saveOptionsArg(v);
+  return { photos, videos };
+}
+
+/**
+ * A profile list to start as the renderer sent it: its names as Instagram's addresses have them and its wait, or why
+ * they can't make a list (the app's own reasons); its options as `saveOptionsArg` reads them.
+ */
+export function profileListArg(
+  v: unknown,
+): { ok: true; list: { name: string; usernames: string[]; options: ProfileSaveOptions; wait: ListWait } } | { ok: false; error: string } {
+  const fields = (x: unknown) => (x !== null && typeof x === "object" ? x : {}) as Record<string, unknown>;
+  const o = fields(v);
+  const names = listNames(o.usernames);
+  if ("error" in names) return { ok: false, error: names.error };
+  const wait = fields(o.wait);
+  const problem = waitProblem({ min: wait.min, max: wait.max });
+  if (problem) return { ok: false, error: problem };
+  return {
+    ok: true,
+    list: { name: typeof o.name === "string" ? o.name : "", usernames: names.names, options: saveOptionsArg(o.options), wait: { min: wait.min as number, max: wait.max as number } },
+  };
 }
 
 export function registerIpc(c: AppController): void {
@@ -72,7 +120,7 @@ export function registerIpc(c: AppController): void {
     c.openProfilePicks(name(username), Array.isArray(ids) ? ids.filter((id): id is string => typeof id === "string") : []),
   );
   handle("profileBackupPlan", (username: unknown) => c.profileBackupPlan(name(username)));
-  handle("startProfileBackup", (username: unknown) => c.startProfileBackup(name(username)));
+  handle("startProfileBackup", (username: unknown, options: unknown) => c.startProfileBackup(name(username), saveOptionsArg(options)));
   handle("instagramProfiles", () => c.instagramProfiles());
   handle("removeInstagramProfile", (id: unknown) => c.removeInstagramProfile(name(id)));
   handle("closeProfile", (username: unknown) => c.closeProfile(name(username)));
@@ -81,7 +129,22 @@ export function registerIpc(c: AppController): void {
   handle("loadHighlight", (username: unknown, id: unknown) => c.loadHighlight(name(username), name(id)));
   handle("openHighlightPicks", (username: unknown, picked: unknown) => c.openHighlightPicks(name(username), ids(picked)));
   handle("highlightsBackupPlan", (username: unknown) => c.highlightsBackupPlan(name(username)));
-  handle("startHighlightsBackup", (username: unknown) => c.startHighlightsBackup(name(username)));
+  handle("startHighlightsBackup", (username: unknown, kinds: unknown) => c.startHighlightsBackup(name(username), mediaKindsArg(kinds)));
+  handle("pickProfileListFile", async () => {
+    const options: OpenDialogOptions = { properties: ["openFile"], filters: [{ name: "Text files", extensions: ["txt"] }] };
+    const win = BrowserWindow.getFocusedWindow();
+    const result = win ? await dialog.showOpenDialog(win, options) : await dialog.showOpenDialog(options);
+    return result.canceled ? null : (result.filePaths[0] ?? null);
+  });
+  handle("readProfileList", (file: unknown) => c.readProfileList(name(file)));
+  handle("startProfileList", (list: unknown) => {
+    const arg = profileListArg(list);
+    return arg.ok ? c.startProfileList(arg.list) : { ok: false, error: arg.error };
+  });
+  // the list's own Stop: never the screen's (`stopBackup`)
+  handle("stopProfileList", () => c.stopProfileList());
+  handle("continueProfileList", () => c.continueProfileList());
+  handle("closeProfileList", () => c.closeProfileList());
   handle("cancelCountdown", () => c.cancelCountdown());
   handle("installExtension", async () => {
     const result = await c.installExtension();

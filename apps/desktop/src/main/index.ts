@@ -11,12 +11,15 @@ import { InstagramFinder } from "./instagram/finder";
 import { loadCollections } from "./instagram/collections";
 import { ProfileFeed } from "./instagram/profile-feed";
 import { ElectronInstagramPage, allowTestSite, instagramSession } from "./instagram/page";
+import { taggedRequest } from "./instagram/posts-request";
+import { reportWriter } from "./instagram/reports";
+import { TaggedFeed } from "./instagram/tagged-feed";
 import { signInToInstagram } from "./instagram/signin";
 import { systemCrypt } from "./instagram/session";
 import { EVENT_CHANNEL, broadcast, registerIpc } from "./ipc";
 import { writeCliLauncher } from "./cli-install";
 import { isBackgroundLaunch, registerNativeHost } from "./native-host";
-import { CompletionNotifier, notificationIdentity, revealDownload } from "./notifications";
+import { CompletionNotifier, noticeOf, notificationIdentity, revealDownload } from "./notifications";
 import { appIconPath, cliLauncherExe, cliScript, extensionSourceDir, ffmpegPath, nativeHostScript, trayIconPath } from "./paths";
 import { createTray } from "./tray";
 import { WindowManager } from "./windows";
@@ -63,6 +66,8 @@ async function start(): Promise<void> {
   const notifier = new CompletionNotifier({
     platform: process.platform,
     enabled: () => identity.enabled && (controller?.settings.notifyOnComplete ?? false) && Notification.isSupported(),
+    // not a download finishing: shown wherever notifications show (never in test runs)
+    textEnabled: () => identity.enabled && Notification.isSupported(),
     create: (options) => new Notification(options as Electron.NotificationConstructorOptions),
     reveal: (file) => void revealDownload(file, { exists: existsSync, showItemInFolder: (p) => shell.showItemInFolder(p), openPath: (p) => shell.openPath(p) }),
     icon: appIconPath(),
@@ -105,6 +110,10 @@ async function start(): Promise<void> {
       closePending: (pendingId) => wm.closeDialog(pendingId),
       showMain: () => wm.showMain(),
       notifyCompleted: (record) => notifier.show(path.join(record.dir, record.filename)),
+      notifyListFinished: (text) => {
+        const { title, body } = noticeOf(text);
+        notifier.showText(title, body);
+      },
       setLaunchAtLogin,
       quit: () => app.quit(),
     },
@@ -122,6 +131,8 @@ async function start(): Promise<void> {
           signOut: () => instagramSession().clearStorageData(),
           openProfile: (username, cookies) =>
             new ProfileFeed(new ElectronInstagramPage(cookies), username, { site: instagramTestSite, signedIn: cookies.some((c) => c.name === "sessionid" && c.value) }),
+          openTagged: (username, cookies) =>
+            new TaggedFeed(new ElectronInstagramPage(cookies, { paging: taggedRequest }), username, { site: instagramTestSite, report: taggedReport() }),
           crypt: systemCrypt(process.platform, safeStorage),
           agent: chromeAgent(app.userAgentFallback),
         },
@@ -170,4 +181,12 @@ function instagramReport(): ((url: string, documents: string[]) => void) | undef
     mkdirSync(dir, { recursive: true });
     writeFileSync(path.join(dir, `${Date.now()}-instagram.json`), JSON.stringify({ url, documents }, null, 1));
   };
+}
+
+/**
+ * What the tagged page held when nothing readable was on it, always (nobody has seen that page's answers yet): the
+ * newest five as `<userData>/instagram-reports/<time>-tagged.json`.
+ */
+function taggedReport(): (url: string, documents: string[]) => void {
+  return reportWriter(path.join(app.getPath("userData"), "instagram-reports"), "-tagged.json");
 }

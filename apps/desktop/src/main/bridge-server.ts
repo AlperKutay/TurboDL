@@ -13,7 +13,7 @@ import {
   type MediaKind,
   type MediaRequest,
 } from "@turbodl/shared";
-import { handleApi, isApiPath, isHttpUrl, isObj, readBody, type ApiHandlers } from "./api-routes";
+import { handleApi, isApiMethod, isApiPath, isHttpUrl, isObj, readBody, type ApiHandlers } from "./api-routes";
 
 export interface BridgeHandlers {
   version: string;
@@ -158,7 +158,7 @@ export function createBridgeServer(h: BridgeHandlers): BridgeServer {
       const host = req.headers.host ?? "";
       if (host !== `127.0.0.1:${port}` && host !== `localhost:${port}`) return send(403, { error: "host" });
       const path = (req.url ?? "").split("?")[0];
-      if (h.api && isApiPath(path) && (req.method === "GET" || req.method === "POST")) {
+      if (h.api && isApiPath(path) && isApiMethod(req.method, path)) {
         // clients without a browser send no Origin; a website's Origin is refused even with the token
         if ((origin !== undefined && !allowed) || !hasToken(req.headers.authorization, h.api.token())) {
           return send(403, { error: "token" });

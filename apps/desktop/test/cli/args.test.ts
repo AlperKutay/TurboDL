@@ -1,6 +1,7 @@
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { HELP, parseArgs } from "../../src/cli/args";
+import { TAGGED_AVAILABLE } from "@turbodl/shared";
+import { HELP, helpText, parseArgs } from "../../src/cli/args";
 
 const cwd = path.resolve("work");
 const err = (argv: string[]) => parseArgs(argv, cwd);
@@ -101,6 +102,28 @@ describe("parseArgs errors", () => {
     });
   });
 
+  it("maps the profile save options", () => {
+    expect(parseArgs(["get", "u", "--no-posts", "--highlights"], cwd)).toMatchObject({
+      options: { posts: false, highlights: true }
+    });
+    expect(parseArgs(["add", "u", "--tagged"], cwd)).toMatchObject({ options: { tagged: true } });
+    expect(parseArgs(["add", "u", "--no-posts", "--tagged"], cwd)).toMatchObject({
+      options: { posts: false, tagged: true }
+    });
+    expect(parseArgs(["get", "u", "--photos-only"], cwd)).toMatchObject({ options: { videos: false } });
+    expect(parseArgs(["get", "u", "--videos-only"], cwd)).toMatchObject({ options: { photos: false } });
+    const only = parseArgs(["get", "u", "--no-posts", "--highlights-only"], cwd);
+    expect(only).toMatchObject({ options: { highlightsOnly: true } });
+    expect((only as { options: object }).options).not.toHaveProperty("posts");
+  });
+
+  it("rejects bad profile save option combinations", () => {
+    expect(err(["get", "u", "--photos-only", "--videos-only"])).toEqual({
+      error: "--photos-only and --videos-only can't both be set"
+    });
+    expect(err(["get", "u", "--no-posts"])).toEqual({ error: "--no-posts needs --highlights or --tagged" });
+  });
+
   it("rejects bad ids and instagram actions", () => {
     expect(err(["status"])).toEqual({ error: "status needs one job id" });
     expect(err(["status", "a", "b"])).toEqual({ error: "status needs one job id" });
@@ -111,15 +134,97 @@ describe("parseArgs errors", () => {
   });
 });
 
+describe("tagged posts, on or off in this version", () => {
+  it("takes --tagged and lists it while tagged posts are available", () => {
+    expect(TAGGED_AVAILABLE).toBe(true);
+    expect(parseArgs(["get", "u", "--tagged"], cwd, { tagged: true })).toMatchObject({ options: { tagged: true } });
+    expect(helpText(true)).toContain("--tagged");
+    expect(helpText(true)).toBe(HELP);
+  });
+
+  it("refuses --tagged as a usage mistake and leaves it out of the help when they aren't", () => {
+    const off = { tagged: false };
+    expect(parseArgs(["get", "u", "--tagged"], cwd, off)).toEqual({ error: "--tagged isn't available in this version" });
+    expect(parseArgs(["add", "u", "--no-posts", "--tagged"], cwd, off)).toEqual({ error: "--tagged isn't available in this version" });
+    expect(parseArgs(["get", "u", "--no-posts"], cwd, off)).toEqual({ error: "--no-posts needs --highlights" });
+    expect(parseArgs(["get", "u", "--no-posts", "--highlights"], cwd, off)).toMatchObject({ options: { posts: false, highlights: true } });
+    expect(helpText(false)).not.toContain("--tagged");
+    expect(helpText(false)).toContain("--no-posts");
+  });
+});
+
 describe("HELP", () => {
   it("lists every command and option", () => {
     for (const word of [
       "get", "add", "list", "status", "wait", "cancel", "instagram", "help",
       "--dir", "--name", "--audio", "--max-height", "--highlights", "--highlights-only",
+      "--no-posts", "--tagged", "--photos-only", "--videos-only",
       "--collection", "--all-collections", "--json", "--version"
     ]) {
       expect(HELP).toContain(word);
     }
+  });
+});
+
+describe("parseArgs get --from-file", () => {
+  const WAIT = "Waits are whole minutes from 0 to 1440, the most at least the least.";
+  const all = { posts: true, highlights: false, tagged: false, photos: true, videos: true };
+
+  it("reads a list of profiles with every save option and the default wait", () => {
+    expect(parseArgs(["get", "--from-file", "list.txt"], cwd)).toEqual({
+      type: "profileList",
+      file: path.resolve(cwd, "list.txt"),
+      wait: { min: 2, max: 5 },
+      options: all,
+      json: false
+    });
+    expect(parseArgs(["get", "--from-file=sub/l.txt", "--json"], cwd)).toMatchObject({ file: path.resolve(cwd, "sub/l.txt"), json: true });
+  });
+
+  it("reads --wait as min-max or a single number of minutes", () => {
+    expect(parseArgs(["get", "--from-file", "l.txt", "--wait", "3"], cwd)).toMatchObject({ wait: { min: 3, max: 3 } });
+    expect(parseArgs(["get", "--from-file", "l.txt", "--wait=0-10"], cwd)).toMatchObject({ wait: { min: 0, max: 10 } });
+    expect(parseArgs(["get", "--from-file", "l.txt", "--wait", "1440"], cwd)).toMatchObject({ wait: { min: 1440, max: 1440 } });
+  });
+
+  it("answers a bad --wait with the app's own message", () => {
+    for (const w of ["5-2", "1441", "0-1441", "abc", "1.5", "2-", "-3", "2-5-7", ""]) {
+      expect(err(["get", "--from-file", "l.txt", `--wait=${w}`])).toEqual({ error: WAIT });
+    }
+  });
+
+  it("sends every save option from the flags, highlights only when asked", () => {
+    const options = (...flags: string[]) => (parseArgs(["get", "--from-file", "l.txt", ...flags], cwd) as { options: object }).options;
+    expect(options("--highlights")).toEqual({ ...all, highlights: true });
+    expect(options("--highlights-only")).toEqual({ ...all, posts: false, highlights: true });
+    expect(options("--no-posts", "--highlights-only")).toEqual({ ...all, posts: false, highlights: true });
+    expect(options("--no-posts", "--tagged", "--photos-only")).toEqual({ ...all, posts: false, tagged: true, videos: false });
+    expect(options("--videos-only")).toEqual({ ...all, photos: false });
+  });
+
+  it("keeps the save options' own refusals", () => {
+    expect(err(["get", "--from-file", "l.txt", "--no-posts"])).toEqual({ error: "--no-posts needs --highlights or --tagged" });
+    expect(err(["get", "--from-file", "l.txt", "--photos-only", "--videos-only"])).toEqual({ error: "--photos-only and --videos-only can't both be set" });
+    expect(parseArgs(["get", "--from-file", "l.txt", "--tagged"], cwd, { tagged: false })).toEqual({ error: "--tagged isn't available in this version" });
+  });
+
+  it("refuses links and the options that aren't a list's", () => {
+    expect(err(["get", "https://www.instagram.com/nasa/", "--from-file", "l.txt"])).toEqual({ error: "--from-file can't be combined with links" });
+    for (const [flag, ...value] of [["--dir", "out"], ["-d", "out"], ["--name", "x"], ["--audio"], ["--max-height", "720"], ["--collection", "a"], ["--all-collections"]]) {
+      const shown = flag === "-d" ? "--dir" : flag;
+      expect(err(["get", "--from-file", "l.txt", flag, ...value])).toEqual({ error: `--from-file can't be combined with ${shown}` });
+    }
+  });
+
+  it("takes --from-file with get only and --wait with --from-file only", () => {
+    expect(err(["add", "--from-file", "l.txt"])).toEqual({ error: "--from-file works only with get" });
+    expect(err(["get", "https://a/x", "--wait", "3"])).toEqual({ error: "--wait needs --from-file" });
+    expect(err(["get", "--from-file"])).toEqual({ error: "--from-file needs a value" });
+  });
+
+  it("lists --from-file and --wait in the help", () => {
+    expect(HELP).toContain("  --from-file <txt>      Back up the Instagram profiles listed in a .txt, one after another\n");
+    expect(HELP).toContain("  --wait <min>-<max>     Minutes to wait between those profiles, at random (default 2-5)\n");
   });
 });
 

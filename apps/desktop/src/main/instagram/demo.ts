@@ -20,10 +20,12 @@ function signedOutOwner(code: string): string | undefined {
  * Test runs only (TURBODL_USER_DATA with TURBODL_INSTAGRAM_DEMO_BASE): every link is a post of three photos served at
  * `<base>/ig/<n>.png`, signed in already as demo.user (unless TURBODL_INSTAGRAM_DEMO_SIGNED_OUT), nothing kept on disk.
  * Saved: All holds six posts on two pages (the first a carousel), "Trips" three; profiles demo.person (with two
- * highlights), demo.locked, demo.plain, and two as signed-out visitors see them, with or without the session:
+ * highlights), demo.locked, demo.plain (no highlights, its second post a video), and two as signed-out visitors see
+ * them, with or without the session:
  * demo.public (seven posts on three pages; two highlights, the second on the tray's next page) and demo.open (three
  * posts on two pages, none hidden, no highlights). demo.public's DP5 answers signInOnly whatever the cookies are, as
- * if Instagram showed it only to signed-in visitors. Waits are short.
+ * if Instagram showed it only to signed-in visitors. A profile's tagged page shows its first two posts. Waits are
+ * short.
  */
 export function demoInstagram(base: string): InstagramDeps {
   const picture = (n: number) => ({ candidates: [{ url: `${base}/ig/${n}.png`, width: 640, height: 640 }] });
@@ -34,6 +36,52 @@ export function demoInstagram(base: string): InstagramDeps {
   ];
   const trips = [photo("t1", 2), photo("t2", 1), photo("t3", 0)];
   const feed = (posts: object[], next?: string) => JSON.stringify({ items: posts.map((media) => ({ media })), more_available: Boolean(next), ...(next ? { next_max_id: next } : {}), status: "ok" });
+  const post = (k: number): SavedPost => ({ id: `p${k}`, cover: `${base}/ig/${k % 3}.png`, items: [{ kind: "image", url: `${base}/ig/${k % 3}.png`, mediaId: `p${k}` }], ...(k === 1 ? { pinned: true } : {}) });
+  // a video post: a photo file served as its video (saved with .mp4, as a video is)
+  const video = (k: number): SavedPost => ({ id: `p${k}`, cover: `${base}/ig/${k % 3}.png`, items: [{ kind: "video", url: `${base}/ig/${k % 3}.png`, mediaId: `p${k}` }] });
+  const cover = (code: string, mediaType: number): SavedPost => ({ id: `${code}-post`, code, cover: `${base}/ig/0.png`, items: [], unread: true, mediaType });
+  const profiles: Record<string, { profile: InstagramProfile; pages: SavedPost[][]; highlights?: Highlight[]; moreHighlights?: Highlight[]; limited?: boolean }> = {
+    "demo.person": {
+      profile: { id: "5100000000000000007", username: "demo.person", fullName: "Demo Person", isPrivate: false, following: true, postCount: 6 },
+      pages: [[post(1), post(2), post(3)], [post(4), post(5), post(6)]],
+      highlights: [
+        { id: "17900000000000002", title: "Summer", cover: `${base}/ig/1.png` },
+        { id: "17900000000000003", title: "Winter", cover: `${base}/ig/2.png` },
+      ],
+    },
+    "demo.expired": {
+      profile: { id: "5100000000000000010", username: "demo.expired", fullName: "Demo Expired", isPrivate: false, following: true, postCount: 1 },
+      pages: [[post(1)]],
+      highlights: [{ id: "17900000000000099", title: "Gone", cover: `${base}/ig/0.png` }],
+    },
+    // seen signed out: covers only, each read from its own page; Instagram doesn't say how many posts it holds
+    "demo.public": {
+      profile: { id: "5100000000000000011", username: "demo.public", fullName: "Demo Public", isPrivate: false, following: false },
+      pages: [
+        [cover("DP1", 8), cover("DP2", 2), cover("DP3", 1)],
+        [cover("DP4", 1), cover(SIGN_IN_ONLY, 1), cover("DP6", 8)],
+        [cover("DP7", 1)],
+      ],
+      highlights: [{ id: "17900000000000005", title: "Trips", cover: `${base}/ig/1.png` }],
+      moreHighlights: [{ id: "17900000000000006", title: "Food", cover: `${base}/ig/2.png` }],
+      limited: true,
+    },
+    // seen signed out too, every post shown to signed-out visitors
+    "demo.open": {
+      profile: { id: "5100000000000000012", username: "demo.open", fullName: "Demo Open", isPrivate: false, following: false },
+      pages: [[cover("DO1", 1), cover("DO2", 8)], [cover("DO3", 1)]],
+      limited: true,
+    },
+    // no highlights; its second post is a video
+    "demo.plain": {
+      profile: { id: "5100000000000000009", username: "demo.plain", fullName: "Demo Plain", isPrivate: false, following: true, postCount: 3 },
+      pages: [[post(1), video(2), post(3)]],
+    },
+    "demo.locked": {
+      profile: { id: "5100000000000000008", username: "demo.locked", fullName: "Demo Locked", isPrivate: true, following: false, postCount: 4 },
+      pages: [[]],
+    },
+  };
   return {
     find: async (link) => {
       if (link.kind === "highlight" && link.id === "17900000000000099") return { type: "signedOut" };
@@ -61,49 +109,6 @@ export function demoInstagram(base: string): InstagramDeps {
     },
     collections: async () => COLLECTIONS,
     openProfile: (username) => {
-      const post = (k: number): SavedPost => ({ id: `p${k}`, cover: `${base}/ig/${k % 3}.png`, items: [{ kind: "image", url: `${base}/ig/${k % 3}.png`, mediaId: `p${k}` }], ...(k === 1 ? { pinned: true } : {}) });
-      const cover = (code: string, mediaType: number): SavedPost => ({ id: `${code}-post`, code, cover: `${base}/ig/0.png`, items: [], unread: true, mediaType });
-      const profiles: Record<string, { profile: InstagramProfile; pages: SavedPost[][]; highlights?: Highlight[]; moreHighlights?: Highlight[]; limited?: boolean }> = {
-        "demo.person": {
-          profile: { id: "5100000000000000007", username: "demo.person", fullName: "Demo Person", isPrivate: false, following: true, postCount: 6 },
-          pages: [[post(1), post(2), post(3)], [post(4), post(5), post(6)]],
-          highlights: [
-            { id: "17900000000000002", title: "Summer", cover: `${base}/ig/1.png` },
-            { id: "17900000000000003", title: "Winter", cover: `${base}/ig/2.png` },
-          ],
-        },
-        "demo.expired": {
-          profile: { id: "5100000000000000010", username: "demo.expired", fullName: "Demo Expired", isPrivate: false, following: true, postCount: 1 },
-          pages: [[post(1)]],
-          highlights: [{ id: "17900000000000099", title: "Gone", cover: `${base}/ig/0.png` }],
-        },
-        // seen signed out: covers only, each read from its own page; Instagram doesn't say how many posts it holds
-        "demo.public": {
-          profile: { id: "5100000000000000011", username: "demo.public", fullName: "Demo Public", isPrivate: false, following: false },
-          pages: [
-            [cover("DP1", 8), cover("DP2", 2), cover("DP3", 1)],
-            [cover("DP4", 1), cover(SIGN_IN_ONLY, 1), cover("DP6", 8)],
-            [cover("DP7", 1)],
-          ],
-          highlights: [{ id: "17900000000000005", title: "Trips", cover: `${base}/ig/1.png` }],
-          moreHighlights: [{ id: "17900000000000006", title: "Food", cover: `${base}/ig/2.png` }],
-          limited: true,
-        },
-        // seen signed out too, every post shown to signed-out visitors
-        "demo.open": {
-          profile: { id: "5100000000000000012", username: "demo.open", fullName: "Demo Open", isPrivate: false, following: false },
-          pages: [[cover("DO1", 1), cover("DO2", 8)], [cover("DO3", 1)]],
-          limited: true,
-        },
-        "demo.plain": {
-          profile: { id: "5100000000000000009", username: "demo.plain", fullName: "Demo Plain", isPrivate: false, following: true, postCount: 3 },
-          pages: [[post(1), post(2), post(3)]],
-        },
-        "demo.locked": {
-          profile: { id: "5100000000000000008", username: "demo.locked", fullName: "Demo Locked", isPrivate: true, following: false, postCount: 4 },
-          pages: [[]],
-        },
-      };
       const found = profiles[username];
       // the tray as read so far, and its one next page until it is read (a signed-out tray), as ProfileFeed keeps them
       let highlights = found?.highlights ?? [];
@@ -130,6 +135,21 @@ export function demoInstagram(base: string): InstagramDeps {
           if (more) highlights = [...highlights, ...more];
           return more;
         },
+        close: () => undefined,
+      };
+    },
+    // a profile's tagged page: its first two posts, as if other accounts had tagged it in them (one known only by its
+    // cover is shown with that picture: a tagged backup reads no post's own page)
+    openTagged: (username) => {
+      const found = profiles[username];
+      const tagged = (found?.pages.flat() ?? [])
+        .slice(0, 2)
+        .map((p): SavedPost => (p.items.length > 0 ? p : { id: p.id, cover: `${base}/ig/0.png`, items: [{ kind: "image", url: `${base}/ig/0.png`, mediaId: `${p.id}-tagged` }] }));
+      return {
+        load: async () => {
+          if (!found) throw new SavedError("badAnswer");
+        },
+        page: async () => ({ posts: tagged }),
         close: () => undefined,
       };
     },

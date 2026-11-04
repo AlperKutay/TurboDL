@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -30,6 +30,34 @@ describe("JsonStore", () => {
     store.flush();
     expect(JSON.parse(readFileSync(file, "utf8"))).toEqual({ n: 3 });
     expect(existsSync(`${file}.tmp`)).toBe(false);
+  });
+
+  it("deletes its file, dropping a save still pending", async () => {
+    const file = path.join(dir, "s.json");
+    const store = new JsonStore<{ n: number }>(file, 50);
+    store.save({ n: 1 });
+    store.flush();
+    store.save({ n: 2 });
+    store.remove();
+    expect(existsSync(file)).toBe(false);
+    await new Promise((r) => setTimeout(r, 120));
+    expect(existsSync(file)).toBe(false);
+    // without a file, nothing happens
+    store.remove();
+    store.flush();
+    expect(existsSync(file)).toBe(false);
+  });
+
+  it("keeps a save still pending when its file can't be deleted", () => {
+    // a folder where the file would be: it isn't deleted
+    const file = path.join(dir, "s.json");
+    mkdirSync(path.join(file, "inside"), { recursive: true });
+    const store = new JsonStore<{ n: number }>(file, 50);
+    store.save({ n: 2 });
+    expect(() => store.remove()).toThrow();
+    rmSync(file, { recursive: true, force: true });
+    store.flush();
+    expect(JSON.parse(readFileSync(file, "utf8"))).toEqual({ n: 2 });
   });
 
   it("backs up a corrupt file and falls back", () => {

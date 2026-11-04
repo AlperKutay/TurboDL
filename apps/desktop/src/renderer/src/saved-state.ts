@@ -1,4 +1,4 @@
-import { parseInstagramLink, type BackupView, type SavedPage, type SavedPageResult, type SavedPost, type SavedSource } from "@turbodl/shared";
+import { type BackupView, type SavedPage, type SavedPageResult, type SavedPost, type SavedSource, type ScreenBackupView } from "@turbodl/shared";
 
 /** What a grid shows: All, one of the account's collections, or someone's profile. */
 export type FeedSource = SavedSource | { kind: "profile"; username: string };
@@ -59,9 +59,46 @@ export function retry(state: SavedState): SavedState {
   return state.status === "failed" || state.status === "rateLimited" ? { ...state, status: "idle", error: undefined } : state;
 }
 
-/** What a backup's panel offers: Stop while it runs, sign-in when Instagram signed TurboDL out, else Continue. */
-export function backupAction(state: BackupView["state"]): "stop" | "continue" | "signIn" | "none" {
+/** Whether the backup is one of the profile's parts: its posts' ("sample.user"), highlights' or tagged posts' ("sample.user · Highlights"). */
+export function belongsTo(backup: BackupView, username: string): boolean {
+  const name = backup.name.toLowerCase();
+  const user = username.toLowerCase();
+  if (backup.kind === "profile") return name === user;
+  if (backup.kind === "highlights") return name === `${user} · highlights`;
+  return backup.kind === "tagged" && name === `${user} · tagged`;
+}
+
+/** The screen's backup, when it is the one the panel's backup is a part of: one that never ran, or ran for another profile, isn't. */
+function ownScreen(backup: BackupView, screen: ScreenBackupView | null): ScreenBackupView | null {
+  return screen?.ran && belongsTo(backup, screen.username) ? screen : null;
+}
+
+/**
+ * What the backup panel says of the backup: its own state, except while the screen's profile backup goes on (between
+ * its parts too, when no backup runs: Stop), and how that ended once its last part had finished (stopped between parts,
+ * or a later part refused). Only for the screen's own profile's backup: a screen backup refused before it ran, or
+ * running for another profile, leaves the panel alone.
+ */
+export function panelState(backup: BackupView, screen: ScreenBackupView | null): { state: BackupView["state"]; error?: string } {
+  const own = ownScreen(backup, screen);
+  if (own?.state === "running") return { state: "running" };
+  if (backup.state === "finished" && own?.state === "cancelled") return { state: "stopped" };
+  if (backup.state === "finished" && own?.state === "failed") return { state: "failed", ...(own.error ? { error: own.error } : {}) };
+  return { state: backup.state, ...(backup.state === "failed" && backup.error ? { error: backup.error } : {}) };
+}
+
+/** What the screen's backup warned of beyond the backup's own progress; the part's own warning (shown with it) not twice. */
+export function panelWarnings(backup: BackupView, screen: ScreenBackupView | null): string[] {
+  return ownScreen(backup, screen)?.warnings.filter((w) => w !== backup.warning) ?? [];
+}
+
+/**
+ * What a backup's panel offers: Stop while it runs, sign-in when Instagram signed TurboDL out, else Continue. A backup a
+ * profile list goes on with by itself (`listed` "active": its slow-down wait) offers no more than Stop.
+ */
+export function backupAction(state: BackupView["state"], listed: "active" | "resumable" | null = null): "stop" | "continue" | "signIn" | "none" {
   if (state === "running") return "stop";
+  if (listed === "active") return "none";
   if (state === "signedOut") return "signIn";
   return state === "finished" ? "none" : "continue";
 }
@@ -69,15 +106,4 @@ export function backupAction(state: BackupView["state"]): "stop" | "continue" | 
 export function toggle(state: SavedState, postId: string): SavedState {
   const picked = state.picked.includes(postId) ? state.picked.filter((id) => id !== postId) : [...state.picked, postId];
   return { ...state, picked };
-}
-
-/** The username in a profile link or in what was typed (`@` or not), lowercased; null for anything else. */
-export function profileName(text: string): string | null {
-  const typed = text.trim();
-  if (/^https?:\/\//i.test(typed)) {
-    const link = parseInstagramLink(typed);
-    return link?.kind === "profile" ? link.username : null;
-  }
-  const name = typed.replace(/^@/, "");
-  return /^[a-z0-9._]{1,30}$/i.test(name) ? name.toLowerCase() : null;
 }

@@ -1,4 +1,4 @@
-import type { Highlight, InstagramItem, InstagramLink, InstagramProfile, SavedCollection, SavedPage, SavedSource } from "./instagram";
+import type { Highlight, InstagramItem, InstagramLink, InstagramProfile, ListWait, ParsedProfileList, ProfileListView, ProfileSaveOptions, SavedCollection, SavedPage, SavedSource } from "./instagram";
 import type { BrowserCookie, CaptureSource, MediaItem } from "./protocol";
 
 export type Category = "video" | "music" | "programs" | "archives" | "documents" | "images" | "other";
@@ -105,6 +105,10 @@ export interface Settings {
   watchClipboard: boolean;
   /** Instagram downloads in a folder per account (`Instagram/<username>/`) */
   instagramByAccount: boolean;
+  /** what an Instagram profile backup saves */
+  instagramSave: ProfileSaveOptions;
+  /** the random wait between a profile list's profiles, minutes */
+  listWait: ListWait;
   scheduler: SchedulerSettings;
 }
 
@@ -215,8 +219,8 @@ export interface BackupPlan {
 /** A collection backup as its progress panel shows it. */
 export interface BackupView {
   targetId: string;
-  /** what is backed up: one of the account's collections, a profile's posts, or a profile's highlights */
-  kind: "collection" | "profile" | "highlights";
+  /** what is backed up: one of the account's collections, a profile's posts, its highlights, or the posts it is tagged in */
+  kind: "collection" | "profile" | "highlights" | "tagged";
   name: string;
   state: "running" | "stopped" | "finished" | "signedOut" | "rateLimited" | "failed";
   error?: string;
@@ -277,6 +281,25 @@ export interface AppSnapshot {
   version: string;
   /** the Instagram backup running or last run */
   instagramBackup: BackupView | null;
+  /** the profile backup the screen started last (its parts in turn), followed to its end */
+  screenBackup: ScreenBackupView | null;
+  /** the profile list running or last run */
+  profileList: ProfileListView | null;
+}
+
+/**
+ * "Back up this profile" from the screen: its parts (posts, highlights, tagged posts) run in turn as one job, which goes
+ * on between them while no backup runs. What it warned of so far, and how it ended.
+ */
+export interface ScreenBackupView {
+  username: string;
+  state: "running" | "done" | "failed" | "cancelled";
+  /** what needs saying beyond each part's own progress ("This profile has no highlights.") */
+  warnings: string[];
+  /** why it failed, or was stopped */
+  error?: string;
+  /** whether one of its backups started: one that was refused before that has nothing to say of any backup's panel */
+  ran: boolean;
 }
 
 export type AppEvent =
@@ -286,6 +309,8 @@ export type AppEvent =
   | { type: "bridge"; status: BridgeStatus }
   | { type: "countdown"; state: CountdownState | null }
   | { type: "instagramBackup"; backup: BackupView | null }
+  | { type: "screenBackup"; screenBackup: ScreenBackupView | null }
+  | { type: "profileList"; list: ProfileListView | null }
   /** a saved link came in: show the Saved section */
   | { type: "openSaved" }
   /** a profile link came in: show it in Profiles */
@@ -351,7 +376,8 @@ export interface TurboApi {
   profilePage(username: string, cursor?: string): Promise<SavedPageResult>;
   openProfilePicks(username: string, postIds: string[]): Promise<Result>;
   profileBackupPlan(username: string): Promise<BackupPlan>;
-  startProfileBackup(username: string): Promise<Result>;
+  /** backs up the ticked parts of the profile in turn (posts, highlights, tagged posts) as one job; answered once it runs */
+  startProfileBackup(username: string, options: ProfileSaveOptions): Promise<Result>;
   instagramProfiles(): Promise<ProfileEntry[]>;
   removeInstagramProfile(id: string): Promise<void>;
   /** the profile screen closed: its page can go (unless a backup still uses it) */
@@ -363,7 +389,19 @@ export interface TurboApi {
   /** the picker over the read highlights' stories, in pick order */
   openHighlightPicks(username: string, ids: string[]): Promise<Result>;
   highlightsBackupPlan(username: string): Promise<BackupPlan>;
-  startHighlightsBackup(username: string): Promise<Result>;
+  startHighlightsBackup(username: string, kinds: { photos: boolean; videos: boolean }): Promise<Result>;
+  /** the open dialog for a profile list's .txt; null when cancelled */
+  pickProfileListFile(): Promise<string | null>;
+  /** reads (UTF-8) and parses a profile list's .txt; why not when it is missing, unreadable or over 1 MB */
+  readProfileList(path: string): Promise<{ name: string; list: ParsedProfileList } | { error: string }>;
+  /** backs the profiles up one after another, a random wait between them; refused while an unfinished list is there */
+  startProfileList(list: { name: string; usernames: string[]; options: ProfileSaveOptions; wait: ListWait }): Promise<Result>;
+  /** the list's own Stop: its wait, or its profile's backup; resolves once it has stopped */
+  stopProfileList(): Promise<void>;
+  /** runs a stopped list on from its profile */
+  continueProfileList(): Promise<Result>;
+  /** forgets a list that isn't going on by itself */
+  closeProfileList(): Promise<Result>;
   cancelCountdown(): Promise<void>;
   installExtension(): Promise<InstallResult>;
   cliStatus(): Promise<CliStatus>;

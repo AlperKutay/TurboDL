@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { ApiLaunch, InstagramPostInfo, JobEvent } from "@turbodl/shared";
 import { HELP } from "../../src/cli/args";
 import { run, type CliIo } from "../../src/cli/main";
+import { UNFINISHED } from "../../src/main/instagram/profile-lists";
 import { makeJob, startFakeApi, type FakeApi } from "./fake-api";
 
 class Sink extends Writable {
@@ -32,6 +33,10 @@ interface CliOptions {
   dir?: string;
   /** runs on every wait of the command's clock */
   onSleep?: () => Promise<void>;
+  /** the files the command can read, by absolute path */
+  files?: Record<string, string>;
+  /** the command's own timers instead of the clock that only moves when it waits */
+  realClock?: boolean;
 }
 
 /** Runs the command against the fake app with in-memory streams and a clock that only moves when the command waits. */
@@ -39,6 +44,7 @@ function cli(argv: string[], o: CliOptions = {}) {
   const stdout = new Sink();
   const stderr = new Sink();
   const spawned: ApiLaunch[] = [];
+  const sleeps: number[] = [];
   let handler: (() => void) | undefined;
   let t = 0;
   const io: CliIo = {
@@ -61,14 +67,25 @@ function cli(argv: string[], o: CliOptions = {}) {
     now: () => t,
     sleep: async (ms) => {
       t += ms;
+      sleeps.push(ms);
       await o.onSleep?.();
       await new Promise((resolve) => setImmediate(resolve));
     },
+    readFile: async (p) => {
+      const text = o.files?.[p];
+      if (text === undefined) throw Object.assign(new Error(`ENOENT: no such file or directory, open '${p}'`), { code: "ENOENT" });
+      return text;
+    },
   };
+  if (o.realClock) {
+    delete io.sleep;
+    delete io.now;
+  }
   return {
     stdout,
     stderr,
     spawned,
+    sleeps,
     interrupt: () => {
       if (!handler) throw new Error("no Ctrl+C handler");
       handler();
@@ -520,5 +537,217 @@ describe("turbodl posts", () => {
     fake.end("job1", { state: "done" });
     await c.done;
     expect(fake.requests).toEqual([{ url: profile, options: { postsOnly: true } }]);
+  });
+});
+
+describe("turbodl get --from-file", () => {
+  const listFile = path.resolve(cwd, "list.txt");
+  const all = { posts: true, highlights: false, tagged: false, photos: true, videos: true };
+  /** a step of the list for each wait of the command's clock (one poll each) */
+  const steps =
+    (...fns: (() => void | Promise<void>)[]) =>
+    async () => {
+      await fns.shift()?.();
+    };
+
+  it("backs up the file's profiles one after another, a line for each as it ends, and exits 0", async () => {
+    const c = cli(["get", "--from-file", "list.txt"], {
+      files: { [listFile]: "nasa\n@NatGeo\nNASA\n" },
+      onSleep: steps(
+        () => fake.updateList({ state: "waiting", nextAt: 9000 }, { 0: { state: "done", files: 12, fetched: 3 } }),
+        () => fake.updateList({ state: "running", index: 1 }, { 1: { state: "running" } }),
+        () => fake.updateList({ state: "finished" }, { 1: { state: "skipped", note: "This account is private." } }),
+      ),
+    });
+    expect(await c.done).toBe(0);
+    expect(fake.listRequests).toEqual([{ name: "list.txt", usernames: ["nasa", "natgeo"], options: all, wait: { min: 2, max: 5 } }]);
+    expect(c.stdout.text).toBe("nasa: done, 12 files, 3 new\nnatgeo: skipped: This account is private.\n");
+    expect(c.stderr.text).toBe("Finished: 1 backed up, 1 skipped\n");
+    expect(c.sleeps).toEqual([2000, 2000, 2000]);
+    expect(c.spawned).toEqual([]);
+  });
+
+  it("prints a profile's line once, even when it ends in the same poll as the list", async () => {
+    const c = cli(["get", "--from-file", "list.txt"], {
+      files: { [listFile]: "a\nb\n" },
+      onSleep: steps(
+        () => fake.updateList({ index: 1 }, { 0: { state: "done", fetched: 0, note: "Some posts need a sign-in." }, 1: { state: "running" } }),
+        () => undefined,
+        () => fake.updateList({ state: "finished" }, { 1: { state: "failed", note: "That profile doesn't exist." } }),
+      ),
+    });
+    expect(await c.done).toBe(1);
+    expect(c.stdout.text).toBe("a: done, 0 new: Some posts need a sign-in.\nb: failed: That profile doesn't exist.\n");
+    expect(c.stderr.text).toBe("Finished: 1 backed up, 0 skipped, 1 failed\n");
+  });
+
+  it("--json prints each profile's row as it ends, then the list", async () => {
+    const c = cli(["get", "--from-file", "list.txt", "--json"], {
+      files: { [listFile]: "nasa\nbad name\n" },
+      onSleep: steps(() => fake.updateList({ state: "finished" }, { 0: { state: "done", files: 1, fetched: 1 } })),
+    });
+    expect(await c.done).toBe(0);
+    const lines = c.stdout.text
+      .trimEnd()
+      .split("\n")
+      .map((l) => JSON.parse(l) as unknown);
+    expect(lines).toEqual([
+      { type: "warning", message: "Line 2 isn't a profile: bad name" },
+      { username: "nasa", state: "done", files: 1, fetched: 1 },
+      { list: fake.list },
+    ]);
+    expect(c.stderr.text).toBe("turbodl: warning: Line 2 isn't a profile: bad name\n");
+  });
+
+  it("warns about the lines that aren't profiles and backs up the rest", async () => {
+    const c = cli(["get", "--from-file", "list.txt"], {
+      files: { [listFile]: "nasa\nnot a name!\nhttps://www.instagram.com/p/C1/\n" },
+      onSleep: steps(() => fake.updateList({ state: "finished" }, { 0: { state: "done", fetched: 2 } })),
+    });
+    expect(await c.done).toBe(0);
+    expect(c.stderr.text).toBe(
+      "turbodl: warning: Line 2 isn't a profile: not a name!\nturbodl: warning: Line 3 isn't a profile: https://www.instagram.com/p/C1/\nFinished: 1 backed up, 0 skipped\n",
+    );
+    expect(fake.listRequests[0].usernames).toEqual(["nasa"]);
+  });
+
+  it("sends the save options and the wait it was given", async () => {
+    const c = cli(["get", "--from-file", "list.txt", "--no-posts", "--highlights", "--tagged", "--videos-only", "--wait", "0-1"], {
+      files: { [listFile]: "nasa\n" },
+      onSleep: steps(() => fake.updateList({ state: "finished" }, { 0: { state: "done" } })),
+    });
+    expect(await c.done).toBe(0);
+    expect(fake.listRequests[0]).toMatchObject({ options: { posts: false, highlights: true, tagged: true, photos: false, videos: true }, wait: { min: 0, max: 1 } });
+  });
+
+  it("exits 4 when Instagram asked to slow down too often, 3 when it signed TurboDL out, 6 when the list was stopped elsewhere", async () => {
+    const message = "Instagram asked TurboDL to slow down 3 times in a row. Continue later.";
+    const slow = cli(["get", "--from-file", "list.txt"], {
+      files: { [listFile]: "nasa\n" },
+      onSleep: steps(() => fake.updateList({ state: "rateLimited", message }, { 0: { state: "waiting" } })),
+    });
+    expect(await slow.done).toBe(4);
+    expect(slow.stdout.text).toBe("");
+    expect(slow.stderr.text).toBe(`${message}\n`);
+
+    fake.list = null;
+    const out = cli(["get", "--from-file", "list.txt"], {
+      files: { [listFile]: "nasa\n" },
+      onSleep: steps(() => fake.updateList({ state: "signedOut" }, { 0: { state: "waiting" } })),
+    });
+    expect(await out.done).toBe(3);
+    expect(out.stderr.text).toBe("Instagram signed TurboDL out. Sign in, then continue.\n");
+
+    fake.list = null;
+    const stopped = cli(["get", "--from-file", "list.txt"], {
+      files: { [listFile]: "nasa\n" },
+      onSleep: steps(() => fake.updateList({ state: "stopped" }, { 0: { state: "waiting" } })),
+    });
+    expect(await stopped.done).toBe(6);
+    expect(stopped.stderr.text).toBe("Stopped. Continue the list in TurboDL.\n");
+    expect(fake.listStops).toBe(0);
+  });
+
+  it("stops the list on Ctrl+C and exits 130", async () => {
+    const c = cli(["get", "--from-file", "list.txt"], { files: { [listFile]: "nasa\nnatgeo\n" } });
+    await fake.until(() => fake.listReads >= 3);
+    c.interrupt();
+    expect(await c.done).toBe(130);
+    expect(fake.listStops).toBe(1);
+    expect(fake.list?.state).toBe("stopped");
+    expect(c.stdout.text).toBe("");
+    expect(c.stderr.text).toBe("Stopped. Continue the list in TurboDL.\n");
+  });
+
+  it("cuts its 2-second wait between two reads short on Ctrl+C", async () => {
+    const c = cli(["get", "--from-file", "list.txt"], { files: { [listFile]: "nasa\n" }, realClock: true });
+    await fake.until(() => fake.listReads >= 1);
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    const began = Date.now();
+    c.interrupt();
+    expect(await c.done).toBe(130);
+    expect(Date.now() - began).toBeLessThan(1000);
+    expect(fake.listStops).toBe(1);
+  });
+
+  it("exits 130 at once on a second Ctrl+C", async () => {
+    const c = cli(["get", "--from-file", "list.txt"], { files: { [listFile]: "nasa\n" } });
+    await fake.until(() => fake.listReads >= 2);
+    c.interrupt();
+    c.interrupt();
+    expect(await c.done).toBe(130);
+  });
+
+  it("exits 1 with the app's words when another list is unfinished, 2 when the app refuses the list", async () => {
+    fake.listRefusal = UNFINISHED;
+    const busy = cli(["get", "--from-file", "list.txt"], { files: { [listFile]: "nasa\n" } });
+    expect(await busy.done).toBe(1);
+    expect(busy.stderr.text).toBe("turbodl: Close the list that is there first.\n");
+
+    fake.listRefusal = "Pick at least one of posts, highlights and tagged posts.";
+    const refused = cli(["get", "--from-file", "list.txt", "--no-posts", "--tagged"], { files: { [listFile]: "nasa\n" } });
+    expect(await refused.done).toBe(2);
+    expect(refused.stderr.text).toBe("turbodl: TurboDL refused the list: Pick at least one of posts, highlights and tagged posts.\n");
+    expect(fake.listStops).toBe(0);
+  });
+
+  it("refuses a file it can't use with code 2 before looking for TurboDL", async () => {
+    const empty = fs.mkdtempSync(path.join(os.tmpdir(), "turbodl-cli-empty-"));
+    try {
+      const many = Array.from({ length: 1001 }, (_, i) => `user${i}`).join("\n");
+      const cases: [string | undefined, string][] = [
+        [undefined, `turbodl: Couldn't read ${listFile}.\n`],
+        ["# nothing here\n\n", "turbodl: The file holds no profiles.\n"],
+        ["bad!\n", "turbodl: warning: Line 1 isn't a profile: bad!\nturbodl: The file holds no profiles.\n"],
+        [many, "turbodl: A list can hold at most 1,000 profiles.\n"],
+      ];
+      for (const [text, stderr] of cases) {
+        const c = cli(["get", "--from-file", "list.txt"], { dir: empty, files: text === undefined ? {} : { [listFile]: text } });
+        expect(await c.done).toBe(2);
+        expect(c.stderr.text).toBe(stderr);
+        expect(c.stdout.text).toBe("");
+        expect(c.spawned).toEqual([]);
+      }
+    } finally {
+      fs.rmSync(empty, { recursive: true, force: true });
+    }
+    expect(fake.listRequests).toEqual([]);
+  });
+
+  it("answers a bad --wait with the app's message and code 2", async () => {
+    const c = cli(["get", "--from-file", "list.txt", "--wait", "5-2"], { files: { [listFile]: "nasa\n" } });
+    expect(await c.done).toBe(2);
+    expect(c.stderr.text).toBe("turbodl: Waits are whole minutes from 0 to 1440, the most at least the least.\nRun turbodl --help.\n");
+    expect(fake.listRequests).toEqual([]);
+  });
+
+  it("exits 6 when the list is closed in TurboDL while it is followed", async () => {
+    const c = cli(["get", "--from-file", "list.txt"], {
+      files: { [listFile]: "nasa\n" },
+      onSleep: steps(() => {
+        fake.list = null;
+      }),
+    });
+    expect(await c.done).toBe(6);
+    expect(c.stderr.text).toBe("turbodl: The list was closed in TurboDL.\n");
+  });
+
+  it('exits 5 with "TurboDL quit." when the app goes away', async () => {
+    const c = cli(["get", "--from-file", "list.txt"], { files: { [listFile]: "nasa\n" }, onSleep: steps(() => fake.stop()) });
+    expect(await c.done).toBe(5);
+    expect(c.stderr.text).toBe("turbodl: TurboDL quit.\n");
+  });
+
+  it("keeps following the list when TurboDL moves to another port", async () => {
+    const c = cli(["get", "--from-file", "list.txt"], {
+      files: { [listFile]: "nasa\n" },
+      onSleep: steps(
+        () => fake.stop(),
+        () => fake.restart(),
+        () => fake.updateList({ state: "finished" }, { 0: { state: "done", fetched: 1 } }),
+      ),
+    });
+    expect(await c.done).toBe(0);
+    expect(c.stdout.text).toBe("nasa: done, 1 new\n");
   });
 });

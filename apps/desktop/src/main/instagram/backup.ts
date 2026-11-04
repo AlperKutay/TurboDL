@@ -1,9 +1,18 @@
 import { existsSync, mkdirSync } from "node:fs";
 import path from "node:path";
-import { SavedError, sanitizeFilename, type BackupView, type InstagramItem, type SavedPage, type SavedPost } from "@turbodl/shared";
+import {
+  MEDIA_KINDS,
+  SavedError,
+  sanitizeFilename,
+  type BackupView,
+  type InstagramItem,
+  type InstagramMediaKind,
+  type SavedPage,
+  type SavedPost,
+} from "@turbodl/shared";
 import type { fetchMedia } from "./fetch-media";
 import { instagramExtension } from "./files";
-import { allowsEarlyStop, itemId, postDone, type LedgerStore } from "./ledger";
+import { allowsEarlyStop, itemId, postDone, wantedItems, type LedgerStore } from "./ledger";
 
 /** What a backup goes through: one of the account's collections, or a profile. */
 export interface BackupTarget {
@@ -23,6 +32,8 @@ export interface BackupTarget {
   checkCount?: boolean;
   /** a note for the run's warning when its listing ends, asked then (a listing that stopped before everything was read) */
   endNote?(): string | undefined;
+  /** the kinds of media it saves; photos and videos unless given */
+  kinds?: readonly InstagramMediaKind[];
 }
 
 export interface BackupDeps {
@@ -54,8 +65,9 @@ const LISTED_ENOUGH = 0.9;
 const PROGRESS_EVERY = 100;
 
 /**
- * Backs up a collection: every item of every post, one by one, recorded in its ledger so a stopped run continues and
- * a later run only saves what is new. Paced so it never looks like a burst; stops at Instagram's first push-back.
+ * Backs up a collection: every item of the kinds asked of every post, one by one, recorded in its ledger so a stopped
+ * run continues and a later run only saves what is new (or of a kind earlier runs left out). Paced so it never looks
+ * like a burst; stops at Instagram's first push-back.
  */
 export class BackupRun {
   private state: BackupView["state"] = "stopped";
@@ -147,34 +159,60 @@ export class BackupRun {
   private async run(signal: AbortSignal): Promise<void> {
     const { target, deps } = this;
     mkdirSync(target.dir, { recursive: true });
+    const kinds = target.kinds ?? MEDIA_KINDS;
     const ledger = deps.ledgers.load(target.id);
     const saved = new Set(ledger.saved);
     const failedPosts = new Set(ledger.failedPosts);
     // new stories land in old highlights: a highlight is never done by its id, only by the stories it shows now
     const byId = target.kind !== "highlights";
-    const donePosts = new Set(byId ? ledger.donePosts : []);
+    // per kind: a run asking for photos only leaves the videos' marks as they were, for a later run asking for videos
+    const done: Record<InstagramMediaKind, Set<string>> = {
+      image: new Set(byId ? ledger.done.image : []),
+      video: new Set(byId ? ledger.done.video : []),
+    };
     const signInPosts = new Set(ledger.signInPosts);
     /** the posts left for a sign-in that this run met */
     const met = new Set<string>();
-    let reachedEnd = ledger.reachedEnd;
-    const record = () =>
-      deps.ledgers.save(target.id, { saved: [...saved], failedPosts: [...failedPosts], reachedEnd, donePosts: [...donePosts], signInPosts: [...signInPosts] });
+    const reachedEnd = { ...ledger.reachedEnd };
+    /** what the ledger says: a run is unfinished from its first record until it gets to the listing's end (`end`) */
+    let unfinished = ledger.unfinished;
+    const record = (end = false) => {
+      unfinished = !end;
+      deps.ledgers.save(target.id, {
+        saved: [...saved],
+        failedPosts: [...failedPosts],
+        signInPosts: [...signInPosts],
+        done: { image: [...done.image], video: [...done.video] },
+        reachedEnd: { ...reachedEnd },
+        unfinished,
+      });
+    };
     // a post with nothing to save (a highlight whose page showed nothing) is done only by its id
-    const isDone = (post: SavedPost) => postDone(post, donePosts, saved);
-    /** the post is done: neither failed nor waiting for a sign-in any more; true when that is news for the ledger */
+    const isDone = (post: SavedPost) => postDone(post, kinds, done, saved);
+    /** the post is done for this run's kinds: neither failed nor waiting for a sign-in any more; true when that is news for the ledger */
     const finish = (post: SavedPost): boolean => {
       const failedBefore = failedPosts.delete(post.id);
       const waited = signInPosts.delete(post.id);
-      const known = !byId || donePosts.has(post.id);
-      if (byId) donePosts.add(post.id);
-      return failedBefore || waited || !known;
+      // a kind this run didn't ask for may still be missing in the post: a later run asking for it goes through to the
+      // end again, instead of stopping at a page above the post that needs nothing of that kind
+      let unended = false;
+      if (byId) {
+        for (const kind of MEDIA_KINDS) {
+          if (kinds.includes(kind) || !reachedEnd[kind] || postDone(post, [kind], done, saved)) continue;
+          reachedEnd[kind] = false;
+          unended = true;
+        }
+      }
+      const known = !byId || kinds.every((kind) => done[kind].has(post.id));
+      if (byId) for (const kind of kinds) done[kind].add(post.id);
+      return failedBefore || waited || unended || !known;
     };
     const random = deps.random ?? Math.random;
     // a new draw before each page, so the pages never come at a steady beat
     const pageGap = () => (target.pageGap ? target.pageGap[0] + random() * (target.pageGap[1] - target.pageGap[0]) : PAGE_GAP);
-    // newest posts come first, so after a clean complete pass a page already saved means nothing new is below it; a
-    // run that reads no post's page (signed in) goes all the way while posts wait for a sign-in, to save them
-    const earlyStop = target.allowsEarlyStop && allowsEarlyStop(ledger) && (deps.read !== undefined || signInPosts.size === 0);
+    // newest posts come first, so after a clean complete pass with these kinds a page already saved means nothing new is
+    // below it; a run that reads no post's page (signed in) goes all the way while posts wait for a sign-in, to save them
+    const earlyStop = target.allowsEarlyStop && allowsEarlyStop(ledger, kinds) && (deps.read !== undefined || signInPosts.size === 0);
     // read from its page signed out, a post only signed-in visitors see is as far as a run gets with it
     const settled = (post: SavedPost) => isDone(post) || (post.unread === true && signInPosts.has(post.id));
     let listed = 0;
@@ -195,6 +233,8 @@ export class BackupRun {
         this.signInOnly = signInPosts.size;
         const below = this.done + page.posts.filter(isDone).length;
         this.done = target.count !== undefined ? Math.max(target.count - this.failed - this.signInOnly, below) : below;
+        // the end of what is new: a run that recorded something (unfinished since) is finished now
+        if (unfinished) record(true);
         this.state = "finished";
         return;
       }
@@ -257,7 +297,7 @@ export class BackupRun {
         this.cover = post.cover;
         let failed = false;
         let asked = false;
-        for (const item of post.items) {
+        for (const item of wantedItems(post, kinds)) {
           const id = itemId(post, item);
           if (saved.has(id)) continue;
           const outcome = await this.save(id, item, signal);
@@ -288,11 +328,11 @@ export class BackupRun {
         if (short) this.warning = `Instagram listed ${listed} of ${target.count} posts.`;
         const note = target.endNote?.();
         if (note && !this.warning) this.warning = note;
-        reachedEnd = !short;
+        for (const kind of kinds) reachedEnd[kind] = !short;
         // a whole listing met every post still there: the others left for a sign-in are gone, or were saved
         if (!short) for (const id of signInPosts) if (!met.has(id)) signInPosts.delete(id);
         this.signInOnly = signInPosts.size;
-        record();
+        record(true);
         this.state = "finished";
         return;
       }

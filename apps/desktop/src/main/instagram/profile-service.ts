@@ -1,4 +1,5 @@
 import {
+  MEDIA_KINDS,
   SavedError,
   isLocked,
   type BackupPlan,
@@ -6,6 +7,7 @@ import {
   type Highlight,
   type HighlightResult,
   type InstagramItem,
+  type InstagramMediaKind,
   type InstagramPostInfo,
   type InstagramPostItem,
   type InstagramProfile,
@@ -17,10 +19,20 @@ import {
   type SavedPost,
 } from "@turbodl/shared";
 import type { Backups, StartResult } from "./backups";
-import { accountFolder, highlightsFolder } from "./folders";
+import { accountFolder, highlightsFolder, taggedFolder } from "./folders";
 import { SLOW_DOWN, failedPage, failureText, type InstagramPacer } from "./pacer";
 import type { ProfileIndex } from "./profile-index";
 import type { InstagramSession } from "./session";
+import type { TaggedSource } from "./tagged-feed";
+
+export const TAGGED_NEEDS_SIGN_IN = "Tagged posts need a sign-in to Instagram.";
+export const taggedUnreadable = (username: string) => `TurboDL couldn't read @${username}'s tagged posts; Instagram may have changed its page.`;
+export const NO_TAGGED = "This profile has no tagged posts.";
+/**
+ * A profile's page that never showed the profile: TurboDL can't tell an account that doesn't exist from a page too
+ * slow to show it. A list tells it apart from other errors by this exact text.
+ */
+export const profileShowedNothing = (username: string) => `Instagram showed nothing for @${username}: it may not exist, or the page was too slow.`;
 
 /** A profile's page as the service needs it (`ProfileFeed` over a hidden page, or a demo). */
 export interface ProfileSource {
@@ -41,6 +53,8 @@ export interface ProfileSource {
 export interface ProfileServiceDeps {
   session: InstagramSession;
   open(username: string, cookies: BrowserCookie[]): ProfileSource;
+  /** a profile's tagged page, read with the session (there is none signed out) */
+  openTagged(username: string, cookies: BrowserCookie[]): TaggedSource;
   /** one highlight's stories from its own page; null when it showed none; throws SavedError("signedOut"), or "rateLimited" when a signed-out read lands on the login wall */
   findHighlight(id: string, signal?: AbortSignal): Promise<InstagramItem[] | null>;
   /** one post's items from its own page (it works signed out for public posts); null when it showed none; "signInOnly" when Instagram shows it only to signed-in visitors */
@@ -111,6 +125,8 @@ export class ProfileService {
   /** the page a running backup pages through; it stays open until the backup ends */
   private backupSource: ProfileSource | null = null;
   private backupKey = "";
+  /** the tagged page a running backup pages through; closed when the backup ends */
+  private taggedSource: TaggedSource | null = null;
   private readonly profiles = new Map<string, InstagramProfile>();
   /** each profile's highlights tray, as its page listed it */
   private readonly trays = new Map<string, Highlight[]>();
@@ -355,7 +371,7 @@ export class ProfileService {
    * (with or without a session), each post's items are read from its own page, and every page it reads (its listing's
    * next pages too) takes the shared read slot.
    */
-  async startBackup(username: string): Promise<StartResult> {
+  async startBackup(username: string, kinds: readonly InstagramMediaKind[] = MEDIA_KINDS): Promise<StartResult> {
     if (this.deps.backups.isRunning()) return { ok: false, error: "A backup is already running.", reason: "busy" };
     // no page is opened for a backup that wouldn't start
     if (this.deps.pacer.held()) return SLOWED_DOWN;
@@ -377,11 +393,12 @@ export class ProfileService {
         ...(profile.postCount !== undefined ? { count: profile.postCount } : {}),
         dir: this.folder(profile.username),
         allowsEarlyStop: true,
+        kinds,
         // the signed-out listing may end short of the count
         ...(limited ? { checkCount: true } : {}),
       },
       (cursor, signal) => (limited && cursor !== undefined ? this.deps.read(() => this.paged(source, cursor, signal), signal) : this.paged(source, cursor, signal)),
-      () => this.startBackup(key),
+      () => this.startBackup(key, kinds),
       limited ? (post, signal) => this.readPost(post, signal) : undefined,
     );
     if (!result.ok) {
@@ -441,7 +458,7 @@ export class ProfileService {
    * Backs up every story of every highlight, one highlight per page (its own page load, 3–6 s apart), into its own
    * folder. New stories land in old highlights, so every run goes through all of them: no early stop.
    */
-  async startHighlightsBackup(username: string): Promise<StartResult> {
+  async startHighlightsBackup(username: string, kinds: readonly InstagramMediaKind[] = MEDIA_KINDS): Promise<StartResult> {
     if (this.deps.backups.isRunning()) return { ok: false, error: "A backup is already running.", reason: "busy" };
     if (this.deps.pacer.held()) return SLOWED_DOWN;
     const key = username.toLowerCase();
@@ -473,6 +490,7 @@ export class ProfileService {
         ...(counted ? { count: tray.length } : {}),
         dir: this.highlightsFolder(profile.username),
         allowsEarlyStop: false,
+        kinds,
         pageGap: [3000, 6000],
         endNote: () => (source.limited && source.trayCursor !== undefined && (trayPages >= TRAY_PAGES || stalled) ? "Instagram has more highlights than TurboDL read in one run." : undefined),
       },
@@ -494,7 +512,7 @@ export class ProfileService {
         const items = found.map((item) => ({ ...item, mediaId: item.mediaId ?? lastSegment(item.url) }));
         return { posts: [{ id: highlight.id, ...(highlight.cover ? { cover: highlight.cover } : {}), items }], ...(index + 1 < tray.length || moreTray() ? { next: String(index + 1) } : {}) };
       },
-      () => this.startHighlightsBackup(key),
+      () => this.startHighlightsBackup(key, kinds),
     );
     if (!result.ok) {
       this.letGo(source);
@@ -503,6 +521,72 @@ export class ProfileService {
     this.deps.index.record(profile, this.deps.now());
     if (moreTray()) this.keepUntilSettled(source, key);
     else this.letGo(source);
+    return result;
+  }
+
+  /** A profile's tagged posts: `Instagram/<username>/Tagged`, or `Instagram/<username> · Tagged`. */
+  taggedFolder(username: string): string {
+    return taggedFolder(this.deps.baseDir(), username, this.deps.byAccount());
+  }
+
+  /**
+   * Backs up the posts a profile is tagged in, from its tagged page, into their own folder, the ledger keyed by the
+   * account's number. Signed in only: Instagram shows the tab to nobody else, so no page is opened without a session.
+   * The profile's page is read first (the account's number, and whether it shows its posts); the tagged page, a page
+   * load of its own in the account's pace, stays open until the backup ends. Newest first: a later run may stop early.
+   */
+  async startTaggedBackup(username: string, kinds: readonly InstagramMediaKind[] = MEDIA_KINDS): Promise<StartResult> {
+    if (!this.deps.session.signedIn()) return { ok: false, error: TAGGED_NEEDS_SIGN_IN, reason: "signInRequired" };
+    if (this.deps.backups.isRunning()) return { ok: false, error: "A backup is already running.", reason: "busy" };
+    const { pacer } = this.deps;
+    if (pacer.held()) return SLOWED_DOWN;
+    const key = username.toLowerCase();
+    const opened = await this.pageFor(key);
+    if ("error" in opened) return opened;
+    const { profile, source } = opened;
+    // the profile's page has told all the tagged part needs of it
+    this.letGo(source);
+    const refused = refusal(profile);
+    if (refused) return refused;
+    await pacer.pace();
+    if (pacer.held()) return SLOWED_DOWN;
+    const tagged = this.deps.openTagged(key, this.deps.session.cookies());
+    let first: SavedPage;
+    try {
+      // a slow-down on the page holds the whole account
+      await pacer.ask(() => tagged.load());
+      first = await this.paged(tagged);
+    } catch (err) {
+      tagged.close();
+      return taggedRefusal(err, profile.username);
+    }
+    if (first.posts.length === 0 && !first.next) {
+      tagged.close();
+      return { ok: false, error: NO_TAGGED, reason: "empty" };
+    }
+    const result = await this.deps.backups.start(
+      {
+        id: `tagged-${profile.id}`,
+        kind: "tagged",
+        name: `${profile.username} · Tagged`,
+        dir: this.taggedFolder(profile.username),
+        allowsEarlyStop: true,
+        kinds,
+      },
+      (cursor, signal) => this.paged(tagged, cursor, signal),
+      () => this.startTaggedBackup(key, kinds),
+    );
+    if (!result.ok) {
+      tagged.close();
+      return result;
+    }
+    this.deps.index.record(profile, this.deps.now());
+    this.taggedSource = tagged;
+    void this.deps.backups.settled().then(() => {
+      if (this.taggedSource !== tagged) return;
+      this.taggedSource = null;
+      tagged.close();
+    });
     return result;
   }
 
@@ -523,6 +607,8 @@ export class ProfileService {
     this.release();
     this.backupSource?.close();
     this.backupSource = null;
+    this.taggedSource?.close();
+    this.taggedSource = null;
   }
 
   /** The open profile's page and profile, a running backup's, or a page of its own for a backup (without a session too). */
@@ -549,6 +635,7 @@ export class ProfileService {
       return { profile, source };
     } catch (err) {
       source.close();
+      if (err instanceof SavedError && err.kind === "badAnswer") return { ok: false, error: profileShowedNothing(key), reason: "error" };
       const failed = failedPage(err);
       if (failed.type === "failed") return { ok: false, error: failed.message, reason: "error" };
       if (failed.type === "signedOut") return { ok: false, error: "Sign in to Instagram again.", reason: "signInRequired" };
@@ -582,7 +669,7 @@ export class ProfileService {
   }
 
   /** The first page from what the page loaded; next pages are requests Instagram sees, in the account's pace. */
-  private async paged(source: ProfileSource, cursor?: string, signal?: AbortSignal): Promise<SavedPage> {
+  private async paged(source: { page(cursor?: string, signal?: AbortSignal): Promise<SavedPage> }, cursor?: string, signal?: AbortSignal): Promise<SavedPage> {
     if (cursor === undefined) return source.page(undefined, signal);
     const { pacer } = this.deps;
     if (pacer.held()) throw new SavedError("rateLimited");
@@ -708,6 +795,15 @@ function isoTime(seconds: number | undefined): string | null {
 /** Why a profile can't be backed up from its page: private and not followed (Instagram shows it to nobody else). */
 function refusal(profile: InstagramProfile): Refusal | null {
   return isLocked(profile) ? { ok: false, error: "This account is private.", reason: "private" } : null;
+}
+
+/** Why a profile's tagged page wasn't backed up from: a page TurboDL couldn't read, the session gone, Instagram's slow-down. */
+function taggedRefusal(err: unknown, username: string): Refusal {
+  if (err instanceof SavedError && err.kind === "badAnswer") return { ok: false, error: taggedUnreadable(username), reason: "unreadable" };
+  const failed = failedPage(err);
+  if (failed.type === "signedOut") return { ok: false, error: "Sign in to Instagram again.", reason: "signInRequired" };
+  if (failed.type === "rateLimited") return SLOWED_DOWN;
+  return { ok: false, error: failed.message, reason: "error" };
 }
 
 /** The last part of an address's path (a file name), without its query. */

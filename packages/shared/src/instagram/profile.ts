@@ -97,7 +97,11 @@ export function signedOutProfileView(documents: string[], username: string): boo
 
 /** `containers`: the objects holding a posts connection, in document order. */
 function postsOf(containers: Json[]): ProfilePosts | undefined {
-  const connections = containers.map((c) => dict(c, POSTS)).filter((c): c is Json => c !== undefined);
+  return connectionPosts(containers.map((c) => dict(c, POSTS)).filter((c): c is Json => c !== undefined));
+}
+
+/** The posts of connections (`edges[].node`, `page_info`) in order, each post once; the cursor is the last connection's. */
+export function connectionPosts(connections: Json[]): ProfilePosts | undefined {
   const last = connections[connections.length - 1];
   if (!last) return undefined;
   const seen = new Set<string>();

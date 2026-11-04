@@ -82,7 +82,10 @@ export interface NotificationLike {
 
 export interface NotifierOptions {
   platform: NodeJS.Platform;
+  /** "Download complete" notifications */
   enabled: () => boolean;
+  /** text notifications (`showText`): wherever notifications show at all */
+  textEnabled: () => boolean;
   create: (options: Record<string, unknown>) => NotificationLike;
   reveal: (file: string) => void;
   icon?: string;
@@ -92,7 +95,13 @@ export interface NotifierOptions {
 
 const TITLE = "Download complete";
 
-/** "Download complete" notifications whose click opens the downloaded file's folder. */
+/** A notice as a notification: the words before its colon as the title ("Profile list finished: 3 backed up, 0 skipped."). */
+export function noticeOf(text: string): { title: string; body: string } {
+  const at = text.indexOf(": ");
+  return at > 0 ? { title: text.slice(0, at), body: text.slice(at + 2) } : { title: "TurboDL", body: text };
+}
+
+/** "Download complete" notifications whose click opens the downloaded file's folder; and notifications of a text. */
 export class CompletionNotifier {
   private readonly recent: NotificationLike[] = [];
 
@@ -116,6 +125,12 @@ export class CompletionNotifier {
     note.show();
     this.recent.push(note);
     if (this.recent.length > (this.o.keep ?? 20)) this.recent.shift();
+  }
+
+  /** A notification of a text alone: nothing to open from it. */
+  showText(title: string, body: string): void {
+    if (!this.o.textEnabled()) return;
+    this.o.create({ title, body, ...(this.o.icon ? { icon: this.o.icon } : {}) }).show();
   }
 
   handleActivation(arg: string): void {

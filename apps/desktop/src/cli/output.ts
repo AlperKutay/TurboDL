@@ -1,4 +1,14 @@
-import { formatBytes, formatSpeed, type InstagramLoginResult, type InstagramPostInfo, type Job, type JobEvent, type JobProgress } from "@turbodl/shared";
+import {
+  formatBytes,
+  formatSpeed,
+  type InstagramLoginResult,
+  type InstagramPostInfo,
+  type Job,
+  type JobEvent,
+  type JobProgress,
+  type ProfileListRow,
+  type ProfileListView,
+} from "@turbodl/shared";
 
 /** Everything the turbodl command prints, as text for people or as JSON lines for scripts. */
 export interface Output {
@@ -10,7 +20,13 @@ export interface Output {
   job(job: Job): void;
   /** the jobs, for `list` */
   list(jobs: Job[]): void;
+  /** a followed profile list's row, once it ended (done, skipped or failed) */
+  listRow(row: ProfileListRow): void;
+  /** the followed profile list as it stopped going on */
+  listEnd(list: ProfileListView): void;
   instagram(i: InstagramLoginResult): void;
+  /** something the command goes on despite */
+  warning(message: string): void;
   error(message: string): void;
   /** ends an in-place progress line */
   close(): void;
@@ -37,7 +53,13 @@ function jsonOutput(o: OutputOptions): Output {
     added: job,
     job,
     list: (jobs) => jobs.forEach(job),
+    listRow: line,
+    listEnd: (list) => line({ list }),
     instagram: (i) => line({ type: "instagram", signedIn: i.signedIn, ...(i.username ? { username: i.username } : {}) }),
+    warning: (message) => {
+      line({ type: "warning", message });
+      o.stderr.write(`turbodl: warning: ${message}\n`);
+    },
     error: (message) => {
       line({ type: "error", message });
       o.stderr.write(`turbodl: ${message}\n`);
@@ -73,6 +95,33 @@ function endLine(job: Job): string {
   const reason = job.reason ? ` (${job.reason})` : "";
   const error = job.error ? `: ${job.error}` : "";
   return `${job.id}: ${job.state}${reason}, ${plural(job.files.length, "file")}${error}`;
+}
+
+/** "nasa: done, 12 files, 3 new", "someone: skipped: This account is private." */
+function rowLine(row: ProfileListRow): string {
+  const note = row.note ? `: ${row.note}` : "";
+  if (row.state !== "done") return `${row.username}: ${row.state}${note}`;
+  const files = row.files !== undefined ? `${plural(row.files, "file")}, ` : "";
+  return `${row.username}: done, ${files}${row.fetched ?? 0} new${note}`;
+}
+
+/** How the list stopped going on, in the app's words. */
+function listEndLine(list: ProfileListView): string {
+  const rows = (state: ProfileListRow["state"]) => list.rows.filter((r) => r.state === state).length;
+  switch (list.state) {
+    case "finished": {
+      const failed = rows("failed");
+      return `Finished: ${rows("done")} backed up, ${rows("skipped")} skipped${failed ? `, ${failed} failed` : ""}`;
+    }
+    case "rateLimited":
+      return list.message ?? "Instagram asked TurboDL to slow down 3 times in a row. Continue later.";
+    case "signedOut":
+      return list.message ?? "Instagram signed TurboDL out. Sign in, then continue.";
+    case "stopped":
+      return "Stopped. Continue the list in TurboDL.";
+    default:
+      return list.message ?? list.state;
+  }
 }
 
 /** `key: value` lines describing a job. */
@@ -160,10 +209,13 @@ function textOutput(o: OutputOptions): Output {
       const [id, state, kind] = [width("id"), width("state"), width("kind")];
       for (const j of jobs) out(`${j.id.padEnd(id)}  ${j.state.padEnd(state)}  ${j.kind.padEnd(kind)}  ${j.url}`);
     },
+    listRow: (row) => out(rowLine(row)),
+    listEnd: (list) => err(listEndLine(list)),
     instagram(i) {
       out(`signedIn: ${i.signedIn}`);
       if (i.username) out(`username: ${i.username}`);
     },
+    warning: (message) => err(`turbodl: warning: ${message}`),
     error: (message) => err(`turbodl: ${message}`),
     close: clear,
   };

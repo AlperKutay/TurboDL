@@ -3,12 +3,13 @@
 import os
 import time
 from datetime import datetime, timezone
-from typing import Any, Callable, Dict, Generator, Iterable, List, Optional, Set, Union
+from typing import Any, Callable, Dict, Generator, Iterable, List, Optional, Set, Tuple, Union
 
 from . import _discover
 from ._http import request, stream_lines
 from .errors import TurboDLError
 from .job import Job
+from .lists import ProfileListRun
 from .posts import PostList
 
 API_VERSION = 1
@@ -47,9 +48,24 @@ class TurboDL:
 
     def add(self, url: str, dir: Optional[str] = None, name: Optional[str] = None, *, audio: bool = False,
             max_height: Optional[int] = None, highlights: bool = False, highlights_only: bool = False,
-            collections: Optional[List[str]] = None, all_collections: bool = False) -> Job:
-        """Queues a link and returns its job at once."""
+            collections: Optional[List[str]] = None, all_collections: bool = False,
+            posts: bool = True, tagged: bool = False, photos: bool = True, videos: bool = True) -> Job:
+        """Queues a link and returns its job at once.
+
+        `posts`, `tagged`, `photos` and `videos` choose what an Instagram profile backup saves (the profile's own
+        posts, the posts it is tagged in, photos, videos); they need TurboDL 0.9.0 or newer."""
         options = {}  # type: Dict[str, Any]
+        if not posts or tagged or not photos or not videos:
+            if "profileOptions" not in (self.info().get("features") or []):
+                raise TurboDLError("Update TurboDL to 0.9.0 or newer to choose what a profile backup saves.")
+            if not posts:
+                options["posts"] = False
+            if tagged:
+                options["tagged"] = True
+            if not photos:
+                options["photos"] = False
+            if not videos:
+                options["videos"] = False
         if audio:
             options["audio"] = True
         if max_height is not None:
@@ -111,10 +127,12 @@ class TurboDL:
     def get(self, url: str, dir: Optional[str] = None, name: Optional[str] = None, *, audio: bool = False,
             max_height: Optional[int] = None, highlights: bool = False, highlights_only: bool = False,
             collections: Optional[List[str]] = None, all_collections: bool = False,
+            posts: bool = True, tagged: bool = False, photos: bool = True, videos: bool = True,
             on_event: Optional[Callable[[Dict[str, Any]], None]] = None) -> Job:
         """Queues a link and waits for it: the finished Job, or the exception for how it ended."""
         job = self.add(url, dir, name, audio=audio, max_height=max_height, highlights=highlights,
-                       highlights_only=highlights_only, collections=collections, all_collections=all_collections)
+                       highlights_only=highlights_only, collections=collections, all_collections=all_collections,
+                       posts=posts, tagged=tagged, photos=photos, videos=videos)
         return job.wait(on_event=on_event)
 
     def posts(self, url: str, since: Union[datetime, str, None] = None, limit: Optional[int] = None,
@@ -138,6 +156,32 @@ class TurboDL:
             options["known"] = list(known)
         job = Job(self._call("POST", "/v1/jobs", {"url": url, "options": options})["job"], self)
         return PostList(self, job)
+
+    def backup_profiles(self, profiles: Iterable[str], wait: Union[Tuple[int, int], int] = (2, 5), *,
+                        posts: bool = True, highlights: bool = False, tagged: bool = False, photos: bool = True,
+                        videos: bool = True, name: Optional[str] = None) -> ProfileListRun:
+        """Starts TurboDL's list of profiles: backs them up one after another, as the Profiles screen's list does.
+
+        `profiles` is a list of names, `@names` or profile links (`read_profile_list()` reads them from a .txt), at
+        most 1000; a single string raises TypeError. `wait` is the random wait between two profiles in whole minutes,
+        (least, most) or one number; `name` is what the app shows for the list ("API list" when None). Every save
+        option is sent as given, with the same defaults as `add()`. Returns a ProfileListRun to follow or stop it.
+        The app refuses a second list while one is unfinished (TurboDLError with its message). Needs TurboDL 0.9.0
+        or newer."""
+        if isinstance(profiles, str):
+            # list("nasa") would be the profiles n, a, s
+            raise TypeError("profiles must be a list of usernames or links, not a single string")
+        if "lists" not in (self.info().get("features") or []):
+            raise TurboDLError("Update TurboDL to 0.9.0 or newer to back up a list of profiles.")
+        least, most = (wait, wait) if isinstance(wait, int) else wait
+        body = {
+            "profiles": list(profiles),
+            "options": {"posts": posts, "highlights": highlights, "tagged": tagged, "photos": photos, "videos": videos},
+            "wait": {"min": least, "max": most},
+        }  # type: Dict[str, Any]
+        if name is not None:
+            body["name"] = name
+        return ProfileListRun(self, self._call("POST", "/v1/lists", body)["list"])
 
     def instagram_login(self) -> Dict[str, Any]:
         """Opens TurboDL's Instagram sign-in and waits for it: {"signed_in": bool, "username": Optional[str]}."""

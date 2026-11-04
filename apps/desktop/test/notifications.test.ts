@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   CompletionNotifier,
   fileFromArgument,
+  noticeOf,
   notificationIdentity,
   revealDownload,
   showArgument,
@@ -79,12 +80,13 @@ class FakeNotification implements NotificationLike {
 }
 
 describe("CompletionNotifier", () => {
-  function setup(platform: NodeJS.Platform, enabled = true) {
+  function setup(platform: NodeJS.Platform, enabled = true, textEnabled = true) {
     const made: FakeNotification[] = [];
     const revealed: string[] = [];
     const notifier = new CompletionNotifier({
       platform,
       enabled: () => enabled,
+      textEnabled: () => textEnabled,
       icon: "C:\\app\\icon.png",
       create: (options) => {
         const n = new FakeNotification(options);
@@ -123,5 +125,27 @@ describe("CompletionNotifier", () => {
     const { notifier, made } = setup("win32", false);
     notifier.show("C:\\dl\\clip.mp4");
     expect(made).toHaveLength(0);
+  });
+
+  it.each(["win32", "darwin", "linux"] as const)("shows a text of its own (%s), download notifications switched off or not", (platform) => {
+    const { notifier, made } = setup(platform, false);
+    notifier.showText("Profile list finished", "3 backed up, 0 skipped.");
+    expect(made).toHaveLength(1);
+    expect(made[0].options).toEqual({ title: "Profile list finished", body: "3 backed up, 0 skipped.", icon: "C:\\app\\icon.png" });
+    expect(made[0].shown).toBe(true);
+  });
+
+  it("shows no text where notifications aren't shown at all (test runs)", () => {
+    const { notifier, made } = setup("win32", true, false);
+    notifier.showText("Profile list finished", "3 backed up, 0 skipped.");
+    expect(made).toHaveLength(0);
+  });
+});
+
+describe("noticeOf", () => {
+  it("makes the words before the colon the title", () => {
+    expect(noticeOf("Profile list finished: 3 backed up, 0 skipped.")).toEqual({ title: "Profile list finished", body: "3 backed up, 0 skipped." });
+    expect(noticeOf("Profile list stopped: Instagram signed TurboDL out.")).toEqual({ title: "Profile list stopped", body: "Instagram signed TurboDL out." });
+    expect(noticeOf("Something happened.")).toEqual({ title: "TurboDL", body: "Something happened." });
   });
 });

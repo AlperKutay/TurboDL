@@ -1,12 +1,12 @@
 import { existsSync } from "node:fs";
 import path from "node:path";
-import { formatBytes, type BackupPlan, type BackupView, type InstagramItem, type InstagramLink, type JobReason, type SavedCollection, type Settings } from "@turbodl/shared";
+import { TAGGED_AVAILABLE, formatBytes, mediaKinds, type BackupPlan, type BackupView, type InstagramItem, type InstagramLink, type InstagramMediaKind, type JobOptions, type JobReason, type SavedCollection, type Settings } from "@turbodl/shared";
 import type { Backups, StartResult } from "../instagram/backups";
 import type { FindOutcome } from "../instagram/finder";
 import { instagramFolder } from "../instagram/folders";
 import { itemDownload } from "../instagram/item-download";
 import { SLOW_DOWN, type InstagramPacer } from "../instagram/pacer";
-import type { ProfileService } from "../instagram/profile-service";
+import { NO_TAGGED, type ProfileService } from "../instagram/profile-service";
 import type { SavedService } from "../instagram/saved-service";
 import type { InstagramSession } from "../instagram/session";
 import type { DownloadManager } from "../manager";
@@ -38,6 +38,8 @@ const IGNORED = "Instagram downloads go to TurboDL's Instagram folders; dir and 
 export const SIGN_IN_TO_READ = "Sign in to Instagram to read this link.";
 export const POST_SIGN_IN_ONLY = "Instagram shows this post only to signed-in visitors.";
 const NO_HIGHLIGHTS = "This profile has no highlights.";
+const TAGGED_NEEDS_SESSION = "Tagged posts need a sign-in to Instagram; they weren't saved.";
+const TAGGED_UNAVAILABLE = "Tagged posts aren't available in this version; they weren't saved.";
 const SIGN_IN_TO_SAVED = "Sign in to Instagram to back up Saved.";
 const STOPPED = "The backup was stopped in TurboDL.";
 /** a signed-out backup's progress while it reads posts from their own pages */
@@ -47,8 +49,8 @@ const CALLED_OFF: Refusal = { ok: false, error: "Cancelled.", reason: "error" };
 
 /**
  * Runs an Instagram link as a job, into the app's Instagram folders: a post's, story's or highlight's items, a
- * profile's backups (posts and highlights, signed out too), Saved's collections. Every page it reads waits
- * for the jobs' read slot and the account's pace; nothing is asked while Instagram's slow-down holds.
+ * profile's backups (posts and highlights, signed out too; tagged posts, signed in), Saved's collections. Every page
+ * it reads waits for the jobs' read slot and the account's pace; nothing is asked while Instagram's slow-down holds.
  */
 export async function runInstagramJob(job: JobRecord, link: InstagramLink, deps: InstagramJobDeps): Promise<void> {
   if (job.request.options?.postsOnly) return runPostsJob(job, link, deps);
@@ -79,32 +81,59 @@ async function linkJob(job: JobRecord, link: Exclude<InstagramLink, { kind: "pro
   if (await saveItems(job, deps, outcome.items, where)) job.end({ state: "done" });
 }
 
-/** A profile: its posts' backup, then its highlights' when asked; both work without a session. */
+/** What a profile job's options ask of a profile: its posts, highlights and tagged posts, and the media kinds to save. */
+export function profileParts(o: JobOptions): { posts: boolean; highlights: boolean; tagged: boolean; kinds: InstagramMediaKind[] } {
+  const highlightsOnly = o.highlightsOnly === true;
+  return {
+    posts: !highlightsOnly && o.posts !== false,
+    highlights: highlightsOnly || o.highlights === true,
+    tagged: o.tagged === true,
+    kinds: mediaKinds({ photos: o.photos !== false, videos: o.videos !== false }),
+  };
+}
+
+/**
+ * A profile: the parts asked for in turn: its posts' backup, its highlights', its tagged posts'. Posts and highlights
+ * work without a session; tagged posts need one, and are skipped with a warning without it (the job ends limited).
+ */
 async function profileJob(job: JobRecord, username: string, deps: InstagramJobDeps): Promise<void> {
   const { profiles } = deps;
-  const options = job.request.options ?? {};
-  const highlightsOnly = options.highlightsOnly === true;
-  const highlights = highlightsOnly || options.highlights === true;
+  const { posts: wantsPosts, highlights, tagged, kinds } = profileParts(job.request.options ?? {});
   const skipped = { signInOnly: 0 };
   let missedPosts = 0;
-  if (!highlightsOnly) {
-    const posts = await backup(job, deps, () => profiles.startBackup(username), async () => job.warn(planWarning(await profiles.plan(username))), skipped);
+  if (wantsPosts) {
+    const posts = await backup(job, deps, () => profiles.startBackup(username, kinds), async () => job.warn(planWarning(await profiles.plan(username))), skipped);
     if (posts === null) return;
     if (typeof posts !== "number") return refused(job, deps, posts);
     missedPosts = posts;
   }
   let missedHighlights = 0;
   if (highlights) {
-    const stories = await backup(job, deps, () => profiles.startHighlightsBackup(username));
+    const stories = await backup(job, deps, () => profiles.startHighlightsBackup(username, kinds));
     if (stories === null) return;
     if (typeof stories === "number") missedHighlights = stories;
     else if (stories.reason === "empty") job.warn(NO_HIGHLIGHTS);
     else return refused(job, deps, stories);
   }
+  let missedTagged = 0;
+  /** the tagged part was left out (no session, or tagged posts unavailable): the job is done, but limited */
+  let skippedTagged = false;
+  if (tagged && (!TAGGED_AVAILABLE || !deps.session.signedIn())) {
+    job.warn(TAGGED_AVAILABLE ? TAGGED_NEEDS_SESSION : TAGGED_UNAVAILABLE);
+    skippedTagged = true;
+  } else if (tagged) {
+    const part = await backup(job, deps, () => profiles.startTaggedBackup(username, kinds));
+    if (part === null) return;
+    if (typeof part === "number") missedTagged = part;
+    // neither is a sign-in matter: the job is done, with the warning
+    else if (part.reason === "empty" || part.reason === "unreadable") job.warn(part.reason === "empty" ? NO_TAGGED : part.error);
+    else return refused(job, deps, part);
+  }
   complete(job, deps, [
     [missedPosts, "post"],
     [missedHighlights, "highlight"],
-  ], skipped.signInOnly);
+    [missedTagged, "tagged post"],
+  ], skipped.signInOnly, skippedTagged);
 }
 
 /** Saved: the account's own collections picked by name (or all of them), backed up one after another. */
@@ -235,15 +264,17 @@ async function paced<T>(job: JobRecord, deps: InstagramJobDeps, read: () => Prom
 }
 
 /**
- * Done when every part saved everything; otherwise failed, naming what is missing, its saved files still listed.
- * Posts shown only to signed-in visitors are named in a warning either way; alone, they leave it done, but limited.
+ * Done when every part saved everything; otherwise failed, naming what is missing (counted in `missedItems`: a list
+ * takes such a profile as backed up, with this warning), its saved files still listed. Posts shown only to signed-in
+ * visitors are named in a warning either way; alone, they leave it done, but limited, as a part left out (`limited`,
+ * its warning given already) does.
  */
-function complete(job: JobRecord, deps: InstagramJobDeps, missed: [count: number, unit: string][], signInOnly = 0): void {
+function complete(job: JobRecord, deps: InstagramJobDeps, missed: [count: number, unit: string][], signInOnly = 0, limited = false): void {
   const parts = missed.filter(([count]) => count > 0).map(([count, unit]) => counted(count, unit));
   if (signInOnly > 0) job.warn(`${signInOnly === 1 ? "1 post is" : `${signInOnly} posts are`} shown only to signed-in visitors; sign in to save them.`);
-  if (parts.length === 0) return job.end(signInOnly > 0 ? { state: "done", limited: true } : { state: "done" });
+  if (parts.length === 0) return job.end(signInOnly > 0 || limited ? { state: "done", limited: true } : { state: "done" });
   const total = missed.reduce((sum, [count]) => sum + count, 0);
-  fail(job, deps, "error", `${parts.join(" and ")} couldn't be saved; ${total === 1 ? "it's" : "they're"} tried again on the next run.`);
+  job.end({ state: "failed", reason: "error", error: `${parts.join(" and ")} couldn't be saved; ${total === 1 ? "it's" : "they're"} tried again on the next run.`, missedItems: total });
 }
 
 /** "1 post", "3 posts". */
@@ -274,15 +305,26 @@ async function saveItems(job: JobRecord, deps: InstagramJobDeps, items: Instagra
   return false;
 }
 
-/** A backup that didn't start ends the job with its reason ("busy" and "empty" are errors for a job). */
+/**
+ * A backup that didn't start ends the job with its reason ("busy" and "empty" are errors for a job; so is
+ * "unreadable", which only the tagged part answers, and it warns of it instead).
+ */
 function refused(job: JobRecord, deps: InstagramJobDeps, refusal: Refusal): void {
-  fail(job, deps, refusal.reason === "busy" || refusal.reason === "empty" ? "error" : refusal.reason, refusal.error);
+  fail(job, deps, refusal.reason === "busy" || refusal.reason === "empty" || refusal.reason === "unreadable" ? "error" : refusal.reason, refusal.error);
 }
 
 /** Ends the job failed; Instagram's slow-down ends the jobs waiting in the lane with it. */
 export function fail(job: JobRecord, deps: InstagramJobDeps, reason: JobReason, error: string): void {
   if (reason === "rateLimited") deps.lane.slowDown();
   job.end({ state: "failed", reason, error });
+}
+
+/** how a plan's warning starts (`planWarning`) */
+const PLAN_START = /^Backing up (?:\d+ posts|every post)[,.;]/;
+
+/** Whether a job's warning is its posts' plan (`planWarning`): news for an API client; the screen showed it before the start. */
+export function isPlanWarning(message: string): boolean {
+  return PLAN_START.test(message);
 }
 
 /** The backup's plan as a warning: how many posts, how large, the free space, an earlier backup it continues. */

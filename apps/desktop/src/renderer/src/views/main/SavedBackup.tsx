@@ -1,41 +1,61 @@
-import { useState } from "react";
-import { formatBytes, type BackupPlan, type BackupView } from "@turbodl/shared";
+import { useState, type ReactNode } from "react";
+import { formatBytes, type BackupPlan, type BackupView, type ProfileListView, type ScreenBackupView } from "@turbodl/shared";
 import { api } from "../../api";
 import { Modal } from "../../components/Modal";
-import { backupAction } from "../../saved-state";
+import { listOwnsBackup } from "../../profile-list-state";
+import { backupAction, panelState, panelWarnings } from "../../saved-state";
 
-/** What starting a backup means: how many posts, roughly how large, where they go, and the warnings that go with it. */
+/**
+ * What starting a backup means: how many posts, roughly how large, where they go, and the warnings that go with it; then
+ * what it saves (`children`, when it offers a choice), and why it can't start.
+ */
 export function BackupConfirm({
   title,
   folder,
+  where,
   unit = "posts",
   plan,
   note,
+  children,
+  startBlocked,
+  starting = false,
+  error,
   onStart,
   onClose,
 }: {
   title: string;
   folder: string;
+  /** the whole line saying where the files go, when more than one folder is filled */
+  where?: string;
   /** what the count counts */
   unit?: string;
   plan: BackupPlan;
   /** what else this backup means (how long it takes seen signed out) */
   note?: string;
+  /** the choice of what it saves */
+  children?: ReactNode;
+  /** why the backup can't start with what is chosen; Start is disabled */
+  startBlocked?: string;
+  /** the start was asked for and isn't answered yet: Start waits, and the dialog stays until the answer */
+  starting?: boolean;
+  /** why the start was refused */
+  error?: string;
   onStart(): void;
   onClose(): void;
 }) {
   const tooBig = plan.bytes !== undefined && plan.freeBytes !== undefined && plan.bytes > plan.freeBytes;
+  const close = starting ? () => undefined : onClose;
   return (
     <Modal
       title={title}
-      onClose={onClose}
+      onClose={close}
       footer={
         <>
-          <button type="button" className="btn" onClick={onClose}>
+          <button type="button" className="btn" disabled={starting} onClick={close}>
             Cancel
           </button>
-          <button type="button" className="btn btn-primary" onClick={onStart}>
-            Start backup
+          <button type="button" className="btn btn-primary" disabled={starting || startBlocked !== undefined} onClick={onStart}>
+            {starting ? "Starting…" : "Start backup"}
           </button>
         </>
       }
@@ -44,11 +64,14 @@ export function BackupConfirm({
         {plan.count !== undefined ? `${plan.count.toLocaleString()} ${unit}` : `Instagram doesn't say how many ${unit} it holds.`}{" "}
         {plan.bytes !== undefined ? `About ${formatBytes(plan.bytes)} (an estimate from the posts loaded so far).` : "No size estimate yet."}
       </p>
-      <p className="muted">Every photo and video goes into {folder}. A later backup saves only what is new.</p>
+      <p className="muted">{where ?? `Every photo and video goes into ${folder}. A later backup saves only what is new.`}</p>
       {note && <p>{note}</p>}
       {plan.resumes && <p>An earlier backup stopped before the end; this one goes on from there.</p>}
       {plan.large && <p className="error-text">This holds more than 1,000 posts. Backing it up may take many hours, and Instagram may ask TurboDL to slow down.</p>}
       {tooBig && <p className="error-text">That is more than the free space on this drive ({formatBytes(plan.freeBytes ?? 0)} free).</p>}
+      {children}
+      {startBlocked && <p className="error-text">{startBlocked}</p>}
+      {error && <p className="error-text">{error}</p>}
     </Modal>
   );
 }
@@ -62,15 +85,36 @@ const STATES: Record<BackupView["state"], string> = {
   failed: "Backup failed",
 };
 
-/** The running or last backup: its post, Done · Left · Failed · New, and Stop, Continue or sign-in. */
-export function BackupPanel({ backup, onSignedIn }: { backup: BackupView; onSignedIn(): void }) {
-  const running = backup.state === "running";
-  const action = backupAction(backup.state);
+/**
+ * The running or last backup: its post, Done · Left · Failed · New, and Stop, Continue or sign-in. `screen`: the profile
+ * backup the screen started, whose parts run in turn (it goes on between them: Stop); its warnings and how it ended show
+ * on its own profile's screen (`username`). `list`: the profile list, when this is the backup of the profile it is at:
+ * the list goes on with it (its Continue, or by itself after a slow-down), never the backup alone outside it.
+ */
+export function BackupPanel({
+  backup,
+  screen = null,
+  list = null,
+  username,
+  onSignedIn,
+}: {
+  backup: BackupView;
+  screen?: ScreenBackupView | null;
+  list?: ProfileListView | null;
+  username?: string;
+  onSignedIn(): void;
+}) {
+  const shown = panelState(backup, screen);
+  const running = shown.state === "running";
+  const listed = listOwnsBackup(backup, list);
+  const action = backupAction(shown.state, listed);
+  const own = screen && username !== undefined && screen.username.toLowerCase() === username.toLowerCase() ? screen : null;
+  const warnings = panelWarnings(backup, own);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const resume = async () => {
     setError(null);
-    const res = await api.continueBackup();
+    const res = await (listed === "resumable" ? api.continueProfileList() : api.continueBackup());
     if (!res.ok) setError(res.error);
   };
   // signed out midway: sign in again, then go on where it stopped
@@ -88,8 +132,8 @@ export function BackupPanel({ backup, onSignedIn }: { backup: BackupView; onSign
       <div className="backup-text">
         <strong>{backup.name}</strong>
         <span>
-          {STATES[backup.state]}
-          {backup.state === "failed" && backup.error ? `: ${backup.error}` : ""}
+          {STATES[shown.state]}
+          {shown.error ? `: ${shown.error}` : ""}
         </span>
         {backup.reading && <span className="muted">Signed out: reading each post from its own page</span>}
         <span className="muted">
@@ -97,6 +141,11 @@ export function BackupPanel({ backup, onSignedIn }: { backup: BackupView; onSign
         </span>
         {backup.signInOnly ? <span className="muted">{backup.signInOnly} shown only to signed-in visitors</span> : null}
         {backup.warning && <span className="muted">{backup.warning}</span>}
+        {warnings.map((warning, k) => (
+          <span key={k} className="muted">
+            {warning}
+          </span>
+        ))}
         {running && <progress max={1} value={backup.progress} />}
         {error && <span className="error-text">{error}</span>}
       </div>

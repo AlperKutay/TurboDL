@@ -1,6 +1,7 @@
 import http from "node:http";
 import path from "node:path";
 import {
+  TAGGED_AVAILABLE,
   isJobEnded,
   parseIsoTime,
   type ApiInfo,
@@ -9,7 +10,14 @@ import {
   type JobEvent,
   type JobOptions,
   type JobRequest,
+  type ListWait,
+  type ProfileListView,
+  type ProfileSaveOptions,
+  type Result,
+  DEFAULT_LIST_WAIT,
+  waitProblem,
 } from "@turbodl/shared";
+import { UNFINISHED, listNames } from "./instagram/profile-lists";
 
 /** What the bridge needs from the app to serve the jobs API. */
 export interface ApiHandlers {
@@ -23,6 +31,20 @@ export interface ApiHandlers {
   subscribe(id: string, listener: (event: JobEvent) => void): (() => void) | undefined;
   instagramLogin(): Promise<InstagramLoginResult>;
   instagramLogout(): Promise<void>;
+  /** the profile list, or null when there is none */
+  list(): ProfileListView | null;
+  startList(request: ParsedListRequest): Promise<Result>;
+  stopList(): Promise<void>;
+  continueList(): Promise<Result>;
+  closeList(): Promise<Result>;
+}
+
+/** A list request as the app starts it: names as `listNames` gives them, every option and the wait filled in. */
+export interface ParsedListRequest {
+  name: string;
+  usernames: string[];
+  options: ProfileSaveOptions;
+  wait: ListWait;
 }
 
 const MAX_BODY = 1024 * 1024;
@@ -59,12 +81,53 @@ export function readBody(req: http.IncomingMessage): Promise<string | null> {
   });
 }
 
-/** The API's routes: /v1/info, /v1/jobs…, /v1/instagram/… */
+/** The API's routes: /v1/info, /v1/jobs…, /v1/lists…, /v1/instagram/… */
 export function isApiPath(p: string): boolean {
-  return p === "/v1/info" || p === "/v1/jobs" || p.startsWith("/v1/jobs/") || p.startsWith("/v1/instagram/");
+  return p === "/v1/info" || p === "/v1/jobs" || p.startsWith("/v1/jobs/") || p === "/v1/lists" || p.startsWith("/v1/lists/") || p.startsWith("/v1/instagram/");
 }
 
-const BOOLEAN_OPTIONS = ["highlights", "highlightsOnly", "allCollections", "audio", "postsOnly"] as const;
+/** The methods the API answers on a path: only the lists routes take DELETE. */
+export function isApiMethod(method: string | undefined, p: string): boolean {
+  return method === "GET" || method === "POST" || (method === "DELETE" && (p === "/v1/lists" || p.startsWith("/v1/lists/")));
+}
+
+const LIST_OPTION_KEYS = ["posts", "highlights", "tagged", "photos", "videos"] as const;
+/** a list's options when the request leaves them out: unlike a single profile job, highlights are on */
+const LIST_OPTION_DEFAULTS: ProfileSaveOptions = { posts: true, highlights: true, tagged: false, photos: true, videos: true };
+
+/**
+ * A list request from a client, or why not: the name of the first field that is wrong, or the app's own message for
+ * profiles and the wait. Every option comes out a boolean (a stored list with anything else is lost after a restart).
+ */
+export function parseListRequest(v: unknown): ParsedListRequest | string {
+  if (!isObj(v)) return "body";
+  if (!Array.isArray(v.profiles)) return "profiles";
+  const names = listNames(v.profiles);
+  if ("error" in names) return names.error;
+  const options = { ...LIST_OPTION_DEFAULTS };
+  if (v.options !== undefined) {
+    if (!isObj(v.options)) return "options";
+    for (const [key, value] of Object.entries(v.options)) {
+      if (!(LIST_OPTION_KEYS as readonly string[]).includes(key) || typeof value !== "boolean") return "options";
+      options[key as (typeof LIST_OPTION_KEYS)[number]] = value;
+    }
+  }
+  let wait: ListWait = { ...DEFAULT_LIST_WAIT };
+  if (v.wait !== undefined) {
+    const w = isObj(v.wait) ? v.wait : {};
+    const problem = waitProblem({ min: w.min, max: w.max });
+    if (problem) return problem;
+    wait = { min: w.min as number, max: w.max as number };
+  }
+  let name = "API list";
+  if (v.name !== undefined) {
+    if (typeof v.name !== "string" || v.name.length < 1 || v.name.length > 255) return "name";
+    name = v.name;
+  }
+  return { name, usernames: names.names, options, wait };
+}
+
+const BOOLEAN_OPTIONS = ["highlights", "highlightsOnly", "allCollections", "audio", "postsOnly", "posts", "tagged", "photos", "videos"] as const;
 
 function parseOptions(v: unknown): JobOptions | string {
   if (!isObj(v)) return "options";
@@ -106,6 +169,15 @@ function parseOptions(v: unknown): JobOptions | string {
   }
   if (out.postsOnly && (out.highlights || out.highlightsOnly || out.collections || out.allCollections)) {
     return "postsOnly can't be combined with highlights or collections";
+  }
+  if (out.postsOnly && (out.posts !== undefined || out.tagged !== undefined || out.photos !== undefined || out.videos !== undefined)) {
+    return "postsOnly can't be combined with posts, tagged, photos or videos";
+  }
+  if (out.highlightsOnly && out.posts !== undefined) return "highlightsOnly can't be combined with posts";
+  if (out.tagged && !TAGGED_AVAILABLE) return "tagged isn't available in this version";
+  if (out.photos === false && out.videos === false) return "photos and videos can't both be off";
+  if (out.posts === false && !out.highlights && !out.tagged && !out.highlightsOnly) {
+    return "nothing to save: posts is off and neither highlights nor tagged is on";
   }
   if (out.highlights && out.highlightsOnly) return "highlights and highlightsOnly can't both be set";
   if (out.collections && out.allCollections) return "collections and allCollections can't both be set";
@@ -169,6 +241,45 @@ function streamEvents(req: http.IncomingMessage, res: http.ServerResponse, id: s
   res.on("close", stop);
 }
 
+/** The list routes: start it, read it, stop it, continue it, close it. */
+async function handleLists(req: http.IncomingMessage, res: http.ServerResponse, urlPath: string, api: ApiHandlers): Promise<void> {
+  const method = req.method;
+  if (urlPath === "/v1/lists" && method === "POST") {
+    if (!String(req.headers["content-type"] ?? "").includes("application/json")) return sendJson(res, 415, { error: "content-type" });
+    const body = await readBody(req);
+    if (body === null) return sendJson(res, 413, { error: "too large" });
+    let json: unknown;
+    try {
+      json = JSON.parse(body);
+    } catch {
+      return sendJson(res, 400, { error: "json" });
+    }
+    const parsed = parseListRequest(json);
+    if (typeof parsed === "string") return sendJson(res, 400, { error: parsed });
+    const started = await api.startList(parsed);
+    if (!started.ok) return sendJson(res, started.error === UNFINISHED ? 409 : 400, { error: started.error });
+    return sendJson(res, 201, { list: api.list() });
+  }
+  if (urlPath !== "/v1/lists/current" && urlPath !== "/v1/lists/current/stop" && urlPath !== "/v1/lists/current/continue") {
+    return sendJson(res, 404, { error: "not found" });
+  }
+  if (urlPath === "/v1/lists/current" && method === "GET") return sendJson(res, 200, { list: api.list() });
+  if (urlPath === "/v1/lists/current/stop" && method === "POST") {
+    await api.stopList();
+    return sendJson(res, 200, { list: api.list() });
+  }
+  if (urlPath === "/v1/lists/current/continue" && method === "POST") {
+    const resumed = await api.continueList();
+    return resumed.ok ? sendJson(res, 200, { list: api.list() }) : sendJson(res, 409, { error: resumed.error });
+  }
+  if (urlPath === "/v1/lists/current" && method === "DELETE") {
+    if (!api.list()) return sendJson(res, 200, { list: null });
+    const closed = await api.closeList();
+    return closed.ok ? sendJson(res, 200, { list: null }) : sendJson(res, 409, { error: closed.error });
+  }
+  sendJson(res, 404, { error: "not found" });
+}
+
 /** Answers an API request whose token and Origin were already checked. */
 export async function handleApi(req: http.IncomingMessage, res: http.ServerResponse, urlPath: string, api: ApiHandlers): Promise<void> {
   const get = req.method === "GET";
@@ -209,6 +320,7 @@ export async function handleApi(req: http.IncomingMessage, res: http.ServerRespo
       return job ? sendJson(res, 200, { job }) : sendJson(res, 404, { error: "not found" });
     }
   }
+  if (urlPath.startsWith("/v1/lists")) return handleLists(req, res, urlPath, api);
   if (post && urlPath === "/v1/instagram/login") return sendJson(res, 200, await api.instagramLogin());
   if (post && urlPath === "/v1/instagram/logout") {
     await api.instagramLogout();

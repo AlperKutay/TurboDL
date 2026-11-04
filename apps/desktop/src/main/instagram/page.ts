@@ -4,7 +4,7 @@ import { chromeAgent } from "./agent";
 import { within } from "./finder";
 import type { ProfileDriver } from "./profile-feed";
 import { INSTAGRAM_PARTITION, blockedFrame, electronCookie, isInstagramAddress, isInstagramScriptHost } from "./partition";
-import { postsRequest, resendScript, type PostsRequest } from "./posts-request";
+import { postsRequest, resendScript, type PagingRequest, type SentRequest } from "./posts-request";
 import { NO_ANSWER, NO_LSD, operationIds, signedOutQueryScript } from "./signed-out";
 
 const MAX_DOCUMENT = 4 * 1024 * 1024;
@@ -75,12 +75,16 @@ export async function applyCookies(s: Session, cookies: BrowserCookie[]): Promis
 export class ElectronInstagramPage implements ProfileDriver {
   private win: BrowserWindow | null = null;
   private readonly answers: string[] = [];
+  /** the answers among them that came from the usertags address (a tagged page's REST feed) */
+  private readonly usertags: string[] = [];
   private readonly waiting = new Set<string>();
   /** scripts from Instagram's CDN on their way, to scan for the signed-out queries' ids; never kept */
   private readonly scripts = new Set<string>();
-  /** graphql POSTs in flight, one of which may be the page's own posts request */
+  /** graphql POSTs and usertags GETs to Instagram in flight, one of which may be the page's own paging request */
   private readonly sent = new Map<string, { url: string; method: string; headers: Record<string, string>; body?: string; hasPostData?: boolean }>();
-  private request: PostsRequest | null = null;
+  private request: PagingRequest | null = null;
+  /** tells the page's own paging request (its posts, or its tagged posts) from the rest by the request and its answer */
+  private readonly paging: (sent: SentRequest, answer: string) => PagingRequest | null;
   private collecting = true;
   private bytes = 0;
   private closed = false;
@@ -89,8 +93,13 @@ export class ElectronInstagramPage implements ProfileDriver {
   /** the page's lsd token, once a signed-out query needed it */
   private lsd: string | undefined;
 
-  constructor(private readonly cookies: BrowserCookie[]) {
+  /** `paging`: which request the page pages with (default: a profile's posts query) */
+  constructor(
+    private readonly cookies: BrowserCookie[],
+    o: { paging?: (sent: SentRequest, answer: string) => PagingRequest | null } = {},
+  ) {
     this.signedOut = !cookies.some((c) => c.name === "sessionid" && c.value);
+    this.paging = o.paging ?? postsRequest;
   }
 
   async load(url: string): Promise<void> {
@@ -120,7 +129,9 @@ export class ElectronInstagramPage implements ProfileDriver {
       const id = params.requestId as string;
       if (method === "Network.requestWillBeSent") {
         const r = params.request as { url: string; method: string; headers: Record<string, string>; postData?: string; hasPostData?: boolean };
-        if (r.method === "POST" && allowed(r.url) && r.url.includes("graphql")) this.sent.set(id, { url: r.url, method: r.method, headers: r.headers, body: r.postData, hasPostData: r.hasPostData });
+        // only Instagram's own addresses: a request kept here is sent again, the REST one to the very address it went to
+        const pages = (r.method === "POST" && r.url.includes("graphql")) || (r.method === "GET" && r.url.includes("/api/v1/usertags/"));
+        if (pages && allowed(r.url)) this.sent.set(id, { url: r.url, method: r.method, headers: r.headers, body: r.postData, hasPostData: r.hasPostData });
       } else if (method === "Network.responseReceived") {
         const response = params.response as { url: string; mimeType?: string };
         const mimeType = response.mimeType ?? "";
@@ -163,6 +174,11 @@ export class ElectronInstagramPage implements ProfileDriver {
     return [...embedded, ...this.answers];
   }
 
+  /** The answers kept so far that came from the usertags address (`/api/v1/usertags/…`), in the order the page got them. */
+  usertagsAnswers(): string[] {
+    return [...this.usertags];
+  }
+
   finalUrl(): string {
     const contents = this.win?.webContents;
     return contents && !contents.isDestroyed() ? contents.getURL() : "about:blank";
@@ -175,7 +191,7 @@ export class ElectronInstagramPage implements ProfileDriver {
   }
 
   /**
-   * The page's own posts request sent again from after `cursor`, from inside the page; null until the page has sent
+   * The page's own paging request sent again from after `cursor`, from inside the page; null until the page has sent
    * one. Throws badAnswer when it fails or takes longer than 30 s.
    */
   async resend(cursor: string): Promise<{ status: number; text: string } | null> {
@@ -238,6 +254,7 @@ export class ElectronInstagramPage implements ProfileDriver {
   stopCollecting(): void {
     this.collecting = false;
     this.answers.length = 0;
+    this.usertags.length = 0;
     this.bytes = 0;
   }
 
@@ -258,7 +275,7 @@ export class ElectronInstagramPage implements ProfileDriver {
     const dbg = this.win?.webContents.debugger;
     const sent = this.sent.get(requestId);
     this.sent.delete(requestId);
-    // after the first load only a graphql POST is still worth reading, while the posts request isn't known yet
+    // after the first load only a kept request is still worth reading, while the paging request isn't known yet
     if (!dbg || (!this.collecting && (!sent || this.request))) return;
     try {
       const { body, base64Encoded } = (await dbg.sendCommand("Network.getResponseBody", { requestId })) as { body: string; base64Encoded: boolean };
@@ -267,11 +284,12 @@ export class ElectronInstagramPage implements ProfileDriver {
       if (this.signedOut && operationIds.missing()) operationIds.note(text);
       if (sent && !this.request) {
         const form = sent.body ?? (sent.hasPostData ? ((await dbg.sendCommand("Network.getRequestPostData", { requestId })) as { postData: string }).postData : undefined);
-        this.request = postsRequest({ ...sent, body: form }, text) ?? this.request;
+        this.request = this.paging({ ...sent, body: form }, text) ?? this.request;
       }
       if (!this.collecting || text.length > MAX_DOCUMENT || this.bytes + text.length > MAX_PAGE) return;
       this.bytes += text.length;
       this.answers.push(text);
+      if (sent && isUsertags(sent)) this.usertags.push(text);
     } catch {
       // the answer is gone (the page moved on)
     }
@@ -297,6 +315,16 @@ export class ElectronInstagramPage implements ProfileDriver {
       Date.now() + LOOK_TIMEOUT,
     );
     return typeof found === "string" ? pageLsd(found) : undefined;
+  }
+}
+
+/** A GET of the usertags address (`/api/v1/usertags/<id>/feed/`): its answer is the tagged posts' REST feed. */
+function isUsertags(sent: { url: string; method: string }): boolean {
+  if (sent.method.toUpperCase() !== "GET") return false;
+  try {
+    return new URL(sent.url).pathname.includes("/api/v1/usertags/");
+  } catch {
+    return false;
   }
 }
 

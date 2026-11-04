@@ -3,3 +3,6 @@ export * from "./media";
 export { parseDocument, objectsIn, objectsInDocuments, type Json } from "./json";
 export * from "./saved";
 export * from "./profile";
+export * from "./tagged";
+export * from "./options";
+export * from "./profile-list";

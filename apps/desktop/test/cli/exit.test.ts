@@ -1,6 +1,36 @@
 import { describe, expect, it } from "vitest";
-import type { Job, JobReason, JobState } from "@turbodl/shared";
-import { combineExit, EXIT, exitCodeOf } from "../../src/cli/exit";
+import type { Job, JobReason, JobState, ListState, ProfileListRow } from "@turbodl/shared";
+import { combineExit, EXIT, exitCodeOf, listExitCode } from "../../src/cli/exit";
+
+function list(state: ListState, rows: ProfileListRow["state"][] = ["done"]) {
+  return {
+    name: "list.txt",
+    rows: rows.map((s, i) => ({ username: `u${i}`, state: s })),
+    index: 0,
+    state,
+    options: { posts: true, highlights: false, tagged: false, photos: true, videos: true },
+    wait: { min: 2, max: 5 }
+  };
+}
+
+describe("listExitCode", () => {
+  it("is 0 for a finished list, 1 when one of its profiles failed", () => {
+    expect(listExitCode(list("finished", ["done", "skipped"]), false)).toBe(EXIT.ok);
+    expect(listExitCode(list("finished", ["done", "failed", "skipped"]), false)).toBe(EXIT.failed);
+  });
+
+  it("maps a list that stopped by itself or elsewhere", () => {
+    expect(listExitCode(list("rateLimited"), false)).toBe(EXIT.rateLimited);
+    expect(listExitCode(list("signedOut"), false)).toBe(EXIT.signIn);
+    expect(listExitCode(list("stopped"), false)).toBe(EXIT.stopped);
+  });
+
+  it("is 130 for a list this command stopped", () => {
+    expect(listExitCode(list("stopped"), true)).toBe(EXIT.interrupted);
+    // it ended on its own before the stop reached it
+    expect(listExitCode(list("finished"), true)).toBe(EXIT.ok);
+  });
+});
 
 function job(state: JobState, extra: { reason?: JobReason; limited?: boolean } = {}): Job {
   return {

@@ -128,10 +128,14 @@ export function MainWindow() {
           onSection={setSection}
         />
         <main className="content">
-          {section === "saved" && <SavedView backup={state.instagramBackup} />}
+          {section === "saved" && <SavedView backup={state.instagramBackup} screen={state.screenBackup} list={state.profileList} />}
           {section === "profiles" && (
             <ProfilesView
               backup={state.instagramBackup}
+              screen={state.screenBackup}
+              list={state.profileList}
+              saveOptions={state.settings.instagramSave}
+              listWait={state.settings.listWait}
               open={openProfile}
               onOpen={setOpenProfile}
               onBack={() => {

@@ -30,6 +30,7 @@ export class FakeUi implements ControllerUi {
   closePending() {}
   showMain() {}
   notifyCompleted() {}
+  notifyListFinished() {}
   setLaunchAtLogin() {}
   quit() {}
 }

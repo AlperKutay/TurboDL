@@ -2,9 +2,11 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, 
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { SavedError, type InstagramItem, type InstagramProfile, type Job, type JobEvent, type JobRequest, type SavedPost } from "@turbodl/shared";
+import { DEFAULT_SAVE_OPTIONS, SavedError, type InstagramItem, type InstagramProfile, type Job, type JobEvent, type JobRequest, type SavedPost } from "@turbodl/shared";
 import type { AppController, InstagramDeps } from "../../src/main/controller";
 import { FakeUi, SESSION, startApp } from "../fixtures/instagram-app";
+import { profileParts } from "../../src/main/jobs/instagram-job";
+import { profileShowedNothing } from "../../src/main/instagram/profile-service";
 import { fakeProfiles, fakeSignedOut, savedGet, signedOutCover } from "../fixtures/instagram-fakes";
 import { startTestServer, type TestServer } from "../fixtures/test-server";
 
@@ -289,6 +291,42 @@ describe("Instagram profile jobs", () => {
     expect([...new Set(kinds)]).toEqual(["profile", "highlights"]);
   });
 
+  it("backs up only a profile's photos when videos is off", async () => {
+    const clip: SavedPost = { id: "2", cover: "https://cdn.example/2.jpg", items: [{ kind: "video", url: server.url("/ig/2.mp4"), mediaId: "2" }] };
+    const ig = fakeProfiles({ "sample.user": { profile: person("5100000000000000001", "sample.user", { postCount: 2 }), pages: [[photo("1"), clip]] } });
+    const c = await signedIn(ig.deps);
+    const job = await run(c, { url: PROFILE_URL, options: { videos: false } });
+    expect(job).toMatchObject({ state: "done", failedItems: 0 });
+    expect(job.files).toEqual([dl("sample.user", "1.jpg")]);
+  });
+
+  it("treats posts off with highlights on as highlights only", async () => {
+    const ig = fakeProfiles({ "sample.user": SAMPLE() });
+    ig.deps.find = async (link) => (link.kind === "highlight" ? { type: "items", items: [story("s1")] } : { type: "nothing" });
+    const c = await signedIn(ig.deps);
+    const job = await run(c, { url: PROFILE_URL, options: { posts: false, highlights: true } });
+    expect(job).toMatchObject({ state: "done", files: [dl("sample.user", "Highlights", "s1.jpg")] });
+  });
+
+  describe("profileParts", () => {
+    it("takes posts and both kinds by default", () => {
+      expect(profileParts({})).toEqual({ posts: true, highlights: false, tagged: false, kinds: ["image", "video"] });
+    });
+    it("reads highlightsOnly as highlights without posts", () => {
+      expect(profileParts({ highlightsOnly: true })).toMatchObject({ posts: false, highlights: true });
+    });
+    it("reads posts false with highlights true", () => {
+      expect(profileParts({ posts: false, highlights: true })).toMatchObject({ posts: false, highlights: true });
+    });
+    it("narrows the kinds", () => {
+      expect(profileParts({ videos: false }).kinds).toEqual(["image"]);
+      expect(profileParts({ photos: false }).kinds).toEqual(["video"]);
+    });
+    it("passes tagged on", () => {
+      expect(profileParts({ tagged: true }).tagged).toBe(true);
+    });
+  });
+
   it("reports nothing of its backup before it is running", async () => {
     const ig = fakeProfiles({ "sample.user": SAMPLE() });
     const c = await signedIn(ig.deps);
@@ -318,8 +356,30 @@ describe("Instagram profile jobs", () => {
       reason: "error",
       error: "1 post couldn't be saved; it's tried again on the next run.",
       failedItems: 1,
+      // what it couldn't save is all that failed
+      missedItems: 1,
       files: [dl("sample.user", "1.jpg"), dl("sample.user", "3.jpg"), dl("sample.user", "Highlights", "s1.jpg")],
     });
+  });
+
+  it("ends failed with a later part's error, not as posts it couldn't save, when that part breaks", async () => {
+    const ig = fakeProfiles({ "sample.user": SAMPLE() });
+    const fetch = ig.deps.fetch!;
+    ig.deps.fetch = async (url, file, o) => {
+      if (url.endsWith("/2.jpg")) throw new Error("The file is gone.");
+      return fetch(url, file, o);
+    };
+    // the highlights part's own page shows nothing
+    const open = ig.deps.openProfile!;
+    let opens = 0;
+    ig.deps.openProfile = (username, cookies) => {
+      const source = open(username, cookies);
+      return ++opens === 1 ? source : { ...source, profile: () => Promise.reject(new SavedError("badAnswer")) };
+    };
+    const c = await signedIn(ig.deps);
+    const job = await run(c, { url: PROFILE_URL, options: { highlights: true } });
+    expect(job).toMatchObject({ state: "failed", reason: "error", error: profileShowedNothing("sample.user"), failedItems: 1 });
+    expect(job.missedItems).toBeUndefined();
   });
 
   it("waits its turn while a backup from the app's screens runs, then starts", async () => {
@@ -327,7 +387,7 @@ describe("Instagram profile jobs", () => {
     const held = heldFetch(ig.deps);
     const c = await signedIn(ig.deps);
     await c.profileLoad("sample.user");
-    expect(await c.startProfileBackup("sample.user")).toEqual({ ok: true });
+    expect(await c.startProfileBackup("sample.user", { ...DEFAULT_SAVE_OPTIONS, highlights: false, tagged: false })).toEqual({ ok: true });
     const { id } = c.jobs.create({ url: "https://www.instagram.com/other.user/" });
     await flush();
     expect(c.jobs.get(id)?.state).toBe("queued");
@@ -455,6 +515,7 @@ describe("Instagram profile jobs", () => {
       reason: "error",
       error: "1 post couldn't be saved; it's tried again on the next run.",
       failedItems: 1,
+      missedItems: 1,
     });
     expect(sorted(job.files)).toEqual([dl("sample.user", "a.jpg"), dl("sample.user", "b.jpg")]);
   });
@@ -469,6 +530,17 @@ describe("Instagram profile jobs", () => {
     expect(ig.fetched).toEqual([]);
   });
 
+  it("fails saying Instagram showed nothing when a profile's page shows nothing, for every part", async () => {
+    const ig = fakeProfiles({});
+    const c = await start(ig.deps);
+    const failed = { state: "failed", reason: "error", error: profileShowedNothing("nobody.here") };
+    expect(await run(c, { url: "https://www.instagram.com/nobody.here/" })).toMatchObject(failed);
+    expect(await run(c, { url: "https://www.instagram.com/nobody.here/", options: { highlightsOnly: true } })).toMatchObject(failed);
+    c.instagramSession.take(SESSION);
+    expect(await run(c, { url: "https://www.instagram.com/nobody.here/", options: { posts: false, tagged: true } })).toMatchObject(failed);
+    expect(ig.fetched).toEqual([]);
+  });
+
   it("ends done with a warning when a profile has no highlights to back up", async () => {
     const ig = fakeProfiles({ "no.highlights": { profile: person("54", "no.highlights"), pages: [[photo("1")]], highlights: [] } });
     const c = await signedIn(ig.deps);
@@ -478,6 +550,111 @@ describe("Instagram profile jobs", () => {
       files: [],
     });
     expect(ig.fetched).toEqual([]);
+  });
+
+  it("backs up a profile's tagged posts into its Tagged folder", async () => {
+    const ig = fakeProfiles({ "sample.user": { ...SAMPLE(), tagged: [[photo("t1")], [photo("t2")]] } });
+    const c = await signedIn(ig.deps);
+    const job = await run(c, { url: PROFILE_URL, options: { tagged: true } });
+    expect(job).toMatchObject({ state: "done", failedItems: 0 });
+    expect(job.limited).toBeUndefined();
+    expect(job.files).toEqual([dl("sample.user", "1.jpg"), dl("sample.user", "2.jpg"), dl("sample.user", "3.jpg"), dl("sample.user", "Tagged", "t1.jpg"), dl("sample.user", "Tagged", "t2.jpg")]);
+    expect(job.warnings).toEqual([expect.stringMatching(/^Backing up 3 posts/)]);
+    expect(readdirSync(dl("sample.user", "Tagged")).sort()).toEqual(["t1.jpg", "t2.jpg"]);
+    const backups = ui.events.flatMap((e) => (e.type === "instagramBackup" && e.backup ? [`${e.backup.kind} ${e.backup.name}`] : []));
+    expect([...new Set(backups)]).toEqual(["profile sample.user", "tagged sample.user · Tagged"]);
+    // the tagged page is closed once its backup is over
+    expect(ig.taggedOpened).toEqual(["sample.user"]);
+    expect(ig.taggedClosed).toEqual(["sample.user"]);
+  });
+
+  it("skips the tagged part without a session, with a warning", async () => {
+    const so = fakeSignedOut(PUBLIC_POSTS(), { listing: THREE_PAGES() });
+    const c = await start(so.deps);
+    const job = await run(c, { url: PROFILE_URL, options: { tagged: true } });
+    expect(job).toMatchObject({ state: "done", limited: true, failedItems: 0 });
+    expect(job.warnings).toContain("Tagged posts need a sign-in to Instagram; they weren't saved.");
+    expect(sorted(job.files)).toEqual([dl("sample.user", "a.jpg"), dl("sample.user", "b.jpg"), dl("sample.user", "c.jpg"), dl("sample.user", "d.jpg")]);
+    expect(so.taggedOpened).toEqual([]);
+  });
+
+  it("ends done with a warning when the tagged page can't be read", async () => {
+    const ig = fakeProfiles({ "sample.user": { ...SAMPLE(), tagged: new SavedError("badAnswer") } });
+    const c = await signedIn(ig.deps);
+    const job = await run(c, { url: PROFILE_URL, options: { tagged: true } });
+    // not a sign-in matter: the job is done, its reason not "signInRequired"
+    expect(job).toMatchObject({ state: "done", failedItems: 0 });
+    expect(job.limited).toBeUndefined();
+    expect(job.reason).toBeUndefined();
+    expect(job.warnings).toContain("TurboDL couldn't read @sample.user's tagged posts; Instagram may have changed its page.");
+    expect(job.files).toEqual([dl("sample.user", "1.jpg"), dl("sample.user", "2.jpg"), dl("sample.user", "3.jpg")]);
+    expect(ig.taggedClosed).toEqual(["sample.user"]);
+  });
+
+  it("closes the tagged page when its backup doesn't start, and opens a new one when it is tried again", async () => {
+    const ig = fakeProfiles({ "sample.user": { ...SAMPLE(), tagged: [[photo("t1")]] }, "other.user": OTHER() });
+    const held = heldFetch(ig.deps);
+    const c = await signedIn(ig.deps);
+    // the first time, a backup outside the jobs' lane (as a screen's Highlights or Saved backup) starts while the tagged
+    // page loads: the slot is taken (busy) when the tagged backup asks for it; the job waits for that backup to end and
+    // tries again
+    const open = ig.deps.openTagged!;
+    let opens = 0;
+    const closedBeforeRetry: number[] = [];
+    ig.deps.openTagged = (username, cookies) => {
+      const source = open(username, cookies);
+      if (++opens > 1) {
+        closedBeforeRetry.push(ig.taggedClosed.length);
+        return source;
+      }
+      return { ...source, load: async () => void (await c["profiles"].startBackup("other.user")) };
+    };
+    const { id } = c.jobs.create({ url: PROFILE_URL, options: { posts: false, tagged: true } });
+    await until(() => ig.taggedClosed.length === 1);
+    expect(c.snapshot().instagramBackup).toMatchObject({ kind: "profile", name: "other.user", state: "running" });
+    held.open();
+    const job = (await c.jobs.ended(id))!;
+    expect(job).toMatchObject({ state: "done", files: [dl("sample.user", "Tagged", "t1.jpg")] });
+    expect(closedBeforeRetry).toEqual([1]);
+    expect(ig.taggedOpened).toEqual(["sample.user", "sample.user"]);
+    expect(ig.taggedClosed).toEqual(["sample.user", "sample.user"]);
+  });
+
+  it("fails private for a private profile's tagged posts, opening no tagged page", async () => {
+    const ig = fakeProfiles({ "shut.door": { profile: person("52", "shut.door", { isPrivate: true, following: false }), pages: [[photo("1")]], tagged: [[photo("t1")]] } });
+    const c = await signedIn(ig.deps);
+    const job = await run(c, { url: "https://www.instagram.com/shut.door/", options: { posts: false, tagged: true } });
+    expect(job).toMatchObject({ state: "failed", reason: "private", error: "This account is private." });
+    expect(ig.taggedOpened).toEqual([]);
+    expect(ig.fetched).toEqual([]);
+  });
+
+  it("warns when a profile has no tagged posts", async () => {
+    const ig = fakeProfiles({ "sample.user": SAMPLE() });
+    const c = await signedIn(ig.deps);
+    const job = await run(c, { url: PROFILE_URL, options: { posts: false, tagged: true } });
+    expect(job).toMatchObject({ state: "done", warnings: ["This profile has no tagged posts."], files: [] });
+    expect(job.limited).toBeUndefined();
+    expect(ig.fetched).toEqual([]);
+    expect(ig.taggedClosed).toEqual(["sample.user"]);
+  });
+
+  it("fills in a tagged post's video after a photos-only run", async () => {
+    const both: SavedPost = {
+      id: "t3",
+      cover: "https://cdn.example/t3.jpg",
+      items: [
+        { kind: "image", url: "https://cdn.example/t3a.jpg", mediaId: "t3a" },
+        { kind: "video", url: "https://cdn.example/t3b.mp4", mediaId: "t3b" },
+      ],
+    };
+    const ig = fakeProfiles({ "sample.user": { ...SAMPLE(), tagged: [[photo("t1"), both]] } });
+    const c = await signedIn(ig.deps);
+    const photos = await run(c, { url: PROFILE_URL, options: { posts: false, tagged: true, videos: false } });
+    expect(photos).toMatchObject({ state: "done", files: [dl("sample.user", "Tagged", "t1.jpg"), dl("sample.user", "Tagged", "t3a.jpg")] });
+    const all = await run(c, { url: PROFILE_URL, options: { posts: false, tagged: true } });
+    expect(all).toMatchObject({ state: "done", files: [dl("sample.user", "Tagged", "t3b.mp4")] });
+    expect(ig.fetched).toEqual(["https://cdn.example/t1.jpg", "https://cdn.example/t3a.jpg", "https://cdn.example/t3b.mp4"]);
   });
 
   it("ends stopped when the backup is stopped from the app, cancelled when the job is cancelled", async () => {

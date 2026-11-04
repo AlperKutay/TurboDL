@@ -1,0 +1,109 @@
+{
+ "data": {
+  "xdt_api__v1__usertags__user_id__feed_connection": {
+   "edges": [
+    {
+     "node": {
+      "code": "T1carOUS",
+      "pk": "3400000000000000001",
+      "id": "3400000000000000001_501",
+      "media_type": 8,
+      "user": {
+       "username": "friend.one",
+       "pk": "501"
+      },
+      "carousel_media": [
+       {
+        "pk": "3400000000000000011",
+        "media_type": 1,
+        "image_versions2": {
+         "candidates": [
+          {
+           "width": 1080,
+           "height": 1350,
+           "url": "https://scontent.cdninstagram.example/v/t51/tag_photo1_1080.jpg?stp=dst"
+          },
+          {
+           "width": 640,
+           "height": 800,
+           "url": "https://scontent.cdninstagram.example/v/t51/tag_photo1_640.jpg?stp=dst"
+          }
+         ]
+        }
+       },
+       {
+        "pk": "3400000000000000012",
+        "media_type": 2,
+        "video_duration": 8.2,
+        "image_versions2": {
+         "candidates": [
+          {
+           "width": 720,
+           "height": 1280,
+           "url": "https://scontent.cdninstagram.example/v/t51/tag_video2_cover.jpg"
+          }
+         ]
+        },
+        "video_versions": [
+         {
+          "type": 101,
+          "width": 720,
+          "height": 1280,
+          "url": "https://scontent.cdninstagram.example/o1/v/t16/tag_video2_720.mp4?efg=x"
+         },
+         {
+          "type": 102,
+          "width": 480,
+          "height": 854,
+          "url": "https://scontent.cdninstagram.example/o1/v/t16/tag_video2_480.mp4?efg=x"
+         }
+        ]
+       }
+      ]
+     },
+     "cursor": "c1"
+    },
+    {
+     "node": {
+      "code": "T2vidEO",
+      "pk": "3400000000000000002",
+      "id": "3400000000000000002_502",
+      "media_type": 2,
+      "video_duration": 15,
+      "user": {
+       "username": "friend.two",
+       "pk": "502"
+      },
+      "image_versions2": {
+       "candidates": [
+        {
+         "width": 720,
+         "height": 1280,
+         "url": "https://scontent.cdninstagram.example/v/t51/tag_reel_cover.jpg"
+        }
+       ]
+      },
+      "video_versions": [
+       {
+        "type": 101,
+        "width": 720,
+        "height": 1280,
+        "url": "https://scontent.cdninstagram.example/o1/v/t16/tag_reel_720.mp4?efg=x"
+       }
+      ]
+     },
+     "cursor": "c2"
+    }
+   ],
+   "page_info": {
+    "end_cursor": "QVFDtagged-next",
+    "has_next_page": true,
+    "has_previous_page": false,
+    "start_cursor": null
+   }
+  }
+ },
+ "extensions": {
+  "is_final": true
+ }
+}

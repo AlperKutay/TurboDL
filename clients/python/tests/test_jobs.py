@@ -346,5 +346,43 @@ class InterruptionTests(JobCase):
         self.assertEqual(readers(), [])
 
 
+class ProfileOptionTests(JobCase):
+    def test_add_sends_only_the_options_that_differ_from_the_defaults(self) -> None:
+        t = self.serve()
+        self.stub.features = ["posts", "profileOptions"]
+        t.add(URL, videos=False)
+        t.add(URL, posts=False, tagged=True, photos=False)
+        t.add(URL)
+        self.assertEqual(self.stub.posted[0]["options"], {"videos": False})
+        self.assertEqual(self.stub.posted[1]["options"], {"posts": False, "tagged": True, "photos": False})
+        self.assertNotIn("options", self.stub.posted[2])
+
+    def test_get_passes_the_options_on(self) -> None:
+        t = self.serve()
+        self.stub.features = ["posts", "profileOptions"]
+        self.script({"type": "end", "jobId": "j1", "job": ended()})
+        t.get(URL, tagged=True)
+        self.assertEqual(self.stub.posted[0]["options"], {"tagged": True})
+
+    def test_the_apps_refusal_surfaces_as_the_clients_error(self) -> None:
+        t = self.serve()
+        self.stub.features = ["posts", "profileOptions"]
+        self.stub.fail_add = "photos and videos can't both be off"
+        with self.assertRaises(TurboDLError) as cm:
+            t.add(URL, photos=False, videos=False)
+        self.assertEqual(str(cm.exception), "photos and videos can't both be off")
+
+    def test_an_old_app_is_refused_before_anything_is_sent(self) -> None:
+        t = self.serve()
+        for kwargs in ({"posts": False}, {"tagged": True}, {"photos": False}, {"videos": False}):
+            with self.assertRaises(TurboDLError) as cm:
+                t.add(URL, **kwargs)
+            self.assertEqual(str(cm.exception),
+                             "Update TurboDL to 0.9.0 or newer to choose what a profile backup saves.")
+        self.assertEqual(self.stub.posted, [])
+        t.add(URL)  # the defaults need no feature
+        self.assertEqual(len(self.stub.posted), 1)
+
+
 if __name__ == "__main__":
     unittest.main()

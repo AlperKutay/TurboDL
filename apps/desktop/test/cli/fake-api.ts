@@ -1,9 +1,9 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import type { ApiFile, ApiInfo, InstagramLoginResult, Job, JobEvent, JobEventBody, JobRequest } from "@turbodl/shared";
+import type { ApiFile, ApiInfo, InstagramLoginResult, Job, JobEvent, JobEventBody, JobRequest, ProfileListView } from "@turbodl/shared";
 import { createBridgeServer, type BridgeServer } from "../../src/main/bridge-server";
-import type { ApiHandlers } from "../../src/main/api-routes";
+import type { ApiHandlers, ParsedListRequest } from "../../src/main/api-routes";
 
 export const TOKEN = "secret-token-0123456789";
 
@@ -22,6 +22,18 @@ export interface FakeApi {
   cancelled: string[];
   instagram: InstagramLoginResult;
   loggedOut: boolean;
+  /** the profile list `GET /v1/lists/current` answers; a started list runs its first row */
+  list: ProfileListView | null;
+  /** the lists started, as the API parsed them */
+  listRequests: ParsedListRequest[];
+  /** set: starting a list fails with it (UNFINISHED answers 409, anything else 400) */
+  listRefusal?: string;
+  /** how many times the list was stopped */
+  listStops: number;
+  /** how many times the list was read */
+  listReads: number;
+  /** changes the list as its runner would: `patch` over it, rows by index */
+  updateList(patch: Partial<ProfileListView>, rows?: Record<number, Partial<ProfileListView["rows"][number]>>): void;
   /** resolves once `cond` holds; checked now and after every API call */
   until(cond: () => boolean): Promise<void>;
   /** resolves once the job's events were subscribed to `count` times in all */
@@ -86,6 +98,35 @@ export async function startFakeApi(): Promise<FakeApi> {
       fake.loggedOut = true;
       fake.instagram = { signedIn: false };
     },
+    list: () => {
+      fake.listReads++;
+      notify();
+      return fake.list;
+    },
+    startList: async (request) => {
+      fake.listRequests.push(request);
+      notify();
+      if (fake.listRefusal) return { ok: false, error: fake.listRefusal };
+      fake.list = {
+        name: request.name,
+        rows: request.usernames.map((username, i) => ({ username, state: i === 0 ? "running" : "waiting" })),
+        index: 0,
+        state: "running",
+        options: request.options,
+        wait: request.wait,
+      };
+      return { ok: true };
+    },
+    stopList: async () => {
+      fake.listStops++;
+      const list = fake.list;
+      if (list && (list.state === "running" || list.state === "waiting" || list.state === "slowedDown")) {
+        fake.list = { ...list, state: "stopped", rows: list.rows.map((r) => (r.state === "running" ? { ...r, state: "waiting" } : r)) };
+      }
+      notify();
+    },
+    continueList: async () => ({ ok: false, error: "not in the fake" }),
+    closeList: async () => ({ ok: false, error: "not in the fake" }),
   };
 
   const serve = async (): Promise<number> => {
@@ -116,6 +157,15 @@ export async function startFakeApi(): Promise<FakeApi> {
     cancelled: [],
     instagram: { signedIn: false },
     loggedOut: false,
+    list: null,
+    listRequests: [],
+    listStops: 0,
+    listReads: 0,
+    updateList(patch, rows = {}) {
+      const list = fake.list;
+      if (!list) throw new Error("no list");
+      fake.list = { ...list, ...patch, rows: list.rows.map((r, i) => ({ ...r, ...rows[i] })) };
+    },
     until(cond) {
       return new Promise((resolve) => {
         const check = () => {
