@@ -476,6 +476,25 @@ describe("BackupRun and Continue", () => {
     expect(await resumes(ledgers)).toBe(false);
   });
 
+  it("goes through every page after a run stopped before the listing's end, even after a complete pass", async () => {
+    await setup({ pages: [[both("A")]], count: 1 }).run.start();
+    // new posts N1 and N2 on top; the run is stopped while N2's photo is fetched
+    const pages = [[both("N1")], [both("N2")], [both("A")]];
+    const stopped = setup({ pages, count: 3, hang: photoOf("N2") });
+    const running = stopped.run.start();
+    await new Promise((r) => setTimeout(r, 50));
+    void stopped.run.stop();
+    await running;
+    expect(stopped.ledgers.load("102")).toMatchObject({ reachedEnd: end(true), unfinished: true });
+    // N1's page is saved, but nothing says what is below it: the next run doesn't stop there
+    const again = setup({ pages, count: 3 });
+    await again.run.start();
+    expect(again.asked).toEqual([undefined, "1", "2"]);
+    expect(again.fetched).toEqual([photoOf("N2"), videoOf("N2")]);
+    expect(again.run.view()).toMatchObject({ state: "finished", done: 3, failed: 0 });
+    expect(again.ledgers.load("102").unfinished).toBe(false);
+  });
+
   it("offers Continue after a run Instagram slowed down", async () => {
     const { run, ledgers } = setup({ pushBack: { page: 1, error: new SavedError("rateLimited") } });
     await run.start();
@@ -548,13 +567,50 @@ describe("BackupRun saving chosen kinds of media", () => {
     expect(photos.fetched).toEqual([photoOf("P")]);
     expect(photos.asked).toEqual([undefined, "1"]);
     expect(photos.ledgers.load("102").done).toEqual({ image: ["A", "B", "C", "P"], video: ["A", "B", "C"] });
-    // photos and videos again: P's video, nothing of A or B again, and B's page ends it (done for both kinds)
+    // photos and videos again: P's video, nothing of A, B or C again; the photos-only run left P's video missing, so this
+    // run goes through to the end (a complete pass with videos)
     const again = setup({ pages: later, count: 4, kinds: ["image", "video"] });
     await again.run.start();
     expect(again.fetched).toEqual([videoOf("P")]);
-    expect(again.asked).toEqual([undefined, "1"]);
+    expect(again.asked).toEqual([undefined, "1", "2"]);
     expect(again.ledgers.load("102").done).toEqual({ image: ["A", "B", "C", "P"], video: ["A", "B", "C", "P"] });
     expect(again.run.view()).toMatchObject({ state: "finished", done: 4, failed: 0, saved: 1 });
+  });
+
+  it("doesn't stop above a post a run of fewer kinds left a kind missing in, at a page with nothing of that kind", async () => {
+    await setup({ pages: [[both("A")], [both("B")]], count: 2 }).run.start();
+    // photos only: X1 and X2, photos alone, on top; below them P, a photo and a video
+    const pages = [[post("X1", item("X1i")), post("X2", item("X2i"))], [both("P")], [both("A")], [both("B")]];
+    const photos = setup({ pages, count: 5, kinds: ["image"] });
+    await photos.run.start();
+    expect(photos.fetched).toEqual([photoOf("X1"), photoOf("X2"), photoOf("P")]);
+    expect(photos.ledgers.load("102").reachedEnd).toEqual({ image: true, video: false });
+    // photos and videos: X1's page has nothing of P's kind left, but P's video is below it
+    const again = setup({ pages, count: 5 });
+    await again.run.start();
+    expect(again.asked).toEqual([undefined, "1", "2", "3"]);
+    expect(again.fetched).toEqual([videoOf("P")]);
+    expect(again.ledgers.load("102").reachedEnd).toEqual(end(true));
+    expect(again.run.view()).toMatchObject({ state: "finished", done: 5, failed: 0, saved: 1 });
+  });
+
+  it("doesn't stop above a post a run of fewer kinds left a kind missing in, seen signed out", async () => {
+    const own: Record<string, InstagramItem[]> = { A: both("A").items, B: both("B").items, X1: [item("X1i")], X2: [item("X2i")], P: both("P").items };
+    const read = async (p: SavedPost): Promise<SavedPost> => ({ ...p, items: own[p.id], unread: false });
+    await setup({ pages: [[cover("A")], [cover("B")]], read, count: 2 }).run.start();
+    const pages = [[cover("X1"), cover("X2")], [cover("P")], [cover("A")], [cover("B")]];
+    const photos = setup({ pages, read, count: 5, kinds: ["image"] });
+    await photos.run.start();
+    expect(photos.reads).toEqual(["X1", "X2", "P"]);
+    expect(photos.fetched).toEqual([photoOf("X1"), photoOf("X2"), photoOf("P")]);
+    expect(photos.ledgers.load("102").reachedEnd).toEqual({ image: true, video: false });
+    const again = setup({ pages, read, count: 5 });
+    await again.run.start();
+    expect(again.asked).toEqual([undefined, "1", "2", "3"]);
+    // A and B are known by their marks for both kinds; the others are read again
+    expect(again.reads).toEqual(["X1", "X2", "P"]);
+    expect(again.fetched).toEqual([videoOf("P")]);
+    expect(again.ledgers.load("102").reachedEnd).toEqual(end(true));
   });
 
   it("stops early for a kind only after a complete pass with it", async () => {

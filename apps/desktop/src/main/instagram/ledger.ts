@@ -46,9 +46,12 @@ export function itemId(post: SavedPost, item: InstagramItem): string {
   return item.mediaId ?? post.id;
 }
 
-/** Only after a complete pass for each kind asked, with nothing left failed, may a run stop at the first page it already has. */
+/**
+ * Only after a complete pass for each kind asked, with nothing left failed, may a run stop at the first page it already
+ * has; and never after a run that stopped before the listing's end (what is below its last page isn't known).
+ */
 export function allowsEarlyStop(ledger: BackupLedger, kinds: readonly InstagramMediaKind[]): boolean {
-  return kinds.length > 0 && kinds.every((kind) => ledger.reachedEnd[kind]) && ledger.failedPosts.length === 0;
+  return kinds.length > 0 && kinds.every((kind) => ledger.reachedEnd[kind]) && ledger.failedPosts.length === 0 && !ledger.unfinished;
 }
 
 /** One JSON file per collection. */

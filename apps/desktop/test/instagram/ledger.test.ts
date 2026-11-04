@@ -92,6 +92,8 @@ describe("the ledger's rules", () => {
     expect(allowsEarlyStop({ ...EMPTY, failedPosts: ["1"], reachedEnd: end }, BOTH)).toBe(false);
     // a post only signed-in visitors see isn't a failure
     expect(allowsEarlyStop({ ...EMPTY, signInPosts: ["1"], reachedEnd: end }, BOTH)).toBe(true);
+    // the last run stopped before the listing's end: what is below its last page isn't known
+    expect(allowsEarlyStop({ ...EMPTY, reachedEnd: end, unfinished: true }, BOTH)).toBe(false);
   });
 
   it("stops early for the kinds asked only after a complete pass with each of them", () => {

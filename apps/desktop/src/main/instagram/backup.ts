@@ -193,12 +193,19 @@ export class BackupRun {
     const finish = (post: SavedPost): boolean => {
       const failedBefore = failedPosts.delete(post.id);
       const waited = signInPosts.delete(post.id);
-      // its mark kept early stop off; a kind this run didn't ask for may still be missing, so a later run asking for it
-      // goes through to the end again instead of stopping above the post
-      if (failedBefore || waited) for (const kind of MEDIA_KINDS) if (!kinds.includes(kind) && !done[kind].has(post.id)) reachedEnd[kind] = false;
+      // a kind this run didn't ask for may still be missing in the post: a later run asking for it goes through to the
+      // end again, instead of stopping at a page above the post that needs nothing of that kind
+      let unended = false;
+      if (byId) {
+        for (const kind of MEDIA_KINDS) {
+          if (kinds.includes(kind) || !reachedEnd[kind] || postDone(post, [kind], done, saved)) continue;
+          reachedEnd[kind] = false;
+          unended = true;
+        }
+      }
       const known = !byId || kinds.every((kind) => done[kind].has(post.id));
       if (byId) for (const kind of kinds) done[kind].add(post.id);
-      return failedBefore || waited || !known;
+      return failedBefore || waited || unended || !known;
     };
     const random = deps.random ?? Math.random;
     // a new draw before each page, so the pages never come at a steady beat
@@ -226,7 +233,7 @@ export class BackupRun {
         this.signInOnly = signInPosts.size;
         const below = this.done + page.posts.filter(isDone).length;
         this.done = target.count !== undefined ? Math.max(target.count - this.failed - this.signInOnly, below) : below;
-        // the end of what is new: a run that recorded something (or an earlier unfinished one) is finished now
+        // the end of what is new: a run that recorded something (unfinished since) is finished now
         if (unfinished) record(true);
         this.state = "finished";
         return;
