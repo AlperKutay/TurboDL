@@ -7,7 +7,10 @@ import { TaggedFeed, type TaggedDriver } from "../../src/main/instagram/tagged-f
 const GRAPHQL = JSON.stringify(taggedGraphql);
 const REST = JSON.stringify(taggedRest);
 
-/** A tagged page whose documents come in steps, one per look (the last stays), and whose re-sends answer in turn. */
+/**
+ * A tagged page whose documents come in steps, one per look (the last stays), and whose re-sends answer in turn.
+ * `usertags`: the answers it got from the usertags address (the REST feed's), as soon as it loads.
+ */
 class FakeTaggedPage implements TaggedDriver {
   loads: string[] = [];
   looks = 0;
@@ -15,6 +18,7 @@ class FakeTaggedPage implements TaggedDriver {
   cursors: string[] = [];
   stopped = false;
   closed = false;
+  usertags: string[] = [];
   constructor(
     private readonly steps: string[][],
     private readonly resends: ({ status: number; text: string } | null)[] = [],
@@ -25,6 +29,9 @@ class FakeTaggedPage implements TaggedDriver {
   }
   async documents() {
     return this.steps[Math.min(this.looks++, this.steps.length - 1)] ?? [];
+  }
+  usertagsAnswers() {
+    return this.usertags;
   }
   finalUrl() {
     return this.landsOn ?? this.loads[0] ?? "about:blank";
@@ -81,12 +88,21 @@ describe("TaggedFeed", () => {
     expect(page.scrolls).toBe(0);
   });
 
-  it("reads a first page the page fetched as the REST feed", async () => {
-    const f = feed(new FakeTaggedPage([[REST]]));
+  it("reads a first page the page fetched as the REST feed from the usertags address", async () => {
+    const page = new FakeTaggedPage([[REST]]);
+    page.usertags = [REST];
+    const f = feed(page);
     await f.load();
     const first = await f.page();
     expect(first.posts).toHaveLength(2);
     expect(first.next).toBe("3400000000000000002_501");
+  });
+
+  it("doesn't take a REST-shaped answer from another address for the tagged posts", async () => {
+    const reports: string[][] = [];
+    const f = feed(new FakeTaggedPage([[REST]]), { firstLoad: 100, report: (_url, documents) => reports.push(documents) });
+    expect(await failure(f.load())).toBe("badAnswer");
+    expect(reports).toEqual([[REST]]);
   });
 
   it("waits for the page's answers while it loads", async () => {

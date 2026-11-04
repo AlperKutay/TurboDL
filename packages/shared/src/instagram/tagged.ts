@@ -22,11 +22,13 @@ function restPosts(feed: Json): ProfilePosts {
   return { posts, ...(cursor ? { cursor } : {}), hasNext: feed.more_available === true && cursor !== undefined };
 }
 
-/** Tagged posts among `find`'s objects: a usertags connection first, else the REST feed. */
-function postsIn(find: (match: (o: Json) => boolean) => Json[]): ProfilePosts | undefined {
+type Find = (match: (o: Json) => boolean) => Json[];
+
+/** Tagged posts: a usertags connection among `find`'s objects first, else the REST feed among `findRest`'s. */
+function postsIn(find: Find, findRest: Find = find): ProfilePosts | undefined {
   const graphql = connectionPosts(find((o) => connectionsIn(o).length > 0).flatMap(connectionsIn));
   if (graphql) return graphql;
-  const feed = find(isRestFeed).pop();
+  const feed = findRest(isRestFeed).pop();
   return feed && restPosts(feed);
 }
 
@@ -36,11 +38,15 @@ export function hasTaggedConnection(answer: string): boolean {
 }
 
 /**
- * The posts the signed-in tagged page shows, recognised by shape (nobody has seen that page's queries): a connection
- * under a `usertags` key, or the REST feed's `items`. Undefined while the documents hold neither.
+ * The posts the signed-in tagged page shows (nobody has seen that page's queries): a connection under a `usertags` key
+ * in any of the page's documents, or the REST feed's `items` in an answer from the usertags address (`usertags`; the
+ * account's own REST feeds have the same shape). Undefined while neither is there.
  */
-export function taggedPosts(documents: string[]): ProfilePosts | undefined {
-  return postsIn((match) => objectsInDocuments(documents, match));
+export function taggedPosts(documents: string[], usertags: string[] = []): ProfilePosts | undefined {
+  return postsIn(
+    (match) => objectsInDocuments(documents, match),
+    (match) => objectsInDocuments(usertags, match),
+  );
 }
 
 /** The answer to the tagged page's own paging request sent again; throws as `profilePostsAnswer` does. */

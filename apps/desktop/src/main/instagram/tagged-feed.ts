@@ -3,7 +3,10 @@ import { within } from "./finder";
 import { LOOK, onSignInPage, resendPaging, sleep, toPage, type ProfileDriver } from "./profile-feed";
 
 /** The tagged page as the feed needs it (`ElectronInstagramPage` with the tagged paging matcher, or a stand-in in tests). */
-export type TaggedDriver = Pick<ProfileDriver, "load" | "documents" | "finalUrl" | "scrollToEnd" | "resend" | "stopCollecting" | "close">;
+export type TaggedDriver = Pick<ProfileDriver, "load" | "documents" | "finalUrl" | "scrollToEnd" | "resend" | "stopCollecting" | "close"> & {
+  /** the answers the page got from the usertags address (`/api/v1/usertags/…`) while it collects: the only REST feeds that are its tagged posts */
+  usertagsAnswers(): string[];
+};
 
 /** A profile's tagged posts as the service needs them (`TaggedFeed` over a hidden page, or a demo). */
 export interface TaggedSource {
@@ -77,7 +80,7 @@ export class TaggedFeed implements TaggedSource {
       lastLook = Date.now() >= deadline;
       if (onSignInPage(this.driver.finalUrl())) throw new SavedError("signedOut");
       documents = (await within(this.driver.documents(), Date.now() + LOOK)) ?? documents;
-      const posts = taggedPosts(documents);
+      const posts = taggedPosts(documents, this.driver.usertagsAnswers());
       if (posts) {
         this.first = posts;
         this.driver.stopCollecting();

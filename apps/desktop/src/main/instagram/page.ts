@@ -75,6 +75,8 @@ export async function applyCookies(s: Session, cookies: BrowserCookie[]): Promis
 export class ElectronInstagramPage implements ProfileDriver {
   private win: BrowserWindow | null = null;
   private readonly answers: string[] = [];
+  /** the answers among them that came from the usertags address (a tagged page's REST feed) */
+  private readonly usertags: string[] = [];
   private readonly waiting = new Set<string>();
   /** scripts from Instagram's CDN on their way, to scan for the signed-out queries' ids; never kept */
   private readonly scripts = new Set<string>();
@@ -172,6 +174,11 @@ export class ElectronInstagramPage implements ProfileDriver {
     return [...embedded, ...this.answers];
   }
 
+  /** The answers kept so far that came from the usertags address (`/api/v1/usertags/…`), in the order the page got them. */
+  usertagsAnswers(): string[] {
+    return [...this.usertags];
+  }
+
   finalUrl(): string {
     const contents = this.win?.webContents;
     return contents && !contents.isDestroyed() ? contents.getURL() : "about:blank";
@@ -247,6 +254,7 @@ export class ElectronInstagramPage implements ProfileDriver {
   stopCollecting(): void {
     this.collecting = false;
     this.answers.length = 0;
+    this.usertags.length = 0;
     this.bytes = 0;
   }
 
@@ -281,6 +289,7 @@ export class ElectronInstagramPage implements ProfileDriver {
       if (!this.collecting || text.length > MAX_DOCUMENT || this.bytes + text.length > MAX_PAGE) return;
       this.bytes += text.length;
       this.answers.push(text);
+      if (sent && isUsertags(sent)) this.usertags.push(text);
     } catch {
       // the answer is gone (the page moved on)
     }
@@ -306,6 +315,16 @@ export class ElectronInstagramPage implements ProfileDriver {
       Date.now() + LOOK_TIMEOUT,
     );
     return typeof found === "string" ? pageLsd(found) : undefined;
+  }
+}
+
+/** A GET of the usertags address (`/api/v1/usertags/<id>/feed/`): its answer is the tagged posts' REST feed. */
+function isUsertags(sent: { url: string; method: string }): boolean {
+  if (sent.method.toUpperCase() !== "GET") return false;
+  try {
+    return new URL(sent.url).pathname.includes("/api/v1/usertags/");
+  } catch {
+    return false;
   }
 }
 
