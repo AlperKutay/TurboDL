@@ -318,6 +318,14 @@ export function fail(job: JobRecord, deps: InstagramJobDeps, reason: JobReason, 
   job.end({ state: "failed", reason, error });
 }
 
+/** how a plan's warning starts (`planWarning`) */
+const PLAN_START = /^Backing up (?:\d+ posts|every post)[,.;]/;
+
+/** Whether a job's warning is its posts' plan (`planWarning`): news for an API client; the screen showed it before the start. */
+export function isPlanWarning(message: string): boolean {
+  return PLAN_START.test(message);
+}
+
 /** The backup's plan as a warning: how many posts, how large, the free space, an earlier backup it continues. */
 function planWarning(plan: BackupPlan): string {
   const parts = [plan.count !== undefined ? `Backing up ${plan.count} posts` : "Backing up every post"];

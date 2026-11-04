@@ -10,6 +10,7 @@ import {
   type ProfileResult,
   type ProfileSaveOptions,
   type Result,
+  type ScreenBackupView,
 } from "@turbodl/shared";
 import { api } from "../../api";
 import { readHighlights, togglePick } from "../../highlight-state";
@@ -23,9 +24,20 @@ type Confirming = { plan: BackupPlan; signedIn: boolean };
 
 /**
  * Someone's profile: who it is, then its Posts (page by page, pinned first, as on Instagram) and its Highlights, each
- * side with its own picks, Next and backup. `saveOptions`: what the last backup chose to save, offered again.
+ * side with its own picks, Next and backup. `saveOptions`: what the last backup chose to save, offered again. `screen`: the
+ * profile backup the screen started last, which goes on between its parts.
  */
-export function ProfileView({ username, backup, saveOptions }: { username: string; backup: BackupView | null; saveOptions: ProfileSaveOptions }) {
+export function ProfileView({
+  username,
+  backup,
+  screen,
+  saveOptions,
+}: {
+  username: string;
+  backup: BackupView | null;
+  screen: ScreenBackupView | null;
+  saveOptions: ProfileSaveOptions;
+}) {
   const [result, setResult] = useState<ProfileResult | "loading">("loading");
   const [busy, setBusy] = useState(false);
   const [tab, setTab] = useState<"posts" | "highlights">("posts");
@@ -71,6 +83,8 @@ export function ProfileView({ username, backup, saveOptions }: { username: strin
 
   const { profile, highlights } = result;
   const limited = result.limited === true;
+  // a backup runs, or the screen's goes on between its parts: no other starts
+  const backingUp = backup?.state === "running" || screen?.state === "running";
   if (isLocked(profile)) {
     return (
       <>
@@ -90,7 +104,7 @@ export function ProfileView({ username, backup, saveOptions }: { username: strin
           </button>
         </p>
       )}
-      {backup && <BackupPanel backup={backup} onSignedIn={() => undefined} />}
+      {backup && <BackupPanel backup={backup} screen={screen} username={username} onSignedIn={() => undefined} />}
       <div className="saved-collections" role="tablist">
         <button type="button" role="tab" aria-selected={tab === "posts"} className="saved-collection" onClick={() => setTab("posts")}>
           Posts
@@ -102,10 +116,10 @@ export function ProfileView({ username, backup, saveOptions }: { username: strin
       </div>
       {/* both sides stay, each with its own picks; only the one chosen shows */}
       <div className="profile-side" hidden={tab !== "posts"}>
-        <ProfilePosts profile={profile} limited={limited} backup={backup} saveOptions={saveOptions} busy={busy} onSignIn={() => void signIn()} />
+        <ProfilePosts profile={profile} limited={limited} backup={backup} backingUp={backingUp} saveOptions={saveOptions} busy={busy} onSignIn={() => void signIn()} />
       </div>
       <div className="profile-side" hidden={tab !== "highlights"}>
-        <ProfileHighlights profile={profile} highlights={highlights} backup={backup} saveOptions={saveOptions} busy={busy} onSignIn={() => void signIn()} />
+        <ProfileHighlights profile={profile} highlights={highlights} backup={backup} backingUp={backingUp} saveOptions={saveOptions} busy={busy} onSignIn={() => void signIn()} />
       </div>
     </>
   );
@@ -200,6 +214,7 @@ function ProfilePosts({
   profile,
   limited,
   backup,
+  backingUp,
   saveOptions,
   busy,
   onSignIn,
@@ -208,6 +223,8 @@ function ProfilePosts({
   /** seen as signed-out visitors see it */
   limited: boolean;
   backup: BackupView | null;
+  /** a backup runs, or the screen's goes on between its parts */
+  backingUp: boolean;
   saveOptions: ProfileSaveOptions;
   busy: boolean;
   onSignIn(): void;
@@ -223,7 +240,7 @@ function ProfilePosts({
   // "Continue backup" when an earlier backup of it stopped before the end
   useEffect(() => {
     void api.profileBackupPlan(username).then((plan) => setResumes(plan.resumes));
-  }, [username, backup?.state]);
+  }, [username, backup?.state, backingUp]);
 
   // posts seen signed out are read from their own pages first, which takes a moment each
   const next = async () => {
@@ -237,7 +254,7 @@ function ProfilePosts({
 
   return (
     <>
-      {backup?.state !== "running" && (
+      {!backingUp && (
         <div>
           <button type="button" className="btn" onClick={() => void askConfirm(api.profileBackupPlan(username)).then(setConfirming)}>
             {resumes ? "Continue backup" : "Back up this profile"}
@@ -273,6 +290,7 @@ function ProfileHighlights({
   profile,
   highlights,
   backup,
+  backingUp,
   saveOptions,
   busy,
   onSignIn,
@@ -280,6 +298,8 @@ function ProfileHighlights({
   profile: InstagramProfile;
   highlights: Highlight[];
   backup: BackupView | null;
+  /** a backup runs, or the screen's goes on between its parts */
+  backingUp: boolean;
   saveOptions: ProfileSaveOptions;
   busy: boolean;
   onSignIn(): void;
@@ -304,7 +324,7 @@ function ProfileHighlights({
 
   useEffect(() => {
     void api.highlightsBackupPlan(username).then((plan) => setResumes(plan.resumes));
-  }, [username, backup?.state]);
+  }, [username, backup?.state, backingUp]);
 
   // each picked highlight's page is read in turn; one that shows nothing is left out
   const next = async () => {
@@ -328,7 +348,7 @@ function ProfileHighlights({
   if (highlights.length === 0) return <p className="muted">No highlights</p>;
   return (
     <>
-      {backup?.state !== "running" && (
+      {!backingUp && (
         <div>
           <button type="button" className="btn" onClick={() => void askConfirm(api.highlightsBackupPlan(username)).then(setConfirming)}>
             {resumes ? "Continue backup" : "Back up highlights"}

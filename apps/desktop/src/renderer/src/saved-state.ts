@@ -1,4 +1,4 @@
-import { type BackupView, type SavedPage, type SavedPageResult, type SavedPost, type SavedSource } from "@turbodl/shared";
+import { type BackupView, type SavedPage, type SavedPageResult, type SavedPost, type SavedSource, type ScreenBackupView } from "@turbodl/shared";
 
 /** What a grid shows: All, one of the account's collections, or someone's profile. */
 export type FeedSource = SavedSource | { kind: "profile"; username: string };
@@ -60,6 +60,18 @@ export function retry(state: SavedState): SavedState {
 }
 
 /** What a backup's panel offers: Stop while it runs, sign-in when Instagram signed TurboDL out, else Continue. */
+/**
+ * What the backup panel says of the backup: its own state, except while the screen's profile backup goes on (between
+ * its parts too, when no backup runs: Stop), and how that ended once its last part had finished (stopped between parts,
+ * or a later part refused).
+ */
+export function panelState(backup: BackupView, screen: ScreenBackupView | null): { state: BackupView["state"]; error?: string } {
+  if (screen?.state === "running") return { state: "running" };
+  if (backup.state === "finished" && screen?.state === "cancelled") return { state: "stopped" };
+  if (backup.state === "finished" && screen?.state === "failed") return { state: "failed", ...(screen.error ? { error: screen.error } : {}) };
+  return { state: backup.state, ...(backup.state === "failed" && backup.error ? { error: backup.error } : {}) };
+}
+
 export function backupAction(state: BackupView["state"]): "stop" | "continue" | "signIn" | "none" {
   if (state === "running") return "stop";
   if (state === "signedOut") return "signIn";

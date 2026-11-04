@@ -43,6 +43,7 @@ import {
   type InstagramItem,
   type InstagramLink,
   type InstallResult,
+  type Job,
   type JobRequest,
   type MediaChoice,
   type MediaDecision,
@@ -51,6 +52,7 @@ import {
   type PendingItem,
   type ProfileSaveOptions,
   type Result,
+  type ScreenBackupView,
   type Settings,
   type BrowserCookie,
   SavedError,
@@ -75,7 +77,7 @@ import type { FindOutcome } from "./instagram/finder";
 import { InstagramSession, type Crypt } from "./instagram/session";
 import { probe } from "./engine/probe";
 import { Gate } from "./jobs/gate";
-import { runInstagramJob } from "./jobs/instagram-job";
+import { isPlanWarning, runInstagramJob } from "./jobs/instagram-job";
 import { POSTS_UNSUPPORTED } from "./jobs/posts-job";
 import { InstagramLane } from "./jobs/instagram-lane";
 import { Jobs } from "./jobs/jobs";
@@ -267,9 +269,11 @@ export class AppController {
    * Continue starts that job again while the last backup is one of its parts. Saved's and the Highlights tab's own
    * backups forget it.
    */
-  private lastScreen: { request: JobRequest; account: string; jobId: string } | null = null;
+  private lastScreen: { request: JobRequest; username: string; account: string; jobId: string } | null = null;
   /** the profile job a screen started last; until it ends, no other backup starts from the screens */
   private screenJobId: string | null = null;
+  /** that job as the screen sees it, followed to its end; forgotten once another backup starts after it ended */
+  private screenBackup: ScreenBackupView | null = null;
 
   constructor(private readonly o: ControllerOptions) {
     this.instagram = o.instagram ?? NO_INSTAGRAM;
@@ -285,7 +289,11 @@ export class AppController {
       wait,
       headers: () => ({ Referer: "https://www.instagram.com/", ...(ig.agent ? { "User-Agent": ig.agent } : {}) }),
       held: () => this.pacer.held(),
-      onBackup: (backup) => this.o.ui.broadcast({ type: "instagramBackup", backup }),
+      onBackup: (backup) => {
+        // a backup that isn't the screen job's (Saved's, a tab's, an API job's): the screen's ended one is old news
+        if (backup?.state === "running" && this.screenBackup && this.screenBackup.state !== "running" && !this.screenJobGoesOn()) this.tellScreen(null);
+        this.o.ui.broadcast({ type: "instagramBackup", backup });
+      },
     });
     this.saved = new SavedService({
       session: this.instagramSession,
@@ -389,6 +397,7 @@ export class AppController {
       countdown: this.countdown,
       version: this.o.version,
       instagramBackup: this.backups.view(),
+      screenBackup: this.screenBackup,
     };
   }
 
@@ -638,8 +647,15 @@ export class AppController {
     return result;
   }
 
-  stopBackup(): Promise<void> {
-    return this.backups.stop();
+  /**
+   * Stops the backup running (a screen job's part ends its job with it); between a screen job's parts, when no backup
+   * runs, cancels the job and resolves once it has ended.
+   */
+  async stopBackup(): Promise<void> {
+    const id = this.screenJobId;
+    if (this.backups.isRunning() || id === null || !this.screenJobGoesOn()) return this.backups.stop();
+    this.jobs.cancel(id);
+    await this.jobs.ended(id);
   }
 
   /**
@@ -656,7 +672,7 @@ export class AppController {
     if (this.backups.view()?.state !== "finished") await this.jobs.ended(screen.jobId);
     // something may have started meanwhile
     if (this.backups.isRunning() || this.screenJobGoesOn() || this.lane.busy()) return { ok: false, error: BACKUP_RUNNING };
-    return this.startScreenJob(screen.request);
+    return this.startScreenJob(screen.request, screen.username);
   }
 
   profileLoad(username: string): Promise<ProfileResult> {
@@ -742,16 +758,18 @@ export class AppController {
     if (problem) return { ok: false, error: problem };
     // a job holding the lane's turn would have this backup come between its parts
     if (this.backups.isRunning() || this.lane.busy()) return { ok: false, error: BACKUP_RUNNING };
-    return this.startScreenJob({ url: `https://www.instagram.com/${encodeURIComponent(username)}/`, options: saveJobOptions(effective) });
+    return this.startScreenJob({ url: `https://www.instagram.com/${encodeURIComponent(username)}/`, options: saveJobOptions(effective) }, username);
   }
 
   /**
    * A profile job for a screen: answered once it runs (Continue starts it again from then on), or as it ended first;
-   * done without a backup is answered with why (its first warning: "This profile has no highlights.").
+   * done without a backup is answered with why (its warnings: "This profile has no highlights."). The screen hears of
+   * it until it ends (`screenBackup`).
    */
-  private startScreenJob(request: JobRequest): Promise<Result> {
+  private startScreenJob(request: JobRequest, username: string): Promise<Result> {
     const { id } = this.jobs.create(request);
     this.screenJobId = id;
+    this.followScreenJob(id, username);
     return new Promise((resolve) => {
       let answered = false;
       let unsubscribe: (() => void) | undefined;
@@ -764,7 +782,7 @@ export class AppController {
       // running once its first backup started: the backup going on is the job's
       const running = () => {
         const account = profileAccount(this.backups.target()?.id);
-        if (account) this.lastScreen = { request, account, jobId: id };
+        if (account) this.lastScreen = { request, username, account, jobId: id };
         answer({ ok: true });
       };
       unsubscribe = this.jobs.subscribe(id, (event) => {
@@ -773,9 +791,43 @@ export class AppController {
       if (this.jobs.get(id)?.state === "running") running();
       // it may have ended already, asking Instagram nothing (its slow-down holds)
       void this.jobs.ended(id)?.then((job) =>
-        answer({ ok: false, error: job.state === "done" ? (job.warnings[0] ?? "Nothing to back up.") : (job.error ?? "The backup was cancelled.") }),
+        answer({ ok: false, error: job.state === "done" ? job.warnings.join(" ") || "Nothing to back up." : (job.error ?? "The backup was cancelled.") }),
       );
     });
+  }
+
+  /**
+   * Tells the screen of its job on every change to its end: running (between its parts too), each warning as it comes
+   * (not its posts' plan, which the screen showed before the start), and how it ended.
+   */
+  private followScreenJob(id: string, username: string): void {
+    const job = this.jobs.get(id);
+    if (!job) return;
+    const ended = (j: Job) =>
+      this.tellScreen({
+        username,
+        state: j.state === "queued" ? "running" : j.state,
+        warnings: j.warnings.filter((w) => !isPlanWarning(w)),
+        ...(j.state !== "done" && j.error ? { error: j.error } : {}),
+      });
+    if (isJobEnded(job.state)) return ended(job);
+    let view: ScreenBackupView = { username, state: "running", warnings: job.warnings.filter((w) => !isPlanWarning(w)) };
+    this.tellScreen(view);
+    let unsubscribe: (() => void) | undefined;
+    unsubscribe = this.jobs.subscribe(id, (event) => {
+      if (event.type === "warning" && !isPlanWarning(event.message)) {
+        view = { ...view, warnings: [...view.warnings, event.message] };
+        if (this.screenJobId === id) this.tellScreen(view);
+      } else if (event.type === "end") {
+        unsubscribe?.();
+        if (this.screenJobId === id) ended(event.job);
+      }
+    });
+  }
+
+  private tellScreen(view: ScreenBackupView | null): void {
+    this.screenBackup = view;
+    this.o.ui.broadcast({ type: "screenBackup", screenBackup: view });
   }
 
   /** The profile job a screen started last hasn't ended: it may be between its parts, when no backup runs. */

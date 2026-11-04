@@ -24,6 +24,8 @@ export function applyEvent(state: AppSnapshot, event: AppEvent): AppSnapshot {
       return { ...state, countdown: event.state };
     case "instagramBackup":
       return { ...state, instagramBackup: event.backup };
+    case "screenBackup":
+      return { ...state, screenBackup: event.screenBackup };
     case "openSaved":
     case "openProfile":
       return state;

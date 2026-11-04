@@ -108,6 +108,8 @@ test("profiles: a backup saves the kinds ticked, remembers them, and fetches a k
     const panel = main.getByRole("region", { name: "Backup" });
     await expect(panel).toContainText("demo.plain · Tagged", { timeout: 30_000 });
     await expect(panel).toContainText("Backup finished", { timeout: 30_000 });
+    // the highlights part (ticked, but there are none) said why it saved nothing; the screen hears of it
+    await expect(panel).toContainText("This profile has no highlights.");
     const root = path.join(baseDir, "Instagram", "demo.plain");
     expect(readdirSync(root).sort()).toEqual(["Tagged", "p1.png", "p3.png"]);
     expect(readdirSync(path.join(root, "Tagged"))).toEqual(["p1.png"]);

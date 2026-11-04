@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import type { BackupPlan, BackupView, InstagramAccount, SavedCollection, SavedSource } from "@turbodl/shared";
+import type { BackupPlan, BackupView, InstagramAccount, SavedCollection, SavedSource, ScreenBackupView } from "@turbodl/shared";
 import { api } from "../../api";
 import { sameFeed, select, type FeedSource } from "../../saved-state";
 import { PickBar, PostGrid, useFeed } from "./PostGrid";
@@ -21,9 +21,10 @@ const savedPage = (source: FeedSource, cursor?: string) =>
 
 /**
  * Instagram → Saved: the account, All and its collections, a grid that loads page by page as it scrolls, posts
- * picked in order and opened in the picker with Next.
+ * picked in order and opened in the picker with Next. `screen`: the profile backup a screen started, which goes on between
+ * its parts (no other backup starts meanwhile).
  */
-export function SavedView({ backup }: { backup: BackupView | null }) {
+export function SavedView({ backup, screen }: { backup: BackupView | null; screen: ScreenBackupView | null }) {
   const [account, setAccount] = useState<InstagramAccount | null>(null);
   const [collections, setCollections] = useState<SavedCollection[]>([ALL]);
   const { state, setState, sentinel } = useFeed({ kind: "all" }, savedPage);
@@ -120,8 +121,8 @@ export function SavedView({ backup }: { backup: BackupView | null }) {
         ))}
       </div>
 
-      {backup && <BackupPanel backup={backup} onSignedIn={() => void api.instagramAccount().then(setAccount)} />}
-      {shown && backup?.state !== "running" && (
+      {backup && <BackupPanel backup={backup} screen={screen} onSignedIn={() => void api.instagramAccount().then(setAccount)} />}
+      {shown && backup?.state !== "running" && screen?.state !== "running" && (
         <div>
           <button type="button" className="btn" onClick={() => void askBackup(shown)}>
             {resumes ? "Continue backup" : "Back up this collection"}

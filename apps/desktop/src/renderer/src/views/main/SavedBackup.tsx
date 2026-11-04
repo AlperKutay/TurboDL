@@ -1,8 +1,8 @@
 import { useState, type ReactNode } from "react";
-import { formatBytes, type BackupPlan, type BackupView } from "@turbodl/shared";
+import { formatBytes, type BackupPlan, type BackupView, type ScreenBackupView } from "@turbodl/shared";
 import { api } from "../../api";
 import { Modal } from "../../components/Modal";
-import { backupAction } from "../../saved-state";
+import { backupAction, panelState } from "../../saved-state";
 
 /**
  * What starting a backup means: how many posts, roughly how large, where they go, and the warnings that go with it; then
@@ -84,10 +84,16 @@ const STATES: Record<BackupView["state"], string> = {
   failed: "Backup failed",
 };
 
-/** The running or last backup: its post, Done · Left · Failed · New, and Stop, Continue or sign-in. */
-export function BackupPanel({ backup, onSignedIn }: { backup: BackupView; onSignedIn(): void }) {
-  const running = backup.state === "running";
-  const action = backupAction(backup.state);
+/**
+ * The running or last backup: its post, Done · Left · Failed · New, and Stop, Continue or sign-in. `screen`: the profile
+ * backup the screen started, whose parts run in turn (it goes on between them: Stop); its warnings and how it ended show
+ * on its own profile's screen (`username`).
+ */
+export function BackupPanel({ backup, screen = null, username, onSignedIn }: { backup: BackupView; screen?: ScreenBackupView | null; username?: string; onSignedIn(): void }) {
+  const shown = panelState(backup, screen);
+  const running = shown.state === "running";
+  const action = backupAction(shown.state);
+  const own = screen && username !== undefined && screen.username.toLowerCase() === username.toLowerCase() ? screen : null;
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const resume = async () => {
@@ -110,8 +116,8 @@ export function BackupPanel({ backup, onSignedIn }: { backup: BackupView; onSign
       <div className="backup-text">
         <strong>{backup.name}</strong>
         <span>
-          {STATES[backup.state]}
-          {backup.state === "failed" && backup.error ? `: ${backup.error}` : ""}
+          {STATES[shown.state]}
+          {shown.error ? `: ${shown.error}` : ""}
         </span>
         {backup.reading && <span className="muted">Signed out: reading each post from its own page</span>}
         <span className="muted">
@@ -119,6 +125,11 @@ export function BackupPanel({ backup, onSignedIn }: { backup: BackupView; onSign
         </span>
         {backup.signInOnly ? <span className="muted">{backup.signInOnly} shown only to signed-in visitors</span> : null}
         {backup.warning && <span className="muted">{backup.warning}</span>}
+        {own?.warnings.map((warning, k) => (
+          <span key={k} className="muted">
+            {warning}
+          </span>
+        ))}
         {running && <progress max={1} value={backup.progress} />}
         {error && <span className="error-text">{error}</span>}
       </div>

@@ -32,12 +32,19 @@ const snapshot = (downloads: DownloadView[]): AppSnapshot => ({
   countdown: null,
   version: "1",
   instagramBackup: null,
+  screenBackup: null,
 });
 
 describe("applyEvent", () => {
   it("keeps the Instagram backup's latest progress", () => {
     const backup = { targetId: "102", kind: "collection" as const, name: "Trips", state: "running" as const, done: 1, failed: 0, saved: 2, progress: 0.5 };
     expect(applyEvent(snapshot([]), { type: "instagramBackup", backup }).instagramBackup).toEqual(backup);
+  });
+
+  it("keeps the screen's profile backup as it goes on and ends", () => {
+    const screenBackup = { username: "sample.user", state: "done" as const, warnings: ["This profile has no highlights."] };
+    expect(applyEvent(snapshot([]), { type: "screenBackup", screenBackup }).screenBackup).toEqual(screenBackup);
+    expect(applyEvent({ ...snapshot([]), screenBackup }, { type: "screenBackup", screenBackup: null }).screenBackup).toBeNull();
   });
 
   it("upserts downloads keeping order", () => {

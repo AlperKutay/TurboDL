@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import type { SavedPage, SavedPost } from "@turbodl/shared";
-import { backupAction, canLoadMore, initialSaved, pageArrived, pageFailed, sameFeed, select, toggle } from "./saved-state";
+import type { BackupView, SavedPage, SavedPost, ScreenBackupView } from "@turbodl/shared";
+import { backupAction, canLoadMore, initialSaved, pageArrived, pageFailed, panelState, sameFeed, select, toggle } from "./saved-state";
 
 const post = (id: string): SavedPost => ({ id, items: [{ kind: "image", url: `https://cdn.example/${id}.jpg`, mediaId: id }] });
 const page = (ids: string[], next?: string): SavedPage => ({ posts: ids.map(post), ...(next ? { next } : {}) });
@@ -53,6 +53,24 @@ describe("saved-state", () => {
     expect(backupAction("signedOut")).toBe("signIn");
     for (const state of ["stopped", "rateLimited", "failed"] as const) expect(backupAction(state)).toBe("continue");
     expect(backupAction("finished")).toBe("none");
+  });
+
+  it("shows a screen's profile backup going on between its parts, and how it ended after its last part finished", () => {
+    const finished: BackupView = { targetId: "profile-51", kind: "profile", name: "sample.user", state: "finished", done: 3, failed: 0, saved: 3, progress: 0 };
+    const screen = (state: ScreenBackupView["state"], error?: string): ScreenBackupView => ({ username: "sample.user", state, warnings: [], ...(error ? { error } : {}) });
+    expect(panelState(finished, null)).toEqual({ state: "finished" });
+    // between its parts no backup runs, but it goes on: Stop
+    expect(panelState(finished, screen("running"))).toEqual({ state: "running" });
+    // stopped between parts: Continue
+    expect(panelState(finished, screen("cancelled", "The backup was stopped in TurboDL."))).toEqual({ state: "stopped" });
+    // a later part refused
+    expect(panelState(finished, screen("failed", "Sign in to Instagram again."))).toEqual({ state: "failed", error: "Sign in to Instagram again." });
+    expect(panelState(finished, screen("done"))).toEqual({ state: "finished" });
+    // a part that didn't finish says itself how it ended
+    const slowed: BackupView = { ...finished, state: "rateLimited" };
+    expect(panelState(slowed, screen("failed", "Instagram asked TurboDL to slow down. Try again in a few minutes."))).toEqual({ state: "rateLimited" });
+    const broken: BackupView = { ...finished, state: "failed", error: "boom" };
+    expect(panelState(broken, screen("failed", "boom"))).toEqual({ state: "failed", error: "boom" });
   });
 
   it("stops asking after Instagram pushes back, until asked again", () => {

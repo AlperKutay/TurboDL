@@ -1220,6 +1220,91 @@ describe("Instagram profiles", () => {
     expect(c.jobs.list()).toMatchObject([{ state: "done", warnings: ["This profile has no highlights."] }]);
   });
 
+  it("says every reason a screen backup saved nothing", async () => {
+    const ig = fakeProfiles({ "no.highlights": { profile: person("54", "no.highlights"), pages: [[]], highlights: [], tagged: [[]] } });
+    const c = await signedIn(ig.deps);
+    expect(await c.startProfileBackup("no.highlights", { ...DEFAULT_SAVE_OPTIONS, posts: false })).toEqual({ ok: false, error: "This profile has no highlights. This profile has no tagged posts." });
+  });
+
+  const screenEvents = () => ui.events.flatMap((e) => (e.type === "screenBackup" ? [e.screenBackup] : []));
+  const POSTS_AND_TAGGED = { ...DEFAULT_SAVE_OPTIONS, highlights: false };
+
+  it("tells the screen a later part's warning as it comes, and the backup's end with it", async () => {
+    const ig = fakeProfiles({ "sample.user": { ...SAMPLE, tagged: new SavedError("badAnswer") } });
+    const c = await signedIn(ig.deps);
+    expect(await c.startProfileBackup("sample.user", POSTS_AND_TAGGED)).toEqual({ ok: true });
+    expect(c.snapshot().screenBackup).toMatchObject({ username: "sample.user", state: "running" });
+    const [job] = c.jobs.list();
+    expect(await c.jobs.ended(job.id)).toMatchObject({ state: "done" });
+    const unreadable = "TurboDL couldn't read @sample.user's tagged posts; Instagram may have changed its page.";
+    // the backup's plan isn't a warning for the screen: its confirmation showed it
+    const ended = { username: "sample.user", state: "done", warnings: [unreadable] };
+    expect(c.snapshot().screenBackup).toEqual(ended);
+    const events = screenEvents();
+    expect(events[0]).toEqual({ username: "sample.user", state: "running", warnings: [] });
+    expect(events).toContainEqual({ username: "sample.user", state: "running", warnings: [unreadable] });
+    expect(events.at(-1)).toEqual(ended);
+  });
+
+  it("forgets the screen's ended backup once another backup starts", async () => {
+    const ig = fakeProfiles({ "sample.user": { ...SAMPLE, tagged: new SavedError("badAnswer") } });
+    withStories(ig.deps);
+    const c = await signedIn(ig.deps);
+    expect(await c.startProfileBackup("sample.user", POSTS_AND_TAGGED)).toEqual({ ok: true });
+    await c.jobs.ended(c.jobs.list()[0].id);
+    expect(c.snapshot().screenBackup).toMatchObject({ state: "done" });
+    expect(await c.startHighlightsBackup("sample.user", BOTH_KINDS)).toEqual({ ok: true });
+    expect(c.snapshot().screenBackup).toBeNull();
+    expect(screenEvents().at(-1)).toBeNull();
+    await backupEnds(c);
+  });
+
+  it("ends the screen's backup failed with the error a later part was refused with", async () => {
+    const ig = fakeProfiles({ "sample.user": { ...SAMPLE, tagged: new SavedError("rateLimited") } });
+    const c = await signedIn(ig.deps);
+    expect(await c.startProfileBackup("sample.user", POSTS_AND_TAGGED)).toEqual({ ok: true });
+    const [job] = c.jobs.list();
+    expect(await c.jobs.ended(job.id)).toMatchObject({ state: "failed", reason: "rateLimited" });
+    // the posts' backup finished; the job didn't
+    expect(c.snapshot().instagramBackup).toMatchObject({ kind: "profile", state: "finished" });
+    expect(c.snapshot().screenBackup).toEqual({ username: "sample.user", state: "failed", warnings: [], error: "Instagram asked TurboDL to slow down. Try again in a few minutes." });
+    expect(screenEvents().at(-1)).toEqual(c.snapshot().screenBackup);
+  });
+
+  it("stops a screen backup between its parts", async () => {
+    const ig = fakeProfiles({ "sample.user": SAMPLE });
+    withStories(ig.deps);
+    // the second page opened is the highlights part's: its start waits for it until the test lets it load
+    let letIn!: () => void;
+    const gate = new Promise<void>((resolve) => (letIn = resolve));
+    const open = ig.deps.openProfile!;
+    let opens = 0;
+    ig.deps.openProfile = (username, cookies) => {
+      const source = open(username, cookies);
+      if (++opens !== 2) return source;
+      return {
+        ...source,
+        profile: async () => {
+          await gate;
+          return source.profile();
+        },
+      };
+    };
+    const c = await signedIn(ig.deps);
+    expect(await c.startProfileBackup("sample.user", POSTS_AND_HIGHLIGHTS)).toEqual({ ok: true });
+    const [job] = c.jobs.list();
+    for (let i = 0; i < 200 && opens < 2; i++) await new Promise((r) => setTimeout(r, 5));
+    // between the parts: the posts' backup finished, the screen's backup goes on
+    expect(c.snapshot().instagramBackup).toMatchObject({ kind: "profile", state: "finished" });
+    expect(c.snapshot().screenBackup).toMatchObject({ username: "sample.user", state: "running" });
+    const stopped = c.stopBackup();
+    letIn();
+    await stopped;
+    expect(await c.jobs.ended(job.id)).toMatchObject({ state: "cancelled" });
+    expect(c.snapshot().screenBackup).toMatchObject({ username: "sample.user", state: "cancelled" });
+    expect(existsSync(path.join(root, "dl", "Instagram", "sample.user", "Highlights", "s1.jpg"))).toBe(false);
+  });
+
   it("starts one job for two Continues at once", async () => {
     const ig = fakeProfiles({ "sample.user": SAMPLE });
     const held = stoppableFetch(ig.deps);

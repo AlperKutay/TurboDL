@@ -279,6 +279,21 @@ export interface AppSnapshot {
   version: string;
   /** the Instagram backup running or last run */
   instagramBackup: BackupView | null;
+  /** the profile backup the screen started last (its parts in turn), followed to its end */
+  screenBackup: ScreenBackupView | null;
+}
+
+/**
+ * "Back up this profile" from the screen: its parts (posts, highlights, tagged posts) run in turn as one job, which goes
+ * on between them while no backup runs. What it warned of so far, and how it ended.
+ */
+export interface ScreenBackupView {
+  username: string;
+  state: "running" | "done" | "failed" | "cancelled";
+  /** what needs saying beyond each part's own progress ("This profile has no highlights.") */
+  warnings: string[];
+  /** why it failed, or was stopped */
+  error?: string;
 }
 
 export type AppEvent =
@@ -288,6 +303,7 @@ export type AppEvent =
   | { type: "bridge"; status: BridgeStatus }
   | { type: "countdown"; state: CountdownState | null }
   | { type: "instagramBackup"; backup: BackupView | null }
+  | { type: "screenBackup"; screenBackup: ScreenBackupView | null }
   /** a saved link came in: show the Saved section */
   | { type: "openSaved" }
   /** a profile link came in: show it in Profiles */
