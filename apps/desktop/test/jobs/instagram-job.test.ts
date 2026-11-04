@@ -6,6 +6,7 @@ import { DEFAULT_SAVE_OPTIONS, SavedError, type InstagramItem, type InstagramPro
 import type { AppController, InstagramDeps } from "../../src/main/controller";
 import { FakeUi, SESSION, startApp } from "../fixtures/instagram-app";
 import { profileParts } from "../../src/main/jobs/instagram-job";
+import { profileShowedNothing } from "../../src/main/instagram/profile-service";
 import { fakeProfiles, fakeSignedOut, savedGet, signedOutCover } from "../fixtures/instagram-fakes";
 import { startTestServer, type TestServer } from "../fixtures/test-server";
 
@@ -503,6 +504,17 @@ describe("Instagram profile jobs", () => {
     expect(await run(c, { url })).toMatchObject({ state: "failed", reason: "private", error: "This account is private." });
     c.instagramSession.take(SESSION);
     expect(await run(c, { url })).toMatchObject({ state: "failed", reason: "private", error: "This account is private." });
+    expect(ig.fetched).toEqual([]);
+  });
+
+  it("fails saying Instagram showed nothing when a profile's page shows nothing, for every part", async () => {
+    const ig = fakeProfiles({});
+    const c = await start(ig.deps);
+    const failed = { state: "failed", reason: "error", error: profileShowedNothing("nobody.here") };
+    expect(await run(c, { url: "https://www.instagram.com/nobody.here/" })).toMatchObject(failed);
+    expect(await run(c, { url: "https://www.instagram.com/nobody.here/", options: { highlightsOnly: true } })).toMatchObject(failed);
+    c.instagramSession.take(SESSION);
+    expect(await run(c, { url: "https://www.instagram.com/nobody.here/", options: { posts: false, tagged: true } })).toMatchObject(failed);
     expect(ig.fetched).toEqual([]);
   });
 

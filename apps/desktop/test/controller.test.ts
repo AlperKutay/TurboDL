@@ -7,6 +7,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
 import { DEFAULT_SAVE_OPTIONS, SavedError, type AppEvent, type BackupView, type BrowserCookie, type InstagramItem, type InstagramProfile, type PendingItem, type SavedPost } from "@turbodl/shared";
 import { AppController, type ControllerUi, type InstagramDeps } from "../src/main/controller";
 import type { FindOutcome } from "../src/main/instagram/finder";
+import { profileShowedNothing } from "../src/main/instagram/profile-service";
 import { PUBLIC_PROFILE, fakeProfiles, fakeSignedOut, savedGet, signedOutCover } from "./fixtures/instagram-fakes";
 import { FFMPEG, makeClips, serveFolder, type Clips } from "./fixtures/media";
 import { startTestServer, type TestServer } from "./fixtures/test-server";
@@ -965,7 +966,7 @@ describe("Instagram profiles", () => {
     );
     const c = await signedIn(ig.deps);
     // the screen's profile backups run as jobs: the answer is the error the job ended with
-    expect(await c.startProfileBackup("nobody", POSTS_ONLY)).toEqual({ ok: false, error: "Instagram's answer couldn't be read." });
+    expect(await c.startProfileBackup("nobody", POSTS_ONLY)).toEqual({ ok: false, error: profileShowedNothing("nobody") });
     expect(await c.startProfileBackup("shut.door", POSTS_ONLY)).toEqual({ ok: false, error: "This account is private." });
     expect(await c.startHighlightsBackup("no.highlights", BOTH_KINDS)).toEqual({ ok: false, error: "This profile has no highlights.", reason: "empty" });
     // the pages opened only for those are closed again

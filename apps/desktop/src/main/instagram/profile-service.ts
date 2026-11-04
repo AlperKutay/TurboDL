@@ -28,6 +28,11 @@ import type { TaggedSource } from "./tagged-feed";
 export const TAGGED_NEEDS_SIGN_IN = "Tagged posts need a sign-in to Instagram.";
 export const taggedUnreadable = (username: string) => `TurboDL couldn't read @${username}'s tagged posts; Instagram may have changed its page.`;
 export const NO_TAGGED = "This profile has no tagged posts.";
+/**
+ * A profile's page that never showed the profile: TurboDL can't tell an account that doesn't exist from a page too
+ * slow to show it. A list tells it apart from other errors by this exact text.
+ */
+export const profileShowedNothing = (username: string) => `Instagram showed nothing for @${username}: it may not exist, or the page was too slow.`;
 
 /** A profile's page as the service needs it (`ProfileFeed` over a hidden page, or a demo). */
 export interface ProfileSource {
@@ -630,6 +635,7 @@ export class ProfileService {
       return { profile, source };
     } catch (err) {
       source.close();
+      if (err instanceof SavedError && err.kind === "badAnswer") return { ok: false, error: profileShowedNothing(key), reason: "error" };
       const failed = failedPage(err);
       if (failed.type === "failed") return { ok: false, error: failed.message, reason: "error" };
       if (failed.type === "signedOut") return { ok: false, error: "Sign in to Instagram again.", reason: "signInRequired" };
