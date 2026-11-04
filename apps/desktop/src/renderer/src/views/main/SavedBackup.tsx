@@ -1,41 +1,60 @@
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { formatBytes, type BackupPlan, type BackupView } from "@turbodl/shared";
 import { api } from "../../api";
 import { Modal } from "../../components/Modal";
 import { backupAction } from "../../saved-state";
 
-/** What starting a backup means: how many posts, roughly how large, where they go, and the warnings that go with it. */
+/**
+ * What starting a backup means: how many posts, roughly how large, where they go, and the warnings that go with it; then
+ * what it saves (`children`, when it offers a choice), and why it can't start.
+ */
 export function BackupConfirm({
   title,
   folder,
+  where,
   unit = "posts",
   plan,
   note,
+  children,
+  startBlocked,
+  starting = false,
+  error,
   onStart,
   onClose,
 }: {
   title: string;
   folder: string;
+  /** the whole line saying where the files go, when more than one folder is filled */
+  where?: string;
   /** what the count counts */
   unit?: string;
   plan: BackupPlan;
   /** what else this backup means (how long it takes seen signed out) */
   note?: string;
+  /** the choice of what it saves */
+  children?: ReactNode;
+  /** why the backup can't start with what is chosen; Start is disabled */
+  startBlocked?: string;
+  /** the start was asked for and isn't answered yet: Start waits, and the dialog stays until the answer */
+  starting?: boolean;
+  /** why the start was refused */
+  error?: string;
   onStart(): void;
   onClose(): void;
 }) {
   const tooBig = plan.bytes !== undefined && plan.freeBytes !== undefined && plan.bytes > plan.freeBytes;
+  const close = starting ? () => undefined : onClose;
   return (
     <Modal
       title={title}
-      onClose={onClose}
+      onClose={close}
       footer={
         <>
-          <button type="button" className="btn" onClick={onClose}>
+          <button type="button" className="btn" disabled={starting} onClick={close}>
             Cancel
           </button>
-          <button type="button" className="btn btn-primary" onClick={onStart}>
-            Start backup
+          <button type="button" className="btn btn-primary" disabled={starting || startBlocked !== undefined} onClick={onStart}>
+            {starting ? "Starting…" : "Start backup"}
           </button>
         </>
       }
@@ -44,11 +63,14 @@ export function BackupConfirm({
         {plan.count !== undefined ? `${plan.count.toLocaleString()} ${unit}` : `Instagram doesn't say how many ${unit} it holds.`}{" "}
         {plan.bytes !== undefined ? `About ${formatBytes(plan.bytes)} (an estimate from the posts loaded so far).` : "No size estimate yet."}
       </p>
-      <p className="muted">Every photo and video goes into {folder}. A later backup saves only what is new.</p>
+      <p className="muted">{where ?? `Every photo and video goes into ${folder}. A later backup saves only what is new.`}</p>
       {note && <p>{note}</p>}
       {plan.resumes && <p>An earlier backup stopped before the end; this one goes on from there.</p>}
       {plan.large && <p className="error-text">This holds more than 1,000 posts. Backing it up may take many hours, and Instagram may ask TurboDL to slow down.</p>}
       {tooBig && <p className="error-text">That is more than the free space on this drive ({formatBytes(plan.freeBytes ?? 0)} free).</p>}
+      {children}
+      {startBlocked && <p className="error-text">{startBlocked}</p>}
+      {error && <p className="error-text">{error}</p>}
     </Modal>
   );
 }

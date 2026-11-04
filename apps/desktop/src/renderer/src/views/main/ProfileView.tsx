@@ -1,20 +1,31 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { DEFAULT_SAVE_OPTIONS, isLocked, type BackupPlan, type BackupView, type Highlight, type InstagramProfile, type ProfileResult } from "@turbodl/shared";
+import {
+  effectiveSaveOptions,
+  isLocked,
+  saveOptionsProblem,
+  type BackupPlan,
+  type BackupView,
+  type Highlight,
+  type InstagramProfile,
+  type ProfileResult,
+  type ProfileSaveOptions,
+  type Result,
+} from "@turbodl/shared";
 import { api } from "../../api";
 import { readHighlights, togglePick } from "../../highlight-state";
 import { usePressPreview } from "../../press-preview";
 import { PickBar, PostGrid, useFeed } from "./PostGrid";
 import { BackupConfirm, BackupPanel } from "./SavedBackup";
+import { SaveOptions } from "./SaveOptions";
 
-/** what a backup saves until its confirmation offers the choice: what it saved before (the posts; photos and videos) */
-const SAVE_FOR_NOW = { ...DEFAULT_SAVE_OPTIONS, highlights: false, tagged: false };
-const KINDS_FOR_NOW = { photos: true, videos: true };
+/** A backup's confirmation as asked for: its plan, and whether Instagram's session is there (tagged posts need it). */
+type Confirming = { plan: BackupPlan; signedIn: boolean };
 
 /**
  * Someone's profile: who it is, then its Posts (page by page, pinned first, as on Instagram) and its Highlights, each
- * side with its own picks, Next and backup.
+ * side with its own picks, Next and backup. `saveOptions`: what the last backup chose to save, offered again.
  */
-export function ProfileView({ username, backup }: { username: string; backup: BackupView | null }) {
+export function ProfileView({ username, backup, saveOptions }: { username: string; backup: BackupView | null; saveOptions: ProfileSaveOptions }) {
   const [result, setResult] = useState<ProfileResult | "loading">("loading");
   const [busy, setBusy] = useState(false);
   const [tab, setTab] = useState<"posts" | "highlights">("posts");
@@ -91,10 +102,10 @@ export function ProfileView({ username, backup }: { username: string; backup: Ba
       </div>
       {/* both sides stay, each with its own picks; only the one chosen shows */}
       <div className="profile-side" hidden={tab !== "posts"}>
-        <ProfilePosts profile={profile} limited={limited} backup={backup} busy={busy} onSignIn={() => void signIn()} />
+        <ProfilePosts profile={profile} limited={limited} backup={backup} saveOptions={saveOptions} busy={busy} onSignIn={() => void signIn()} />
       </div>
       <div className="profile-side" hidden={tab !== "highlights"}>
-        <ProfileHighlights profile={profile} highlights={highlights} backup={backup} busy={busy} onSignIn={() => void signIn()} />
+        <ProfileHighlights profile={profile} highlights={highlights} backup={backup} saveOptions={saveOptions} busy={busy} onSignIn={() => void signIn()} />
       </div>
     </>
   );
@@ -116,10 +127,76 @@ function ProfileHeader({ profile }: { profile: InstagramProfile }) {
 /** What a backup seen signed out costs: one page per post. */
 const SIGNED_OUT_PACE = "Seen signed out, each post is read from its own page, a few seconds apart: a 50-post profile takes a few minutes; a 1,000-post profile takes hours.";
 
+/** The confirmation's plan and the account's session, read together. */
+async function askConfirm(plan: Promise<BackupPlan>): Promise<Confirming> {
+  const [read, account] = await Promise.all([plan, api.instagramAccount()]);
+  return { plan: read, signedIn: account.signedIn };
+}
+
+/**
+ * A profile backup's confirmation with the choice of what it saves, starting from what the last backup chose. Start
+ * remembers the choice and waits for the backup to start (or say why it can't), staying open meanwhile.
+ */
+function OptionsConfirm({
+  initial,
+  signedIn,
+  kindsOnly = false,
+  start,
+  onSignIn,
+  onClose,
+  ...confirm
+}: {
+  title: string;
+  folder: string;
+  where?: string;
+  unit?: string;
+  plan: BackupPlan;
+  note?: string;
+  initial: ProfileSaveOptions;
+  signedIn: boolean;
+  kindsOnly?: boolean;
+  start(options: ProfileSaveOptions): Promise<Result>;
+  onSignIn(): void;
+  onClose(): void;
+}) {
+  const [options, setOptions] = useState(initial);
+  const [starting, setStarting] = useState(false);
+  const [error, setError] = useState<string | undefined>(undefined);
+  // the Highlights tab's backup saves highlights alone: only the kinds can be wrong
+  const problem = kindsOnly ? saveOptionsProblem({ ...options, posts: false, highlights: true, tagged: false }) : saveOptionsProblem(effectiveSaveOptions(options, signedIn));
+
+  const go = async () => {
+    setStarting(true);
+    setError(undefined);
+    // the whole object: settings take it as it is
+    void api.updateSettings({ instagramSave: options });
+    const res = await start(options);
+    if (res.ok) return onClose();
+    setStarting(false);
+    setError(res.error);
+  };
+
+  return (
+    <BackupConfirm {...confirm} {...(problem ? { startBlocked: problem } : {})} starting={starting} {...(error ? { error } : {})} onStart={() => void go()} onClose={onClose}>
+      <SaveOptions
+        value={options}
+        onChange={(next) => {
+          setOptions(next);
+          setError(undefined);
+        }}
+        signedIn={signedIn}
+        kindsOnly={kindsOnly}
+        onSignIn={onSignIn}
+      />
+    </BackupConfirm>
+  );
+}
+
 function ProfilePosts({
   profile,
   limited,
   backup,
+  saveOptions,
   busy,
   onSignIn,
 }: {
@@ -127,13 +204,15 @@ function ProfilePosts({
   /** seen as signed-out visitors see it */
   limited: boolean;
   backup: BackupView | null;
+  saveOptions: ProfileSaveOptions;
   busy: boolean;
   onSignIn(): void;
 }) {
   const { username } = profile;
+  const folder = `Instagram › ${username}`;
   const { state, setState, sentinel } = useFeed({ kind: "profile", username }, (_source, cursor) => api.profilePage(username, cursor));
   const [error, setError] = useState<string | null>(null);
-  const [confirming, setConfirming] = useState<BackupPlan | null>(null);
+  const [confirming, setConfirming] = useState<Confirming | null>(null);
   const [resumes, setResumes] = useState(false);
   const [reading, setReading] = useState(false);
 
@@ -142,11 +221,6 @@ function ProfilePosts({
     void api.profileBackupPlan(username).then((plan) => setResumes(plan.resumes));
   }, [username, backup?.state]);
 
-  const startBackup = async () => {
-    setConfirming(null);
-    const res = await api.startProfileBackup(username, SAVE_FOR_NOW);
-    if (!res.ok) setError(res.error);
-  };
   // posts seen signed out are read from their own pages first, which takes a moment each
   const next = async () => {
     setError(null);
@@ -161,18 +235,22 @@ function ProfilePosts({
     <>
       {backup?.state !== "running" && (
         <div>
-          <button type="button" className="btn" onClick={() => void api.profileBackupPlan(username).then(setConfirming)}>
+          <button type="button" className="btn" onClick={() => void askConfirm(api.profileBackupPlan(username)).then(setConfirming)}>
             {resumes ? "Continue backup" : "Back up this profile"}
           </button>
         </div>
       )}
       {confirming && (
-        <BackupConfirm
+        <OptionsConfirm
           title={`Back up @${username}`}
-          folder={`Instagram › ${username}`}
-          plan={confirming}
+          folder={folder}
+          where={`Every photo and video goes into ${folder} (highlights and tagged posts into its Highlights and Tagged folders). A later backup saves only what is new — and what you tick later is fetched for older posts too.`}
+          plan={confirming.plan}
           {...(limited ? { note: SIGNED_OUT_PACE } : {})}
-          onStart={() => void startBackup()}
+          initial={saveOptions}
+          signedIn={confirming.signedIn}
+          start={(options) => api.startProfileBackup(username, effectiveSaveOptions(options, confirming.signedIn))}
+          onSignIn={onSignIn}
           onClose={() => setConfirming(null)}
         />
       )}
@@ -190,12 +268,14 @@ function ProfileHighlights({
   profile,
   highlights,
   backup,
+  saveOptions,
   busy,
   onSignIn,
 }: {
   profile: InstagramProfile;
   highlights: Highlight[];
   backup: BackupView | null;
+  saveOptions: ProfileSaveOptions;
   busy: boolean;
   onSignIn(): void;
 }) {
@@ -203,7 +283,7 @@ function ProfileHighlights({
   const [picked, setPicked] = useState<string[]>([]);
   const [loading, setLoading] = useState<{ index: number; total: number } | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [confirming, setConfirming] = useState<BackupPlan | null>(null);
+  const [confirming, setConfirming] = useState<Confirming | null>(null);
   const [resumes, setResumes] = useState(false);
   const [signedOut, setSignedOut] = useState(false);
   /** bumped by every Next, Cancel and the screen going: an older reading stops and its answers count for nothing */
@@ -239,29 +319,28 @@ function ProfileHighlights({
     if (res.ok) setPicked([]);
     else setError(res.error);
   };
-  const startBackup = async () => {
-    setConfirming(null);
-    const res = await api.startHighlightsBackup(username, KINDS_FOR_NOW);
-    if (!res.ok) setError(res.error);
-  };
 
   if (highlights.length === 0) return <p className="muted">No highlights</p>;
   return (
     <>
       {backup?.state !== "running" && (
         <div>
-          <button type="button" className="btn" onClick={() => void api.highlightsBackupPlan(username).then(setConfirming)}>
+          <button type="button" className="btn" onClick={() => void askConfirm(api.highlightsBackupPlan(username)).then(setConfirming)}>
             {resumes ? "Continue backup" : "Back up highlights"}
           </button>
         </div>
       )}
       {confirming && (
-        <BackupConfirm
+        <OptionsConfirm
           title={`Back up @${username}'s highlights`}
           folder={`Instagram › ${username} · Highlights`}
           unit="highlights"
-          plan={confirming}
-          onStart={() => void startBackup()}
+          plan={confirming.plan}
+          initial={saveOptions}
+          signedIn={confirming.signedIn}
+          kindsOnly
+          start={({ photos, videos }) => api.startHighlightsBackup(username, { photos, videos })}
+          onSignIn={onSignIn}
           onClose={() => setConfirming(null)}
         />
       )}

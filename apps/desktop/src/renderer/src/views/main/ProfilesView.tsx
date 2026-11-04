@@ -1,10 +1,23 @@
 import { useEffect, useState } from "react";
-import { profileName, type BackupView, type ProfileEntry } from "@turbodl/shared";
+import { profileName, type BackupView, type ProfileEntry, type ProfileSaveOptions } from "@turbodl/shared";
 import { api } from "../../api";
 import { ProfileView } from "./ProfileView";
 
 /** Instagram → Profiles: the open profile (by link, username, or one backed up before), or the list. */
-export function ProfilesView({ backup, open, onOpen, onBack }: { backup: BackupView | null; open: string | null; onOpen(username: string): void; onBack(): void }) {
+export function ProfilesView({
+  backup,
+  saveOptions,
+  open,
+  onOpen,
+  onBack,
+}: {
+  backup: BackupView | null;
+  /** what the last profile backup chose to save */
+  saveOptions: ProfileSaveOptions;
+  open: string | null;
+  onOpen(username: string): void;
+  onBack(): void;
+}) {
   if (open) {
     return (
       <div className="saved">
@@ -13,7 +26,7 @@ export function ProfilesView({ backup, open, onOpen, onBack }: { backup: BackupV
             All profiles
           </button>
         </div>
-        <ProfileView key={open} username={open} backup={backup} />
+        <ProfileView key={open} username={open} backup={backup} saveOptions={saveOptions} />
       </div>
     );
   }

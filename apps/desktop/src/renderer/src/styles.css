@@ -1050,3 +1050,36 @@ td.col-name {
   border-radius: 10px;
   background: var(--accent-soft);
 }
+
+/* a profile backup's choice of what it saves */
+.save-options {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 12px 0 4px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: var(--panel-2);
+}
+
+.save-options p {
+  margin: 0;
+  font-size: 12px;
+}
+
+.save-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 16px;
+}
+
+.save-row-label {
+  min-width: 48px;
+  color: var(--muted);
+}
+
+.save-row .check:has(input:disabled) {
+  color: var(--muted);
+  cursor: default;
+}

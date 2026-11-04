@@ -132,6 +132,7 @@ export function MainWindow() {
           {section === "profiles" && (
             <ProfilesView
               backup={state.instagramBackup}
+              saveOptions={state.settings.instagramSave}
               open={openProfile}
               onOpen={setOpenProfile}
               onBack={() => {

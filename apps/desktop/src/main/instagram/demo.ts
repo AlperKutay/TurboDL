@@ -20,7 +20,8 @@ function signedOutOwner(code: string): string | undefined {
  * Test runs only (TURBODL_USER_DATA with TURBODL_INSTAGRAM_DEMO_BASE): every link is a post of three photos served at
  * `<base>/ig/<n>.png`, signed in already as demo.user (unless TURBODL_INSTAGRAM_DEMO_SIGNED_OUT), nothing kept on disk.
  * Saved: All holds six posts on two pages (the first a carousel), "Trips" three; profiles demo.person (with two
- * highlights), demo.locked, demo.plain, and two as signed-out visitors see them, with or without the session:
+ * highlights), demo.locked, demo.plain (no highlights, its second post a video), and two as signed-out visitors see
+ * them, with or without the session:
  * demo.public (seven posts on three pages; two highlights, the second on the tray's next page) and demo.open (three
  * posts on two pages, none hidden, no highlights). demo.public's DP5 answers signInOnly whatever the cookies are, as
  * if Instagram showed it only to signed-in visitors. A profile's tagged page shows its first two posts. Waits are
@@ -36,6 +37,8 @@ export function demoInstagram(base: string): InstagramDeps {
   const trips = [photo("t1", 2), photo("t2", 1), photo("t3", 0)];
   const feed = (posts: object[], next?: string) => JSON.stringify({ items: posts.map((media) => ({ media })), more_available: Boolean(next), ...(next ? { next_max_id: next } : {}), status: "ok" });
   const post = (k: number): SavedPost => ({ id: `p${k}`, cover: `${base}/ig/${k % 3}.png`, items: [{ kind: "image", url: `${base}/ig/${k % 3}.png`, mediaId: `p${k}` }], ...(k === 1 ? { pinned: true } : {}) });
+  // a video post: a photo file served as its video (saved with .mp4, as a video is)
+  const video = (k: number): SavedPost => ({ id: `p${k}`, cover: `${base}/ig/${k % 3}.png`, items: [{ kind: "video", url: `${base}/ig/${k % 3}.png`, mediaId: `p${k}` }] });
   const cover = (code: string, mediaType: number): SavedPost => ({ id: `${code}-post`, code, cover: `${base}/ig/0.png`, items: [], unread: true, mediaType });
   const profiles: Record<string, { profile: InstagramProfile; pages: SavedPost[][]; highlights?: Highlight[]; moreHighlights?: Highlight[]; limited?: boolean }> = {
     "demo.person": {
@@ -69,9 +72,10 @@ export function demoInstagram(base: string): InstagramDeps {
       pages: [[cover("DO1", 1), cover("DO2", 8)], [cover("DO3", 1)]],
       limited: true,
     },
+    // no highlights; its second post is a video
     "demo.plain": {
       profile: { id: "5100000000000000009", username: "demo.plain", fullName: "Demo Plain", isPrivate: false, following: true, postCount: 3 },
-      pages: [[post(1), post(2), post(3)]],
+      pages: [[post(1), video(2), post(3)]],
     },
     "demo.locked": {
       profile: { id: "5100000000000000008", username: "demo.locked", fullName: "Demo Locked", isPrivate: true, following: false, postCount: 4 },
