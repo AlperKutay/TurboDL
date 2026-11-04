@@ -11,6 +11,9 @@ import { InstagramFinder } from "./instagram/finder";
 import { loadCollections } from "./instagram/collections";
 import { ProfileFeed } from "./instagram/profile-feed";
 import { ElectronInstagramPage, allowTestSite, instagramSession } from "./instagram/page";
+import { taggedRequest } from "./instagram/posts-request";
+import { reportWriter } from "./instagram/reports";
+import { TaggedFeed } from "./instagram/tagged-feed";
 import { signInToInstagram } from "./instagram/signin";
 import { systemCrypt } from "./instagram/session";
 import { EVENT_CHANNEL, broadcast, registerIpc } from "./ipc";
@@ -122,6 +125,8 @@ async function start(): Promise<void> {
           signOut: () => instagramSession().clearStorageData(),
           openProfile: (username, cookies) =>
             new ProfileFeed(new ElectronInstagramPage(cookies), username, { site: instagramTestSite, signedIn: cookies.some((c) => c.name === "sessionid" && c.value) }),
+          openTagged: (username, cookies) =>
+            new TaggedFeed(new ElectronInstagramPage(cookies, { paging: taggedRequest }), username, { site: instagramTestSite, report: taggedReport() }),
           crypt: systemCrypt(process.platform, safeStorage),
           agent: chromeAgent(app.userAgentFallback),
         },
@@ -170,4 +175,12 @@ function instagramReport(): ((url: string, documents: string[]) => void) | undef
     mkdirSync(dir, { recursive: true });
     writeFileSync(path.join(dir, `${Date.now()}-instagram.json`), JSON.stringify({ url, documents }, null, 1));
   };
+}
+
+/**
+ * What the tagged page held when nothing readable was on it, always (nobody has seen that page's answers yet): the
+ * newest five as `<userData>/instagram-reports/<time>-tagged.json`.
+ */
+function taggedReport(): (url: string, documents: string[]) => void {
+  return reportWriter(path.join(app.getPath("userData"), "instagram-reports"), "-tagged.json");
 }

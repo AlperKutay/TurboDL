@@ -60,6 +60,7 @@ import { LedgerStore } from "./instagram/ledger";
 import { InstagramPacer, SLOW_DOWN, failedPage } from "./instagram/pacer";
 import { ProfileIndex } from "./instagram/profile-index";
 import { ProfileService, type ProfileSource } from "./instagram/profile-service";
+import type { TaggedSource } from "./instagram/tagged-feed";
 import { httpGet, type HttpGet } from "./instagram/saved-client";
 import { SavedService } from "./instagram/saved-service";
 import type { FindOutcome } from "./instagram/finder";
@@ -139,6 +140,8 @@ export interface InstagramDeps {
   signOut?(): Promise<void>;
   /** a profile's page, read with the session */
   openProfile?(username: string, cookies: BrowserCookie[]): ProfileSource;
+  /** a profile's tagged page, read with the session (there is none signed out) */
+  openTagged?(username: string, cookies: BrowserCookie[]): TaggedSource;
 }
 
 /** Without Instagram (tests that don't need it): no profile ever loads. */

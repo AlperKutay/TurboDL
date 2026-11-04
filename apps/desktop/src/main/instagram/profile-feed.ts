@@ -24,7 +24,7 @@ import { STALE_SIGNED_OUT, STALE_SIGNED_OUT_TRAY, operationIds } from "./signed-
  * an end to keeping its answers.
  */
 export interface ProfileDriver extends PageDriver {
-  /** the page's own posts request from after `cursor`; null until the page has made one */
+  /** the page's own paging request (its posts, or its tagged posts) from after `cursor`; null until the page has made one */
   resend(cursor: string): Promise<{ status: number; text: string } | null>;
   /**
    * a signed-out query sent from inside the page with the id known as the call starts; null while that id is unknown.
@@ -55,7 +55,7 @@ export interface ProfileFeedOptions {
 }
 
 /** ms one look at the page may take */
-const LOOK = 3000;
+export const LOOK = 3000;
 
 /** posts per signed-out page, as Instagram's own page asks for them */
 const SIGNED_OUT_PAGE = 12;
@@ -110,17 +110,7 @@ export class ProfileFeed {
       const variables = { after: cursor, first: SIGNED_OUT_PAGE, username: this.username, __relay_internal__pv__PolarisSEOIsCrawlerrelayprovider: false };
       return toPage(await this.signedOut(SIGNED_OUT_POSTS_QUERY, variables, signedOutPostsAnswer, STALE_SIGNED_OUT, signal));
     }
-    let answer = await this.driver.resend(cursor);
-    if (!answer) {
-      // the page asks for more only when it is scrolled
-      await this.driver.scrollToEnd();
-      const deadline = Date.now() + (this.o.requestWait ?? 6000);
-      while (!answer && Date.now() < deadline && !signal?.aborted) {
-        await sleep(this.o.poll ?? 500);
-        answer = await this.driver.resend(cursor);
-      }
-    }
-    if (!answer) throw new SavedError("badAnswer");
+    const answer = await resendPaging(this.driver, cursor, this.o, signal);
     return toPage(profilePostsAnswer(answer.text, answer.status));
   }
 
@@ -237,15 +227,40 @@ export class ProfileFeed {
   }
 }
 
-function toPage(posts: ProfilePosts): SavedPage {
+/**
+ * The page's own paging request sent again from after `cursor`. The page makes that request only once it is scrolled:
+ * until it has, the page is scrolled to its end once and asked again every `poll` ms for up to `requestWait` ms (or until
+ * `signal` aborts). Throws badAnswer when the page never makes one.
+ */
+export async function resendPaging(
+  driver: Pick<ProfileDriver, "resend" | "scrollToEnd">,
+  cursor: string,
+  o: { poll?: number; requestWait?: number },
+  signal?: AbortSignal,
+): Promise<{ status: number; text: string }> {
+  let answer = await driver.resend(cursor);
+  if (!answer) {
+    await driver.scrollToEnd();
+    const deadline = Date.now() + (o.requestWait ?? 6000);
+    while (!answer && Date.now() < deadline && !signal?.aborted) {
+      await sleep(o.poll ?? 500);
+      answer = await driver.resend(cursor);
+    }
+  }
+  if (!answer) throw new SavedError("badAnswer");
+  return answer;
+}
+
+export function toPage(posts: ProfilePosts): SavedPage {
   return { posts: posts.posts, ...(posts.hasNext && posts.cursor ? { next: posts.cursor } : {}) };
 }
 
-function sleep(ms: number): Promise<void> {
+export function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
 
-function onSignInPage(address: string): boolean {
+/** Instagram sent the page to sign-in, or to a check. */
+export function onSignInPage(address: string): boolean {
   try {
     return isSignInPath(new URL(address).pathname);
   } catch {
