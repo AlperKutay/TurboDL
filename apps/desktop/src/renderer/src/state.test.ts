@@ -33,6 +33,7 @@ const snapshot = (downloads: DownloadView[]): AppSnapshot => ({
   version: "1",
   instagramBackup: null,
   screenBackup: null,
+  profileList: null,
 });
 
 describe("applyEvent", () => {

@@ -5,3 +5,4 @@ export * from "./saved";
 export * from "./profile";
 export * from "./tagged";
 export * from "./options";
+export * from "./profile-list";

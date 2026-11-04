@@ -1,5 +1,5 @@
 import path from "node:path";
-import { DEFAULT_BRIDGE_PORT, DEFAULT_CAPTURE_EXTENSIONS, DEFAULT_SAVE_OPTIONS, type AfterAllAction, type Settings } from "@turbodl/shared";
+import { DEFAULT_BRIDGE_PORT, DEFAULT_CAPTURE_EXTENSIONS, DEFAULT_LIST_WAIT, DEFAULT_SAVE_OPTIONS, waitProblem, type AfterAllAction, type Settings } from "@turbodl/shared";
 
 const TIME = /^([01]\d|2[0-3]):[0-5]\d$/;
 const AFTER_ALL: AfterAllAction[] = ["none", "sleep", "shutdown", "quit"];
@@ -20,6 +20,7 @@ export function defaultSettings(downloadsDir: string): Settings {
     watchClipboard: true,
     instagramByAccount: true,
     instagramSave: { ...DEFAULT_SAVE_OPTIONS },
+    listWait: { ...DEFAULT_LIST_WAIT },
     scheduler: { enabled: false, startTime: "02:00", stopTime: null, afterAll: "none" },
   };
 }
@@ -48,6 +49,7 @@ export function normalizeSettings(input: unknown, defaults: Settings): Settings 
   const schedSrc = (src.scheduler && typeof src.scheduler === "object" ? src.scheduler : {}) as Record<string, unknown>;
   const saveSrc = (src.instagramSave && typeof src.instagramSave === "object" ? src.instagramSave : {}) as Record<string, unknown>;
   const d = defaults.scheduler;
+  const waitSrc = (src.listWait && typeof src.listWait === "object" ? src.listWait : {}) as { min: unknown; max: unknown };
   return {
     baseDir: typeof src.baseDir === "string" && src.baseDir.trim() ? src.baseDir : defaults.baseDir,
     maxConnections: clampInt(src.maxConnections, 1, 16, defaults.maxConnections),
@@ -69,6 +71,7 @@ export function normalizeSettings(input: unknown, defaults: Settings): Settings 
       photos: bool(saveSrc.photos, defaults.instagramSave.photos),
       videos: bool(saveSrc.videos, defaults.instagramSave.videos),
     },
+    listWait: waitProblem(waitSrc) === null ? { min: waitSrc.min as number, max: waitSrc.max as number } : { ...defaults.listWait },
     scheduler: {
       enabled: bool(schedSrc.enabled, d.enabled),
       startTime: typeof schedSrc.startTime === "string" && TIME.test(schedSrc.startTime) ? schedSrc.startTime : d.startTime,

@@ -1,4 +1,4 @@
-import type { Highlight, InstagramItem, InstagramLink, InstagramProfile, ProfileSaveOptions, SavedCollection, SavedPage, SavedSource } from "./instagram";
+import type { Highlight, InstagramItem, InstagramLink, InstagramProfile, ListWait, ProfileListView, ProfileSaveOptions, SavedCollection, SavedPage, SavedSource } from "./instagram";
 import type { BrowserCookie, CaptureSource, MediaItem } from "./protocol";
 
 export type Category = "video" | "music" | "programs" | "archives" | "documents" | "images" | "other";
@@ -107,6 +107,8 @@ export interface Settings {
   instagramByAccount: boolean;
   /** what an Instagram profile backup saves */
   instagramSave: ProfileSaveOptions;
+  /** the random wait between a profile list's profiles, minutes */
+  listWait: ListWait;
   scheduler: SchedulerSettings;
 }
 
@@ -281,6 +283,8 @@ export interface AppSnapshot {
   instagramBackup: BackupView | null;
   /** the profile backup the screen started last (its parts in turn), followed to its end */
   screenBackup: ScreenBackupView | null;
+  /** the profile list running or last run */
+  profileList: ProfileListView | null;
 }
 
 /**
@@ -306,6 +310,7 @@ export type AppEvent =
   | { type: "countdown"; state: CountdownState | null }
   | { type: "instagramBackup"; backup: BackupView | null }
   | { type: "screenBackup"; screenBackup: ScreenBackupView | null }
+  | { type: "profileList"; list: ProfileListView | null }
   /** a saved link came in: show the Saved section */
   | { type: "openSaved" }
   /** a profile link came in: show it in Profiles */

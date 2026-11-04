@@ -398,6 +398,7 @@ export class AppController {
       version: this.o.version,
       instagramBackup: this.backups.view(),
       screenBackup: this.screenBackup,
+      profileList: null,
     };
   }
 
