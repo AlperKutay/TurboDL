@@ -1,6 +1,6 @@
 import vm from "node:vm";
 import { describe, expect, it } from "vitest";
-import { postsRequest, resendScript, type PostsRequest } from "../../src/main/instagram/posts-request";
+import { postsRequest, resendScript, taggedRequest, type PagingRequest } from "../../src/main/instagram/posts-request";
 
 const POSTS_ANSWER = '{"data":{"xdt_api__v1__feed__user_timeline_graphql_connection":{"edges":[],"page_info":{"has_next_page":false}}}}';
 const variables = { after: "cursor-1", before: null, data: { count: 12 }, first: 12, username: "sample.user" };
@@ -45,7 +45,7 @@ describe("the page's own posts request", () => {
   });
 
   it("keeps only the headers the page set itself", () => {
-    expect((postsRequest(paging, POSTS_ANSWER) as PostsRequest).headers).toEqual({
+    expect((postsRequest(paging, POSTS_ANSWER) as PagingRequest & { kind: "graphql" }).headers).toEqual({
       "Content-Type": "application/x-www-form-urlencoded",
       "X-FB-Friendly-Name": "PolarisProfilePostsTabContentQuery_connection",
       "X-CSRFToken": "csrf",
@@ -53,7 +53,7 @@ describe("the page's own posts request", () => {
   });
 
   it("is sent again from after the new cursor, with the page's credentials, everything else unchanged", async () => {
-    const request = postsRequest(paging, POSTS_ANSWER) as PostsRequest;
+    const request = postsRequest(paging, POSTS_ANSWER) as PagingRequest;
     const sent = await run(resendScript(request, "cursor-2"));
     expect(sent.url).toBe(paging.url);
     expect([sent.init.method, sent.init.credentials]).toEqual(["POST", "include"]);
@@ -65,9 +65,50 @@ describe("the page's own posts request", () => {
   });
 
   it("can't be broken out of by quotes in what Instagram sent", async () => {
-    const odd = { ...(postsRequest(paging, POSTS_ANSWER) as PostsRequest), url: 'https://www.instagram.com/graphql/query?x="); throw 1; ("' };
+    const odd = { ...(postsRequest(paging, POSTS_ANSWER) as PagingRequest), url: 'https://www.instagram.com/graphql/query?x="); throw 1; ("' };
     const sent = await run(resendScript(odd, `c"'\`\${x}\n`));
     expect(sent.url).toBe(odd.url);
     expect(JSON.parse(new URLSearchParams(sent.init.body).get("variables") as string).after).toBe(`c"'\`\${x}\n`);
+  });
+});
+
+describe("the tagged page's own request", () => {
+  const TAGGED_ANSWER = '{"data":{"xdt_api__v1__usertags__user_id__feed_connection":{"edges":[],"page_info":{"has_next_page":false}}}}';
+  const rest = { url: "https://www.instagram.com/api/v1/usertags/123/feed/?count=12", method: "GET", headers: { "X-IG-App-ID": "936", "X-CSRFToken": "csrf", Cookie: "c" } };
+
+  it("is the graphql POST with a cursor whose answer holds usertags", () => {
+    expect(taggedRequest(paging, TAGGED_ANSWER)).toMatchObject({ kind: "graphql", url: paging.url, body });
+  });
+
+  it("is not the first graphql query, nor the profile's posts request", () => {
+    const first = new URLSearchParams({ variables: JSON.stringify({ first: 12 }) }).toString();
+    expect(taggedRequest({ ...paging, body: first }, TAGGED_ANSWER)).toBeNull();
+    expect(taggedRequest(paging, POSTS_ANSWER)).toBeNull();
+    expect(postsRequest(paging, POSTS_ANSWER)).toMatchObject({ kind: "graphql" });
+    expect(postsRequest(paging, TAGGED_ANSWER)).toBeNull();
+  });
+
+  it("is the usertags GET whose answer has items", () => {
+    expect(taggedRequest(rest, '{"items":[],"more_available":false}')).toEqual({
+      kind: "rest",
+      url: rest.url,
+      headers: { "X-IG-App-ID": "936", "X-CSRFToken": "csrf" },
+    });
+    expect(taggedRequest(rest, '{"status":"ok"}')).toBeNull();
+    expect(taggedRequest({ ...rest, url: "https://www.instagram.com/api/v1/feed/saved/posts/" }, '{"items":[]}')).toBeNull();
+    expect(taggedRequest({ ...rest, method: "POST" }, '{"items":[]}')).toBeNull();
+  });
+
+  it("is sent again as a GET with max_id replaced, other parameters kept", async () => {
+    const request: PagingRequest = { kind: "rest", url: "https://www.instagram.com/api/v1/usertags/123/feed/?count=12&max_id=old", headers: { "X-CSRFToken": "csrf" } };
+    const script = resendScript(request, "abc");
+    expect(script.match(/max_id=abc/g)).toHaveLength(1);
+    expect(script).toContain('"method":"GET"');
+    const sent = await run(script);
+    expect(sent.url).toBe("https://www.instagram.com/api/v1/usertags/123/feed/?count=12&max_id=abc");
+    expect([sent.init.method, sent.init.credentials]).toEqual(["GET", "include"]);
+    expect(sent.init.headers).toEqual(request.headers);
+    const added = await run(resendScript({ ...request, url: "https://www.instagram.com/api/v1/usertags/123/feed/?count=12" }, "a&b"));
+    expect(added.url).toBe("https://www.instagram.com/api/v1/usertags/123/feed/?count=12&max_id=a%26b");
   });
 });

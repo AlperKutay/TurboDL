@@ -4,7 +4,7 @@ import { chromeAgent } from "./agent";
 import { within } from "./finder";
 import type { ProfileDriver } from "./profile-feed";
 import { INSTAGRAM_PARTITION, blockedFrame, electronCookie, isInstagramAddress, isInstagramScriptHost } from "./partition";
-import { postsRequest, resendScript, type PostsRequest } from "./posts-request";
+import { postsRequest, resendScript, type PagingRequest } from "./posts-request";
 import { NO_ANSWER, NO_LSD, operationIds, signedOutQueryScript } from "./signed-out";
 
 const MAX_DOCUMENT = 4 * 1024 * 1024;
@@ -80,7 +80,7 @@ export class ElectronInstagramPage implements ProfileDriver {
   private readonly scripts = new Set<string>();
   /** graphql POSTs in flight, one of which may be the page's own posts request */
   private readonly sent = new Map<string, { url: string; method: string; headers: Record<string, string>; body?: string; hasPostData?: boolean }>();
-  private request: PostsRequest | null = null;
+  private request: PagingRequest | null = null;
   private collecting = true;
   private bytes = 0;
   private closed = false;
