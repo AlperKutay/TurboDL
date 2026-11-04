@@ -53,6 +53,12 @@ describe("saved-state", () => {
     expect(backupAction("signedOut")).toBe("signIn");
     for (const state of ["stopped", "rateLimited", "failed"] as const) expect(backupAction(state)).toBe("continue");
     expect(backupAction("finished")).toBe("none");
+    // a profile list's backup the list goes on with by itself: Stop at most
+    expect(backupAction("running", "active")).toBe("stop");
+    for (const state of ["stopped", "rateLimited", "failed", "signedOut", "finished"] as const) expect(backupAction(state, "active")).toBe("none");
+    // one the list's Continue goes on with offers the same as any
+    expect(backupAction("stopped", "resumable")).toBe("continue");
+    expect(backupAction("signedOut", "resumable")).toBe("signIn");
   });
 
   it("shows a screen's profile backup going on between its parts, and how it ended after its last part finished", () => {

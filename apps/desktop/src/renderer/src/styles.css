@@ -1083,3 +1083,91 @@ td.col-name {
   color: var(--muted);
   cursor: default;
 }
+
+/* a list of profiles backed up one after another */
+.list-panel {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel);
+}
+
+.list-panel-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.list-rows {
+  display: flex;
+  flex-direction: column;
+  max-height: 180px;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+}
+
+.list-row {
+  width: 100%;
+  overflow: hidden;
+  padding: 3px 6px;
+  border: 0;
+  border-radius: 6px;
+  color: var(--text);
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  background: transparent;
+  cursor: pointer;
+}
+
+.list-row:hover {
+  background: var(--panel-2);
+}
+
+.list-row[data-state="waiting"] {
+  color: var(--muted);
+}
+
+.list-row[data-state="failed"] {
+  color: var(--danger);
+}
+
+.list-banner {
+  margin: 0;
+  padding: 6px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--accent-soft);
+}
+
+.list-file {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+}
+
+.list-names {
+  margin: 8px 0 0;
+  overflow-wrap: anywhere;
+}
+
+.list-invalid {
+  margin: 8px 0 0;
+  padding-left: 18px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.list-wait input {
+  display: inline-block;
+  width: 64px;
+  margin: 0 2px;
+  padding: 3px 6px;
+}

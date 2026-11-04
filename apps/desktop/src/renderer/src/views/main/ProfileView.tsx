@@ -7,6 +7,7 @@ import {
   type BackupView,
   type Highlight,
   type InstagramProfile,
+  type ProfileListView,
   type ProfileResult,
   type ProfileSaveOptions,
   type Result,
@@ -25,17 +26,20 @@ type Confirming = { plan: BackupPlan; signedIn: boolean };
 /**
  * Someone's profile: who it is, then its Posts (page by page, pinned first, as on Instagram) and its Highlights, each
  * side with its own picks, Next and backup. `saveOptions`: what the last backup chose to save, offered again. `screen`: the
- * profile backup the screen started last, which goes on between its parts.
+ * profile backup the screen started last, which goes on between its parts. `list`: the profile list, whose own backups
+ * go on through it.
  */
 export function ProfileView({
   username,
   backup,
   screen,
+  list,
   saveOptions,
 }: {
   username: string;
   backup: BackupView | null;
   screen: ScreenBackupView | null;
+  list: ProfileListView | null;
   saveOptions: ProfileSaveOptions;
 }) {
   const [result, setResult] = useState<ProfileResult | "loading">("loading");
@@ -104,7 +108,7 @@ export function ProfileView({
           </button>
         </p>
       )}
-      {backup && <BackupPanel backup={backup} screen={screen} username={username} onSignedIn={() => undefined} />}
+      {backup && <BackupPanel backup={backup} screen={screen} list={list} username={username} onSignedIn={() => undefined} />}
       <div className="saved-collections" role="tablist">
         <button type="button" role="tab" aria-selected={tab === "posts"} className="saved-collection" onClick={() => setTab("posts")}>
           Posts
@@ -139,7 +143,7 @@ function ProfileHeader({ profile }: { profile: InstagramProfile }) {
 }
 
 /** What a backup seen signed out costs: one page per post. */
-const SIGNED_OUT_PACE = "Seen signed out, each post is read from its own page, a few seconds apart: a 50-post profile takes a few minutes; a 1,000-post profile takes hours.";
+export const SIGNED_OUT_PACE = "Seen signed out, each post is read from its own page, a few seconds apart: a 50-post profile takes a few minutes; a 1,000-post profile takes hours.";
 
 /** The confirmation's plan and the account's session, read together. */
 async function askConfirm(plan: Promise<BackupPlan>): Promise<Confirming> {

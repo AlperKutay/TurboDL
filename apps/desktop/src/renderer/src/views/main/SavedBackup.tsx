@@ -1,7 +1,8 @@
 import { useState, type ReactNode } from "react";
-import { formatBytes, type BackupPlan, type BackupView, type ScreenBackupView } from "@turbodl/shared";
+import { formatBytes, type BackupPlan, type BackupView, type ProfileListView, type ScreenBackupView } from "@turbodl/shared";
 import { api } from "../../api";
 import { Modal } from "../../components/Modal";
+import { listOwnsBackup } from "../../profile-list-state";
 import { backupAction, panelState, panelWarnings } from "../../saved-state";
 
 /**
@@ -87,19 +88,33 @@ const STATES: Record<BackupView["state"], string> = {
 /**
  * The running or last backup: its post, Done · Left · Failed · New, and Stop, Continue or sign-in. `screen`: the profile
  * backup the screen started, whose parts run in turn (it goes on between them: Stop); its warnings and how it ended show
- * on its own profile's screen (`username`).
+ * on its own profile's screen (`username`). `list`: the profile list, when this is the backup of the profile it is at:
+ * the list goes on with it (its Continue, or by itself after a slow-down), never the backup alone outside it.
  */
-export function BackupPanel({ backup, screen = null, username, onSignedIn }: { backup: BackupView; screen?: ScreenBackupView | null; username?: string; onSignedIn(): void }) {
+export function BackupPanel({
+  backup,
+  screen = null,
+  list = null,
+  username,
+  onSignedIn,
+}: {
+  backup: BackupView;
+  screen?: ScreenBackupView | null;
+  list?: ProfileListView | null;
+  username?: string;
+  onSignedIn(): void;
+}) {
   const shown = panelState(backup, screen);
   const running = shown.state === "running";
-  const action = backupAction(shown.state);
+  const listed = listOwnsBackup(backup, list);
+  const action = backupAction(shown.state, listed);
   const own = screen && username !== undefined && screen.username.toLowerCase() === username.toLowerCase() ? screen : null;
   const warnings = panelWarnings(backup, own);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const resume = async () => {
     setError(null);
-    const res = await api.continueBackup();
+    const res = await (listed === "resumable" ? api.continueProfileList() : api.continueBackup());
     if (!res.ok) setError(res.error);
   };
   // signed out midway: sign in again, then go on where it stopped

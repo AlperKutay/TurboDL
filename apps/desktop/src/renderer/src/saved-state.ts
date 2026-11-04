@@ -60,7 +60,7 @@ export function retry(state: SavedState): SavedState {
 }
 
 /** Whether the backup is one of the profile's parts: its posts' ("sample.user"), highlights' or tagged posts' ("sample.user · Highlights"). */
-function belongsTo(backup: BackupView, username: string): boolean {
+export function belongsTo(backup: BackupView, username: string): boolean {
   const name = backup.name.toLowerCase();
   const user = username.toLowerCase();
   if (backup.kind === "profile") return name === user;
@@ -92,9 +92,13 @@ export function panelWarnings(backup: BackupView, screen: ScreenBackupView | nul
   return ownScreen(backup, screen)?.warnings.filter((w) => w !== backup.warning) ?? [];
 }
 
-/** What a backup's panel offers: Stop while it runs, sign-in when Instagram signed TurboDL out, else Continue. */
-export function backupAction(state: BackupView["state"]): "stop" | "continue" | "signIn" | "none" {
+/**
+ * What a backup's panel offers: Stop while it runs, sign-in when Instagram signed TurboDL out, else Continue. A backup a
+ * profile list goes on with by itself (`listed` "active": its slow-down wait) offers no more than Stop.
+ */
+export function backupAction(state: BackupView["state"], listed: "active" | "resumable" | null = null): "stop" | "continue" | "signIn" | "none" {
   if (state === "running") return "stop";
+  if (listed === "active") return "none";
   if (state === "signedOut") return "signIn";
   return state === "finished" ? "none" : "continue";
 }
