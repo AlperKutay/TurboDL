@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, 
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { SavedError, type InstagramItem, type InstagramProfile, type Job, type JobEvent, type JobRequest, type SavedPost } from "@turbodl/shared";
+import { DEFAULT_SAVE_OPTIONS, SavedError, type InstagramItem, type InstagramProfile, type Job, type JobEvent, type JobRequest, type SavedPost } from "@turbodl/shared";
 import type { AppController, InstagramDeps } from "../../src/main/controller";
 import { FakeUi, SESSION, startApp } from "../fixtures/instagram-app";
 import { profileParts } from "../../src/main/jobs/instagram-job";
@@ -364,7 +364,7 @@ describe("Instagram profile jobs", () => {
     const held = heldFetch(ig.deps);
     const c = await signedIn(ig.deps);
     await c.profileLoad("sample.user");
-    expect(await c.startProfileBackup("sample.user")).toEqual({ ok: true });
+    expect(await c.startProfileBackup("sample.user", { ...DEFAULT_SAVE_OPTIONS, highlights: false, tagged: false })).toEqual({ ok: true });
     const { id } = c.jobs.create({ url: "https://www.instagram.com/other.user/" });
     await flush();
     expect(c.jobs.get(id)?.state).toBe("queued");
@@ -560,8 +560,9 @@ describe("Instagram profile jobs", () => {
     const ig = fakeProfiles({ "sample.user": { ...SAMPLE(), tagged: [[photo("t1")]] }, "other.user": OTHER() });
     const held = heldFetch(ig.deps);
     const c = await signedIn(ig.deps);
-    // the first time, a backup from the app's screens starts while the tagged page loads: the slot is taken (busy)
-    // when the tagged backup asks for it; the job waits for that backup to end and tries again
+    // the first time, a backup outside the jobs' lane (as a screen's Highlights or Saved backup) starts while the tagged
+    // page loads: the slot is taken (busy) when the tagged backup asks for it; the job waits for that backup to end and
+    // tries again
     const open = ig.deps.openTagged!;
     let opens = 0;
     const closedBeforeRetry: number[] = [];
@@ -571,7 +572,7 @@ describe("Instagram profile jobs", () => {
         closedBeforeRetry.push(ig.taggedClosed.length);
         return source;
       }
-      return { ...source, load: async () => void (await c.startProfileBackup("other.user")) };
+      return { ...source, load: async () => void (await c["profiles"].startBackup("other.user")) };
     };
     const { id } = c.jobs.create({ url: PROFILE_URL, options: { posts: false, tagged: true } });
     await until(() => ig.taggedClosed.length === 1);

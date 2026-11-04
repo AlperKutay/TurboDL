@@ -353,7 +353,8 @@ export interface TurboApi {
   profilePage(username: string, cursor?: string): Promise<SavedPageResult>;
   openProfilePicks(username: string, postIds: string[]): Promise<Result>;
   profileBackupPlan(username: string): Promise<BackupPlan>;
-  startProfileBackup(username: string): Promise<Result>;
+  /** backs up the ticked parts of the profile in turn (posts, highlights, tagged posts) as one job; answered once it runs */
+  startProfileBackup(username: string, options: ProfileSaveOptions): Promise<Result>;
   instagramProfiles(): Promise<ProfileEntry[]>;
   removeInstagramProfile(id: string): Promise<void>;
   /** the profile screen closed: its page can go (unless a backup still uses it) */
@@ -365,7 +366,7 @@ export interface TurboApi {
   /** the picker over the read highlights' stories, in pick order */
   openHighlightPicks(username: string, ids: string[]): Promise<Result>;
   highlightsBackupPlan(username: string): Promise<BackupPlan>;
-  startHighlightsBackup(username: string): Promise<Result>;
+  startHighlightsBackup(username: string, kinds: { photos: boolean; videos: boolean }): Promise<Result>;
   cancelCountdown(): Promise<void>;
   installExtension(): Promise<InstallResult>;
   cliStatus(): Promise<CliStatus>;

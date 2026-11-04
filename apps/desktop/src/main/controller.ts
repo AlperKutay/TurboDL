@@ -7,12 +7,17 @@ import {
   type ApiLaunch,
   type InstagramLoginResult,
   CATEGORY_LABELS,
+  DEFAULT_SAVE_OPTIONS,
   EXTENSION_ORIGIN,
   categorize,
   clipboardLink,
+  effectiveSaveOptions,
   extensionFromMime,
   getExtension,
+  mediaKinds,
   sanitizeFilename,
+  saveJobOptions,
+  saveOptionsProblem,
   type AppEvent,
   type AppSnapshot,
   type BackupPlan,
@@ -37,11 +42,13 @@ import {
   type InstagramItem,
   type InstagramLink,
   type InstallResult,
+  type JobRequest,
   type MediaChoice,
   type MediaDecision,
   type MediaRequest,
   type NewDownload,
   type PendingItem,
+  type ProfileSaveOptions,
   type Result,
   type Settings,
   type BrowserCookie,
@@ -207,6 +214,14 @@ function newId(): string {
 }
 
 const HTTP_URL = /^https?:\/\//i;
+/** the screens' answer while a backup runs, or an Instagram job holds the lane's turn */
+const BACKUP_RUNNING = "A backup is already running.";
+
+/** The account number a profile's backup ledger is named by (`profile-`, `highlights-` or `tagged-<number>`); none for Saved's. */
+function profileAccount(targetId: string | undefined): string | undefined {
+  return targetId ? /^(?:profile|highlights|tagged)-(.+)$/.exec(targetId)?.[1] : undefined;
+}
+
 /** file, page and stream jobs that may probe or ask yt-dlp at once */
 const WEB_JOB_SLOTS = 3;
 
@@ -246,6 +261,12 @@ export class AppController {
   private readonly lane: InstagramLane;
   /** file, page and stream jobs probing or asking yt-dlp at once, at most */
   private readonly webSlots = new Gate(WEB_JOB_SLOTS);
+  /**
+   * The last profile job a screen started that got as far as a backup, and the account its backups are kept under:
+   * Continue starts that job again while the last backup is one of its parts. Saved's and the Highlights tab's own
+   * backups forget it.
+   */
+  private lastScreen: { request: JobRequest; account: string; jobId: string } | null = null;
 
   constructor(private readonly o: ControllerOptions) {
     this.instagram = o.instagram ?? NO_INSTAGRAM;
@@ -608,16 +629,27 @@ export class AppController {
   }
 
   async startBackup(collectionId: string): Promise<StartResult> {
-    return this.saved.startBackup(collectionId);
+    const result = await this.saved.startBackup(collectionId);
+    if (result.ok) this.lastScreen = null;
+    return result;
   }
 
   stopBackup(): Promise<void> {
     return this.backups.stop();
   }
 
-  /** Starts the last backup again (Continue), whatever it backs up. */
-  continueBackup(): Promise<Result> {
-    return this.backups.continueLast();
+  /**
+   * Starts the last backup again (Continue), whatever it backs up; when it was a part of a profile job a screen
+   * started, that job again, so every part runs in turn (those done go fast: their ledgers know what is saved).
+   */
+  async continueBackup(): Promise<Result> {
+    const screen = this.lastScreen;
+    if (!screen || profileAccount(this.backups.target()?.id) !== screen.account) return this.backups.continueLast();
+    if (this.backups.isRunning()) return { ok: false, error: BACKUP_RUNNING };
+    // a job whose backup was stopped (or pushed back) ends as that backup settles; one between its parts goes on
+    if (this.backups.view()?.state !== "finished") await this.jobs.ended(screen.jobId);
+    if (this.lane.busy()) return { ok: false, error: BACKUP_RUNNING };
+    return this.startScreenJob(screen.request);
   }
 
   profileLoad(username: string): Promise<ProfileResult> {
@@ -679,16 +711,57 @@ export class AppController {
     return this.profiles.highlightsPlan(username);
   }
 
-  startHighlightsBackup(username: string): Promise<StartResult> {
-    return this.profiles.startHighlightsBackup(username);
+  /** The Highlights tab's own backup: every highlight's stories of the kinds picked. */
+  async startHighlightsBackup(username: string, kinds: { photos: boolean; videos: boolean }): Promise<StartResult> {
+    const problem = saveOptionsProblem({ ...DEFAULT_SAVE_OPTIONS, photos: kinds.photos, videos: kinds.videos });
+    if (problem) return { ok: false, error: problem, reason: "error" };
+    const result = await this.profiles.startHighlightsBackup(username, mediaKinds(kinds));
+    if (result.ok) this.lastScreen = null;
+    return result;
   }
 
   profileBackupPlan(username: string): Promise<BackupPlan> {
     return this.profiles.plan(username);
   }
 
-  startProfileBackup(username: string): Promise<StartResult> {
-    return this.profiles.startBackup(username);
+  /**
+   * "Back up this profile": the ticked parts in turn (posts, highlights, tagged posts) as one profile job, the
+   * sequence API jobs run too. Answered once its first backup runs, or with the error the job ended with first.
+   */
+  async startProfileBackup(username: string, options: ProfileSaveOptions): Promise<Result> {
+    const effective = effectiveSaveOptions(options, this.instagramSession.signedIn());
+    const problem = saveOptionsProblem(effective);
+    if (problem) return { ok: false, error: problem };
+    // a job holding the lane's turn would have this backup come between its parts
+    if (this.backups.isRunning() || this.lane.busy()) return { ok: false, error: BACKUP_RUNNING };
+    return this.startScreenJob({ url: `https://www.instagram.com/${encodeURIComponent(username)}/`, options: saveJobOptions(effective) });
+  }
+
+  /** A profile job for a screen: answered once it runs (Continue starts it again from then on), or as it ended first. */
+  private startScreenJob(request: JobRequest): Promise<Result> {
+    const { id } = this.jobs.create(request);
+    return new Promise((resolve) => {
+      let answered = false;
+      let unsubscribe: (() => void) | undefined;
+      const answer = (result: Result) => {
+        if (answered) return;
+        answered = true;
+        unsubscribe?.();
+        resolve(result);
+      };
+      // running once its first backup started: the backup going on is the job's
+      const running = () => {
+        const account = profileAccount(this.backups.target()?.id);
+        if (account) this.lastScreen = { request, account, jobId: id };
+        answer({ ok: true });
+      };
+      unsubscribe = this.jobs.subscribe(id, (event) => {
+        if (event.type === "state" && event.state === "running") running();
+      });
+      if (this.jobs.get(id)?.state === "running") running();
+      // it may have ended already, asking Instagram nothing (its slow-down holds); done at once is answered as started
+      void this.jobs.ended(id)?.then((job) => answer(job.state === "done" ? { ok: true } : { ok: false, error: job.error ?? "The backup was cancelled." }));
+    });
   }
 
   async instagramProfiles(): Promise<ProfileEntry[]> {

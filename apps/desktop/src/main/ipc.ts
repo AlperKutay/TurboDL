@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs";
 import { app, BrowserWindow, clipboard, dialog, ipcMain, shell, type OpenDialogOptions } from "electron";
-import { RELEASES_URL, type DownloadDecision, type MediaChoice, type MediaDecision, type SavedSource, type Settings } from "@turbodl/shared";
+import { DEFAULT_SAVE_OPTIONS, RELEASES_URL, type DownloadDecision, type MediaChoice, type MediaDecision, type ProfileSaveOptions, type SavedSource, type Settings } from "@turbodl/shared";
 import { cliStatus, installCli, realCliDeps, removeCli } from "./cli-install";
 import type { AppController } from "./controller";
 
@@ -10,6 +10,22 @@ export const EVENT_CHANNEL = "turbodl:event";
 function savedSource(v: unknown): SavedSource {
   const o = v as { kind?: unknown; id?: unknown } | null;
   return o?.kind === "collection" && typeof o.id === "string" ? { kind: "collection", id: o.id } : { kind: "all" };
+}
+
+/** A profile backup's save options as the renderer sent them: each one that isn't a boolean is its default. */
+export function saveOptionsArg(v: unknown): ProfileSaveOptions {
+  const o = (v !== null && typeof v === "object" ? v : {}) as Record<string, unknown>;
+  const pick = (key: keyof ProfileSaveOptions): boolean => {
+    const value = o[key];
+    return typeof value === "boolean" ? value : DEFAULT_SAVE_OPTIONS[key];
+  };
+  return { posts: pick("posts"), highlights: pick("highlights"), tagged: pick("tagged"), photos: pick("photos"), videos: pick("videos") };
+}
+
+/** The kinds of media a highlights backup saves, as the renderer sent them; likewise. */
+export function mediaKindsArg(v: unknown): { photos: boolean; videos: boolean } {
+  const { photos, videos } = saveOptionsArg(v);
+  return { photos, videos };
 }
 
 export function registerIpc(c: AppController): void {
@@ -72,7 +88,7 @@ export function registerIpc(c: AppController): void {
     c.openProfilePicks(name(username), Array.isArray(ids) ? ids.filter((id): id is string => typeof id === "string") : []),
   );
   handle("profileBackupPlan", (username: unknown) => c.profileBackupPlan(name(username)));
-  handle("startProfileBackup", (username: unknown) => c.startProfileBackup(name(username)));
+  handle("startProfileBackup", (username: unknown, options: unknown) => c.startProfileBackup(name(username), saveOptionsArg(options)));
   handle("instagramProfiles", () => c.instagramProfiles());
   handle("removeInstagramProfile", (id: unknown) => c.removeInstagramProfile(name(id)));
   handle("closeProfile", (username: unknown) => c.closeProfile(name(username)));
@@ -81,7 +97,7 @@ export function registerIpc(c: AppController): void {
   handle("loadHighlight", (username: unknown, id: unknown) => c.loadHighlight(name(username), name(id)));
   handle("openHighlightPicks", (username: unknown, picked: unknown) => c.openHighlightPicks(name(username), ids(picked)));
   handle("highlightsBackupPlan", (username: unknown) => c.highlightsBackupPlan(name(username)));
-  handle("startHighlightsBackup", (username: unknown) => c.startHighlightsBackup(name(username)));
+  handle("startHighlightsBackup", (username: unknown, kinds: unknown) => c.startHighlightsBackup(name(username), mediaKindsArg(kinds)));
   handle("cancelCountdown", () => c.cancelCountdown());
   handle("installExtension", async () => {
     const result = await c.installExtension();

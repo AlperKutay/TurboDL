@@ -4,7 +4,7 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { SavedError, type AppEvent, type BackupView, type BrowserCookie, type InstagramItem, type InstagramProfile, type PendingItem, type SavedPost } from "@turbodl/shared";
+import { DEFAULT_SAVE_OPTIONS, SavedError, type AppEvent, type BackupView, type BrowserCookie, type InstagramItem, type InstagramProfile, type PendingItem, type SavedPost } from "@turbodl/shared";
 import { AppController, type ControllerUi, type InstagramDeps } from "../src/main/controller";
 import type { FindOutcome } from "../src/main/instagram/finder";
 import { PUBLIC_PROFILE, fakeProfiles, fakeSignedOut, savedGet, signedOutCover } from "./fixtures/instagram-fakes";
@@ -13,6 +13,12 @@ import { startTestServer, type TestServer } from "./fixtures/test-server";
 
 const ORIGIN = "chrome-extension://fnkkncklkbdmaphmmddfmbcjkllejhea";
 const FAKE_YTDLP = path.join(__dirname, "fixtures", "fake-ytdlp.mjs");
+/** a profile's own posts alone: what "Back up this profile" saved before it had options */
+const POSTS_ONLY = { ...DEFAULT_SAVE_OPTIONS, highlights: false, tagged: false };
+/** posts, then highlights: the parts a signed-out backup can save */
+const POSTS_AND_HIGHLIGHTS = { ...DEFAULT_SAVE_OPTIONS, tagged: false };
+const BOTH_KINDS = { photos: true, videos: true };
+const BACKUP_RUNNING = "A backup is already running.";
 
 function freePort(): Promise<number> {
   return new Promise((resolve) => {
@@ -916,7 +922,7 @@ describe("Instagram profiles", () => {
     const ig = fakeProfiles({ "sample.user": SAMPLE });
     const c = await signedIn(ig.deps);
     await c.profileLoad("sample.user");
-    expect(await c.startProfileBackup("sample.user")).toEqual({ ok: true });
+    expect(await c.startProfileBackup("sample.user", POSTS_ONLY)).toEqual({ ok: true });
     expect(await backupEnds(c)).toMatchObject({ state: "finished", name: "sample.user", done: 3, saved: 3 });
     expect(readdirSync(path.join(root, "dl", "Instagram", "sample.user")).sort()).toEqual(["1.jpg", "2.jpg", "3.jpg"]);
     expect(existsSync(path.join(root, "user", "instagram-backups", "profile-5100000000000000001.json"))).toBe(true);
@@ -928,11 +934,11 @@ describe("Instagram profiles", () => {
     const ig = fakeProfiles({ "sample.user": SAMPLE, "renamed.user": renamed });
     const c = await signedIn(ig.deps);
     await c.profileLoad("sample.user");
-    await c.startProfileBackup("sample.user");
+    await c.startProfileBackup("sample.user", POSTS_ONLY);
     await backupEnds(c);
     const fetchedBefore = ig.fetched.length;
     await c.profileLoad("renamed.user");
-    await c.startProfileBackup("renamed.user");
+    await c.startProfileBackup("renamed.user", POSTS_ONLY);
     expect(await backupEnds(c)).toMatchObject({ state: "finished", name: "renamed.user" });
     expect(ig.fetched.length).toBe(fetchedBefore);
     expect(await c.instagramProfiles()).toMatchObject([{ username: "renamed.user" }]);
@@ -942,8 +948,8 @@ describe("Instagram profiles", () => {
     const ig = fakeProfiles({ "sample.user": SAMPLE }, { hangFetch: true });
     const c = await signedIn(ig.deps);
     await c.profileLoad("sample.user");
-    await c.startProfileBackup("sample.user");
-    expect(await c.startProfileBackup("sample.user")).toEqual({ ok: false, error: "A backup is already running.", reason: "busy" });
+    await c.startProfileBackup("sample.user", POSTS_ONLY);
+    expect(await c.startProfileBackup("sample.user", POSTS_ONLY)).toEqual({ ok: false, error: BACKUP_RUNNING });
     expect((await c.startBackup("102")).ok).toBe(false);
     await c.stopBackup();
   });
@@ -958,15 +964,16 @@ describe("Instagram profiles", () => {
       { hangFetch: true },
     );
     const c = await signedIn(ig.deps);
-    expect(await c.startProfileBackup("nobody")).toEqual({ ok: false, error: "Instagram's answer couldn't be read.", reason: "error" });
-    expect(await c.startProfileBackup("shut.door")).toEqual({ ok: false, error: "This account is private.", reason: "private" });
-    expect(await c.startHighlightsBackup("no.highlights")).toEqual({ ok: false, error: "This profile has no highlights.", reason: "empty" });
+    // the screen's profile backups run as jobs: the answer is the error the job ended with
+    expect(await c.startProfileBackup("nobody", POSTS_ONLY)).toEqual({ ok: false, error: "Instagram's answer couldn't be read." });
+    expect(await c.startProfileBackup("shut.door", POSTS_ONLY)).toEqual({ ok: false, error: "This account is private." });
+    expect(await c.startHighlightsBackup("no.highlights", BOTH_KINDS)).toEqual({ ok: false, error: "This profile has no highlights.", reason: "empty" });
     // the pages opened only for those are closed again
     expect(ig.closed).toEqual(["nobody", "shut.door", "no.highlights"]);
-    expect(await c.startProfileBackup("sample.user")).toEqual({ ok: true });
-    const busy = { ok: false, error: "A backup is already running.", reason: "busy" };
-    expect(await c.startProfileBackup("sample.user")).toEqual(busy);
-    expect(await c.startHighlightsBackup("sample.user")).toEqual(busy);
+    expect(await c.startProfileBackup("sample.user", POSTS_ONLY)).toEqual({ ok: true });
+    const busy = { ok: false, error: BACKUP_RUNNING, reason: "busy" };
+    expect(await c.startProfileBackup("sample.user", POSTS_ONLY)).toEqual({ ok: false, error: BACKUP_RUNNING });
+    expect(await c.startHighlightsBackup("sample.user", BOTH_KINDS)).toEqual(busy);
     expect(await c.startBackup("102")).toEqual(busy);
     await c.stopBackup();
   });
@@ -975,7 +982,7 @@ describe("Instagram profiles", () => {
     const ig = fakeProfiles({ "sample.user": SAMPLE, "other.user": { profile: person("53", "other.user"), pages: [[]] } }, { hangFetch: true });
     const c = await signedIn(ig.deps);
     await c.profileLoad("sample.user");
-    await c.startProfileBackup("sample.user");
+    await c.startProfileBackup("sample.user", POSTS_ONLY);
     await c.profileLoad("other.user");
     expect(ig.closed).toEqual([]);
     await c.stopBackup();
@@ -988,7 +995,7 @@ describe("Instagram profiles", () => {
     const c = await signedIn(ig.deps);
     expect(await c.continueBackup()).toEqual({ ok: false, error: "There is no backup to continue." });
     await c.profileLoad("sample.user");
-    await c.startProfileBackup("sample.user");
+    await c.startProfileBackup("sample.user", POSTS_ONLY);
     await c.profileLoad("other.user");
     await c.stopBackup();
     expect(await c.continueBackup()).toEqual({ ok: true });
@@ -1011,7 +1018,7 @@ describe("Instagram profiles", () => {
     const ig = fakeProfiles({ "sample.user": SAMPLE });
     const c = await signedIn(ig.deps);
     await c.profileLoad("sample.user");
-    await c.startProfileBackup("sample.user");
+    await c.startProfileBackup("sample.user", POSTS_ONLY);
     await backupEnds(c);
     await c.profilePage("sample.user");
     await c.openProfilePicks("sample.user", ["1", "2"]);
@@ -1031,11 +1038,137 @@ describe("Instagram profiles", () => {
     const ig = fakeProfiles({ "sample.user": SAMPLE });
     const c = await signedIn(ig.deps);
     await c.profileLoad("sample.user");
-    await c.startProfileBackup("sample.user");
+    await c.startProfileBackup("sample.user", POSTS_ONLY);
     await backupEnds(c);
     await c.removeInstagramProfile("5100000000000000001");
     expect(await c.instagramProfiles()).toEqual([]);
     expect(existsSync(path.join(root, "user", "instagram-backups", "profile-5100000000000000001.json"))).toBe(false);
+  });
+
+  /** Every highlight's page shows one story, s1. */
+  function withStories(deps: InstagramDeps): void {
+    deps.find = async (link) => (link.kind === "highlight" ? { type: "items", items: [{ kind: "image", url: server.url("/ig/s1.jpg"), mediaId: "s1" }] } : { type: "nothing" });
+  }
+
+  /** A fetch that holds every item until `open()`; one in flight when its backup is stopped ends then. */
+  function stoppableFetch(deps: InstagramDeps): { open(): void } {
+    let open!: () => void;
+    const gate = new Promise<void>((resolve) => (open = resolve));
+    const fetch = deps.fetch!;
+    deps.fetch = async (url, file, o) => {
+      await new Promise<void>((resolve, reject) => {
+        void gate.then(resolve);
+        o.signal?.addEventListener("abort", () => reject(new Error("Cancelled.")));
+      });
+      return fetch(url, file, o);
+    };
+    return { open };
+  }
+
+  const kindsSeen = () => [...new Set(ui.events.flatMap((e) => (e.type === "instagramBackup" && e.backup ? [e.backup.kind] : [])))];
+
+  it("backs up posts then highlights from the screen as one backup", async () => {
+    const ig = fakeProfiles({ "sample.user": SAMPLE });
+    withStories(ig.deps);
+    const c = await signedIn(ig.deps);
+    await c.profileLoad("sample.user");
+    expect(await c.startProfileBackup("sample.user", POSTS_AND_HIGHLIGHTS)).toEqual({ ok: true });
+    const [job] = c.jobs.list();
+    expect(job).toMatchObject({ url: "https://www.instagram.com/sample.user/", kind: "instagramProfile" });
+    expect(await c.jobs.ended(job.id)).toMatchObject({ state: "done", failedItems: 0 });
+    expect(readdirSync(path.join(root, "dl", "Instagram", "sample.user")).sort()).toEqual(["1.jpg", "2.jpg", "3.jpg", "Highlights"]);
+    expect(readdirSync(path.join(root, "dl", "Instagram", "sample.user", "Highlights"))).toEqual(["s1.jpg"]);
+    expect(kindsSeen()).toEqual(["profile", "highlights"]);
+  });
+
+  it("continues a stopped screen backup through every part", async () => {
+    const ig = fakeProfiles({ "sample.user": SAMPLE });
+    withStories(ig.deps);
+    const held = stoppableFetch(ig.deps);
+    const c = await signedIn(ig.deps);
+    expect(await c.startProfileBackup("sample.user", POSTS_AND_HIGHLIGHTS)).toEqual({ ok: true });
+    const [first] = c.jobs.list();
+    await c.stopBackup();
+    // the job stopped with its backup, before its highlights; Continue starts the whole job again
+    expect(await c.continueBackup()).toEqual({ ok: true });
+    expect(await c.jobs.ended(first.id)).toMatchObject({ state: "cancelled", reason: "stopped" });
+    const jobs = c.jobs.list();
+    expect(jobs).toHaveLength(2);
+    expect(c.snapshot().instagramBackup).toMatchObject({ kind: "profile", name: "sample.user", state: "running" });
+    held.open();
+    expect(await c.jobs.ended(jobs[0].id)).toMatchObject({ state: "done", failedItems: 0 });
+    expect(readdirSync(path.join(root, "dl", "Instagram", "sample.user")).sort()).toEqual(["1.jpg", "2.jpg", "3.jpg", "Highlights"]);
+    expect(readdirSync(path.join(root, "dl", "Instagram", "sample.user", "Highlights"))).toEqual(["s1.jpg"]);
+    expect(kindsSeen()).toEqual(["profile", "highlights"]);
+  });
+
+  it("continues a highlights backup started from its tab by itself, after a screen backup of the same profile", async () => {
+    const ig = fakeProfiles({ "sample.user": SAMPLE });
+    withStories(ig.deps);
+    const held = stoppableFetch(ig.deps);
+    const c = await signedIn(ig.deps);
+    expect(await c.startProfileBackup("sample.user", POSTS_AND_HIGHLIGHTS)).toEqual({ ok: true });
+    const [job] = c.jobs.list();
+    await c.stopBackup();
+    await c.jobs.ended(job.id);
+    expect(await c.startHighlightsBackup("sample.user", BOTH_KINDS)).toEqual({ ok: true });
+    await c.stopBackup();
+    expect(await c.continueBackup()).toEqual({ ok: true });
+    expect(c.snapshot().instagramBackup).toMatchObject({ kind: "highlights", state: "running" });
+    expect(c.jobs.list()).toHaveLength(1);
+    held.open();
+    expect(await backupEnds(c)).toMatchObject({ kind: "highlights", state: "finished" });
+  });
+
+  it("refuses a screen backup while a job holds the lane", async () => {
+    const ig = fakeProfiles({ "sample.user": SAMPLE, "other.user": { profile: person("53", "other.user", { postCount: 0 }), pages: [[]] } });
+    let letIn!: () => void;
+    const gate = new Promise<void>((resolve) => (letIn = resolve));
+    const open = ig.deps.openProfile!;
+    // the job's profile page loads until the test lets it: the job holds the lane's turn, no backup running yet
+    ig.deps.openProfile = (username, cookies) => {
+      const source = open(username, cookies);
+      if (username !== "other.user") return source;
+      return {
+        ...source,
+        profile: async () => {
+          await gate;
+          return source.profile();
+        },
+      };
+    };
+    const c = await signedIn(ig.deps);
+    const { id } = c.jobs.create({ url: "https://www.instagram.com/other.user/" });
+    for (let i = 0; i < 200 && !ig.opened.includes("other.user"); i++) await new Promise((r) => setTimeout(r, 5));
+    expect(ig.opened).toEqual(["other.user"]);
+    expect(c["backups"].isRunning()).toBe(false);
+    expect(await c.startProfileBackup("sample.user", POSTS_ONLY)).toEqual({ ok: false, error: BACKUP_RUNNING });
+    expect(c.jobs.list()).toHaveLength(1);
+    letIn();
+    expect(await c.jobs.ended(id)).toMatchObject({ state: "done" });
+    expect(await c.startProfileBackup("sample.user", POSTS_ONLY)).toEqual({ ok: true });
+  });
+
+  it("refuses a screen backup with nothing to save", async () => {
+    const ig = fakeProfiles({ "sample.user": SAMPLE });
+    const c = await start({}, null, ig.deps);
+    const nothing = { ...DEFAULT_SAVE_OPTIONS, posts: false, highlights: false, tagged: false };
+    const noPart = { ok: false, error: "Pick at least one of posts, highlights and tagged posts." };
+    expect(await c.startProfileBackup("sample.user", nothing)).toEqual(noPart);
+    // signed out, tagged posts can't be saved: ticked alone, there is nothing to save
+    expect(await c.startProfileBackup("sample.user", { ...nothing, tagged: true })).toEqual(noPart);
+    expect(await c.startProfileBackup("sample.user", { ...DEFAULT_SAVE_OPTIONS, photos: false, videos: false })).toEqual({ ok: false, error: "Pick photos, videos or both." });
+    expect(await c.startHighlightsBackup("sample.user", { photos: false, videos: false })).toMatchObject({ ok: false, error: "Pick photos, videos or both." });
+    expect(c.jobs.list()).toEqual([]);
+    expect(ig.opened).toEqual([]);
+  });
+
+  it("answers a private profile's refusal", async () => {
+    const ig = fakeProfiles({ "shut.door": { profile: person("52", "shut.door", { isPrivate: true }), pages: [[photo("1")]] } });
+    const c = await signedIn(ig.deps);
+    expect(await c.startProfileBackup("shut.door", POSTS_AND_HIGHLIGHTS)).toEqual({ ok: false, error: "This account is private." });
+    expect(c.jobs.list()).toMatchObject([{ state: "failed", reason: "private", error: "This account is private." }]);
+    expect(ig.fetched).toEqual([]);
   });
 });
 
@@ -1147,7 +1280,7 @@ describe("Instagram highlights", () => {
   it("backs every highlight up into its folder, by story, counting highlights", async () => {
     const hl = fakeHighlights({ "17900000000000002": [story("s1"), story("s2")], "17900000000000003": [story("s3")] });
     const c = await opened(hl.deps);
-    expect(await c.startHighlightsBackup("sample.user")).toEqual({ ok: true });
+    expect(await c.startHighlightsBackup("sample.user", BOTH_KINDS)).toEqual({ ok: true });
     expect(await backupEnds(c)).toMatchObject({ state: "finished", kind: "highlights", name: "sample.user · Highlights", done: 2, left: 0, saved: 3 });
     expect(readdirSync(FOLDER()).sort()).toEqual(["s1.jpg", "s2.jpg", "s3.jpg"]);
     expect(existsSync(path.join(root, "user", "instagram-backups", "highlights-5100000000000000001.json"))).toBe(true);
@@ -1166,7 +1299,7 @@ describe("Instagram highlights", () => {
     };
     c["backups"].watch({ view: fail, file: fail });
     const stop = c["backups"].watch({ view: (view) => views.push(view), file: (targetId, file, existing) => files.push({ targetId, file, existing }) });
-    await c.startHighlightsBackup("sample.user");
+    await c.startHighlightsBackup("sample.user", BOTH_KINDS);
     expect(await backupEnds(c)).toMatchObject({ state: "finished", done: 2, saved: 2 });
     const id = "highlights-5100000000000000001";
     expect(files).toEqual([
@@ -1179,7 +1312,7 @@ describe("Instagram highlights", () => {
     expect(views).toEqual(ui.events.flatMap((e) => (e.type === "instagramBackup" && e.backup ? [e.backup] : [])));
     const seen = views.length;
     stop();
-    await c.startHighlightsBackup("sample.user");
+    await c.startHighlightsBackup("sample.user", BOTH_KINDS);
     await backupEnds(c);
     expect(views).toHaveLength(seen);
   });
@@ -1188,12 +1321,12 @@ describe("Instagram highlights", () => {
     const stories: Record<string, InstagramItem[] | null> = { "17900000000000002": [story("s1")], "17900000000000003": [story("s3")] };
     const hl = fakeHighlights(stories);
     const c = await opened(hl.deps);
-    await c.startHighlightsBackup("sample.user");
+    await c.startHighlightsBackup("sample.user", BOTH_KINDS);
     await backupEnds(c);
     stories["17900000000000002"] = [story("s1"), story("s4")];
     const before = hl.fetched.length;
     const readBefore = hl.read.length;
-    await c.startHighlightsBackup("sample.user");
+    await c.startHighlightsBackup("sample.user", BOTH_KINDS);
     expect(await backupEnds(c)).toMatchObject({ state: "finished", saved: 1 });
     expect(hl.fetched.slice(before)).toEqual([server.url("/ig/s4.jpg")]);
     expect(hl.read.slice(readBefore).map((r) => r.id)).toEqual(["17900000000000002", "17900000000000003"]);
@@ -1203,17 +1336,17 @@ describe("Instagram highlights", () => {
     const stories: Record<string, InstagramItem[] | null> = { "17900000000000002": [story("s1")], "17900000000000003": null };
     const hl = fakeHighlights(stories);
     const c = await opened(hl.deps);
-    await c.startHighlightsBackup("sample.user");
+    await c.startHighlightsBackup("sample.user", BOTH_KINDS);
     expect(await backupEnds(c)).toMatchObject({ state: "finished", done: 1, failed: 1 });
     stories["17900000000000003"] = [story("s3")];
-    await c.startHighlightsBackup("sample.user");
+    await c.startHighlightsBackup("sample.user", BOTH_KINDS);
     expect(await backupEnds(c)).toMatchObject({ state: "finished", done: 2, failed: 0, saved: 1 });
   });
 
   it("stops the backup as signed out when a highlight's page asks to sign in", async () => {
     const hl = fakeHighlights({ "17900000000000002": [story("s1")], "17900000000000003": "signedOut" });
     const c = await opened(hl.deps);
-    await c.startHighlightsBackup("sample.user");
+    await c.startHighlightsBackup("sample.user", BOTH_KINDS);
     expect(await backupEnds(c)).toMatchObject({ state: "signedOut", saved: 1 });
   });
 });
@@ -1260,7 +1393,7 @@ describe("Instagram signed out, and a folder per account", () => {
   it("backs a profile up without a session, reading each post from its own page, into its username's folder", async () => {
     const so = fakeSignedOut(OWN(), { listing: LISTING() });
     const c = await start({}, null, so.deps);
-    expect(await c.startProfileBackup("sample.user")).toEqual({ ok: true });
+    expect(await c.startProfileBackup("sample.user", POSTS_ONLY)).toEqual({ ok: true });
     expect(await backupEnds(c)).toMatchObject({ state: "finished", kind: "profile", name: "sample.user", done: 3, failed: 0, saved: 4 });
     expect(readdirSync(path.join(root, "dl", "Instagram", "sample.user")).sort()).toEqual(["a.jpg", "b.jpg", "c.jpg", "d.jpg"]);
     expect(so.opened).toEqual([{ username: "sample.user", cookies: [] }]);
@@ -1291,7 +1424,7 @@ describe("Instagram signed out, and a folder per account", () => {
     const c = await start({}, null, so.deps);
     await c.profileLoad("sample.user");
     await c.profilePage("sample.user");
-    expect(await c.startProfileBackup("sample.user")).toEqual({ ok: true });
+    expect(await c.startProfileBackup("sample.user", POSTS_ONLY)).toEqual({ ok: true });
     // a pick read from the screen meanwhile takes its turn in the same slot
     const picked = c.openProfilePicks("sample.user", ["p2"]);
     expect(await backupEnds(c)).toMatchObject({ state: "finished", done: 3 });
@@ -1307,12 +1440,12 @@ describe("Instagram signed out, and a folder per account", () => {
   it("still refuses a private profile, with or without a session, closing the page it opened", async () => {
     const so = fakeSignedOut(OWN(), { profile: { ...PUBLIC_PROFILE, isPrivate: true } });
     const c = await start({}, null, so.deps);
-    const shut = { ok: false, error: "This account is private.", reason: "private" };
-    expect(await c.startProfileBackup("sample.user")).toEqual(shut);
-    expect(await c.startHighlightsBackup("sample.user")).toEqual(shut);
+    const shut = { ok: false, error: "This account is private." };
+    expect(await c.startProfileBackup("sample.user", POSTS_ONLY)).toEqual(shut);
+    expect(await c.startHighlightsBackup("sample.user", BOTH_KINDS)).toEqual({ ...shut, reason: "private" });
     // signed in, yet the page came as signed-out visitors see it
     c.instagramSession.take(sessionJar);
-    expect(await c.startProfileBackup("sample.user")).toEqual(shut);
+    expect(await c.startProfileBackup("sample.user", POSTS_ONLY)).toEqual(shut);
     expect(so.opened).toHaveLength(3);
     expect(so.closed).toEqual(["sample.user", "sample.user", "sample.user"]);
     expect(so.read).toEqual([]);
@@ -1326,7 +1459,7 @@ describe("Instagram signed out, and a folder per account", () => {
       return link.kind === "post" && link.code === "C2" ? { type: "signedOut" } : found;
     };
     const c = await start({}, null, so.deps);
-    expect(await c.startProfileBackup("sample.user")).toEqual({ ok: true });
+    expect(await c.startProfileBackup("sample.user", POSTS_ONLY)).toEqual({ ok: true });
     expect(await backupEnds(c)).toMatchObject({ state: "rateLimited", done: 1, failed: 0 });
     expect(c["pacer"].held()).toBe(true);
     expect(so.read).toEqual(["C1", "C2"]);
@@ -1342,7 +1475,7 @@ describe("Instagram signed out, and a folder per account", () => {
       return { ...source, page: (cursor, signal) => (cursor ? Promise.reject(new SavedError("signedOut")) : source.page(cursor, signal)) };
     };
     const c = await start({}, null, so.deps);
-    expect(await c.startProfileBackup("sample.user")).toEqual({ ok: true });
+    expect(await c.startProfileBackup("sample.user", POSTS_ONLY)).toEqual({ ok: true });
     expect(await backupEnds(c)).toMatchObject({ state: "rateLimited", done: 2 });
     expect(c["pacer"].held()).toBe(true);
   });
@@ -1352,11 +1485,11 @@ describe("Instagram signed out, and a folder per account", () => {
     const open = so.deps.openProfile!;
     so.deps.openProfile = (username, cookies) => ({ ...open(username, cookies), profile: () => Promise.reject(new SavedError("signedOut")) });
     const c = await start({}, null, so.deps);
-    expect(await c.startProfileBackup("sample.user")).toEqual({ ok: false, error: "Instagram asked TurboDL to slow down. Try again in a few minutes.", reason: "rateLimited" });
+    expect(await c.startProfileBackup("sample.user", POSTS_ONLY)).toEqual({ ok: false, error: "Instagram asked TurboDL to slow down. Try again in a few minutes." });
     expect(c["pacer"].held()).toBe(true);
     await so.deps.wait!(2 * 60_000);
     c.instagramSession.take(sessionJar);
-    expect(await c.startProfileBackup("sample.user")).toEqual({ ok: false, error: "Sign in to Instagram again.", reason: "signInRequired" });
+    expect(await c.startProfileBackup("sample.user", POSTS_ONLY)).toEqual({ ok: false, error: "Sign in to Instagram again." });
     expect(c["pacer"].held()).toBe(false);
     expect(so.closed).toEqual(["sample.user", "sample.user"]);
   });
@@ -1396,7 +1529,7 @@ describe("Instagram signed out, and a folder per account", () => {
     const c = await start({}, null, so.deps);
     await c.profileLoad("sample.user");
     expect(await c.instagramSignIn()).toBe(true);
-    expect(await c.startProfileBackup("sample.user")).toEqual({ ok: true });
+    expect(await c.startProfileBackup("sample.user", POSTS_ONLY)).toEqual({ ok: true });
     expect(await backupEnds(c)).toMatchObject({ state: "finished", done: 3 });
     expect(so.opened).toEqual([
       { username: "sample.user", cookies: [] },
@@ -1419,7 +1552,7 @@ describe("Instagram signed out, and a folder per account", () => {
     };
     const c = await start({}, null, so.deps);
     await c.profileLoad("sample.user");
-    expect(await c.startProfileBackup("sample.user")).toEqual({ ok: true });
+    expect(await c.startProfileBackup("sample.user", POSTS_ONLY)).toEqual({ ok: true });
     expect(await c.instagramSignIn()).toBe(true);
     expect(so.closed).toEqual([]);
     release();
@@ -1473,12 +1606,12 @@ describe("Instagram signed out, and a folder per account", () => {
       return open(username, cookies);
     };
     const c = await start({}, null, so.deps);
-    expect(await c.startProfileBackup("sample.user")).toEqual({ ok: true });
+    expect(await c.startProfileBackup("sample.user", POSTS_ONLY)).toEqual({ ok: true });
     expect(await backupEnds(c)).toMatchObject({ state: "rateLimited" });
-    const held = { ok: false, error: "Instagram asked TurboDL to slow down. Try again in a few minutes.", reason: "rateLimited" };
+    const held = { ok: false, error: "Instagram asked TurboDL to slow down. Try again in a few minutes." };
     expect(await c.continueBackup()).toEqual(held);
-    expect(await c.startProfileBackup("sample.user")).toEqual(held);
-    expect(await c.startHighlightsBackup("sample.user")).toEqual(held);
+    expect(await c.startProfileBackup("sample.user", POSTS_ONLY)).toEqual(held);
+    expect(await c.startHighlightsBackup("sample.user", BOTH_KINDS)).toEqual({ ...held, reason: "rateLimited" });
     expect(so.opened).toHaveLength(1);
     // once the hold is over, the page it opens takes its slot in the account's pace
     await so.deps.wait!(2 * 60_000);
@@ -1497,7 +1630,8 @@ describe("Instagram signed out, and a folder per account", () => {
     const c = await start({}, null, so.deps);
     let release!: () => void;
     const other = c["lane"].read(undefined, () => new Promise<void>((resolve) => (release = resolve)));
-    expect(await c.startProfileBackup("sample.user")).toEqual({ ok: true });
+    // the service itself: a screen's profile backup is a job, whose start would wait for the slot too
+    expect(await c["profiles"].startBackup("sample.user")).toEqual({ ok: true });
     for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r));
     await c["pacer"].ask(() => Promise.reject(new SavedError("rateLimited"))).catch(() => undefined);
     release();
@@ -1578,7 +1712,7 @@ describe("Instagram signed out, and a folder per account", () => {
       return find(link, cookies, signal);
     };
     const c = await start({}, null, so.deps);
-    expect(await c.startHighlightsBackup("sample.user")).toEqual({ ok: true });
+    expect(await c.startHighlightsBackup("sample.user", BOTH_KINDS)).toEqual({ ok: true });
     expect(await backupEnds(c)).toMatchObject({ state: "finished", kind: "highlights", done: 3, failed: 0, saved: 4 });
     expect(readdirSync(path.join(root, "dl", "Instagram", "sample.user", "Highlights")).sort()).toEqual(["a.jpg", "b.jpg", "c.jpg", "d.jpg"]);
     expect(so.read).toEqual([H2.id, H3.id, H4.id]);
@@ -1603,7 +1737,7 @@ describe("Instagram signed out, and a folder per account", () => {
     const tray = Array.from({ length: 30 }, (_, k) => [{ id: `1790000000000${String(k).padStart(4, "0")}`, title: `h${k}` }]);
     const so = fakeSignedOut({}, { tray });
     const c = await start({}, null, so.deps);
-    expect(await c.startHighlightsBackup("sample.user")).toEqual({ ok: true });
+    expect(await c.startHighlightsBackup("sample.user", BOTH_KINDS)).toEqual({ ok: true });
     expect(await backupEnds(c)).toMatchObject({ state: "finished", done: 0, failed: 21 });
     expect(so.trayAsked).toHaveLength(20);
   });
@@ -1612,12 +1746,12 @@ describe("Instagram signed out, and a folder per account", () => {
     const so = fakeSignedOut({ [H2.id]: [item("a")], [H3.id]: [item("c")] }, { tray: [[H2], [H3]] });
     const c = await start({}, null, so.deps);
     await c.profileLoad("sample.user");
-    expect(await c.startHighlightsBackup("sample.user")).toEqual({ ok: true });
+    expect(await c.startHighlightsBackup("sample.user", BOTH_KINDS)).toEqual({ ok: true });
     expect(await backupEnds(c)).toMatchObject({ state: "finished", done: 2 });
     const again = await c.profileLoad("sample.user");
     expect(again.type === "profile" && again.highlights.map((h) => h.id)).toEqual([H2.id, H3.id]);
     const readBefore = so.read.length;
-    expect(await c.startHighlightsBackup("sample.user")).toEqual({ ok: true });
+    expect(await c.startHighlightsBackup("sample.user", BOTH_KINDS)).toEqual({ ok: true });
     expect(await backupEnds(c)).toMatchObject({ state: "finished", done: 2 });
     expect(so.read.slice(readBefore)).toEqual([H2.id, H3.id]);
     expect(so.trayAsked).toHaveLength(1);
@@ -1637,14 +1771,14 @@ describe("Instagram signed out, and a folder per account", () => {
     };
     const c = await start({}, null, so.deps);
     await c.profileLoad("sample.user");
-    expect(await c.startHighlightsBackup("sample.user")).toEqual({ ok: true });
+    expect(await c.startHighlightsBackup("sample.user", BOTH_KINDS)).toEqual({ ok: true });
     expect(await backupEnds(c)).toMatchObject({ state: "rateLimited", done: 1 });
     await so.deps.wait!(2 * 60_000);
     expect(await c.continueBackup()).toEqual({ ok: true });
     expect(await backupEnds(c)).toMatchObject({ state: "finished", done: 3, failed: 0 });
     expect(so.read.slice(2)).toEqual([H2.id, H3.id, H4.id]);
     const readBefore = so.read.length;
-    expect(await c.startHighlightsBackup("sample.user")).toEqual({ ok: true });
+    expect(await c.startHighlightsBackup("sample.user", BOTH_KINDS)).toEqual({ ok: true });
     expect(await backupEnds(c)).toMatchObject({ state: "finished", done: 3 });
     expect(so.read.slice(readBefore)).toEqual([H2.id, H3.id, H4.id]);
   });
@@ -1653,7 +1787,7 @@ describe("Instagram signed out, and a folder per account", () => {
     const tray = Array.from({ length: 30 }, (_, k) => [{ id: `1790000000000${String(k).padStart(4, "0")}`, title: `h${k}` }]);
     const so = fakeSignedOut({}, { tray });
     const c = await start({}, null, so.deps);
-    expect(await c.startHighlightsBackup("sample.user")).toEqual({ ok: true });
+    expect(await c.startHighlightsBackup("sample.user", BOTH_KINDS)).toEqual({ ok: true });
     const view = await backupEnds(c);
     expect(view).toMatchObject({ state: "finished", warning: "Instagram has more highlights than TurboDL read in one run." });
     expect(view).not.toHaveProperty("left");
@@ -1664,7 +1798,7 @@ describe("Instagram signed out, and a folder per account", () => {
     const c = await start({}, null, so.deps);
     await c.profileLoad("sample.user");
     expect(await c.highlightsBackupPlan("sample.user")).not.toHaveProperty("count");
-    expect(await c.startHighlightsBackup("sample.user")).toEqual({ ok: true });
+    expect(await c.startHighlightsBackup("sample.user", BOTH_KINDS)).toEqual({ ok: true });
     expect(await backupEnds(c)).toMatchObject({ state: "finished", done: 3 });
     expect(await c.highlightsBackupPlan("sample.user")).toMatchObject({ count: 3 });
   });
@@ -1672,7 +1806,7 @@ describe("Instagram signed out, and a folder per account", () => {
   it("warns when a tray page comes back empty while the tray has more", async () => {
     const so = fakeSignedOut({ [H2.id]: [item("a")] }, { tray: [[H2], [], [H4]] });
     const c = await start({}, null, so.deps);
-    expect(await c.startHighlightsBackup("sample.user")).toEqual({ ok: true });
+    expect(await c.startHighlightsBackup("sample.user", BOTH_KINDS)).toEqual({ ok: true });
     expect(await backupEnds(c)).toMatchObject({ state: "finished", done: 1, warning: "Instagram has more highlights than TurboDL read in one run." });
     expect(so.trayAsked).toHaveLength(1);
   });
@@ -1680,7 +1814,7 @@ describe("Instagram signed out, and a folder per account", () => {
   it("pages no tray for a posts backup", async () => {
     const so = fakeSignedOut(OWN(), { listing: LISTING(), tray: [[H2], [H3]] });
     const c = await start({}, null, so.deps);
-    expect(await c.startProfileBackup("sample.user")).toEqual({ ok: true });
+    expect(await c.startProfileBackup("sample.user", POSTS_ONLY)).toEqual({ ok: true });
     expect(await backupEnds(c)).toMatchObject({ state: "finished", done: 3 });
     expect(so.trayAsked).toHaveLength(0);
   });
@@ -1693,7 +1827,7 @@ describe("Instagram signed out, and a folder per account", () => {
       return link.kind === "highlight" && link.id === H3.id ? { type: "signedOut" } : found;
     };
     const c = await start({}, null, so.deps);
-    expect(await c.startHighlightsBackup("sample.user")).toEqual({ ok: true });
+    expect(await c.startHighlightsBackup("sample.user", BOTH_KINDS)).toEqual({ ok: true });
     expect(await backupEnds(c)).toMatchObject({ state: "rateLimited", done: 1, failed: 0 });
     expect(c["pacer"].held()).toBe(true);
     expect(so.read).toEqual([H2.id, H3.id]);

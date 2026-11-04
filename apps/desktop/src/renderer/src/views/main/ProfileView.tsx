@@ -1,10 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { isLocked, type BackupPlan, type BackupView, type Highlight, type InstagramProfile, type ProfileResult } from "@turbodl/shared";
+import { DEFAULT_SAVE_OPTIONS, isLocked, type BackupPlan, type BackupView, type Highlight, type InstagramProfile, type ProfileResult } from "@turbodl/shared";
 import { api } from "../../api";
 import { readHighlights, togglePick } from "../../highlight-state";
 import { usePressPreview } from "../../press-preview";
 import { PickBar, PostGrid, useFeed } from "./PostGrid";
 import { BackupConfirm, BackupPanel } from "./SavedBackup";
+
+/** what a backup saves until its confirmation offers the choice: what it saved before (the posts; photos and videos) */
+const SAVE_FOR_NOW = { ...DEFAULT_SAVE_OPTIONS, highlights: false, tagged: false };
+const KINDS_FOR_NOW = { photos: true, videos: true };
 
 /**
  * Someone's profile: who it is, then its Posts (page by page, pinned first, as on Instagram) and its Highlights, each
@@ -140,7 +144,7 @@ function ProfilePosts({
 
   const startBackup = async () => {
     setConfirming(null);
-    const res = await api.startProfileBackup(username);
+    const res = await api.startProfileBackup(username, SAVE_FOR_NOW);
     if (!res.ok) setError(res.error);
   };
   // posts seen signed out are read from their own pages first, which takes a moment each
@@ -237,7 +241,7 @@ function ProfileHighlights({
   };
   const startBackup = async () => {
     setConfirming(null);
-    const res = await api.startHighlightsBackup(username);
+    const res = await api.startHighlightsBackup(username, KINDS_FOR_NOW);
     if (!res.ok) setError(res.error);
   };
 
