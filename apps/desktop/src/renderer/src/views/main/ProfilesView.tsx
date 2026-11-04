@@ -1,7 +1,6 @@
 import { useEffect, useState } from "react";
-import type { BackupView, ProfileEntry } from "@turbodl/shared";
+import { profileName, type BackupView, type ProfileEntry } from "@turbodl/shared";
 import { api } from "../../api";
-import { profileName } from "../../saved-state";
 import { ProfileView } from "./ProfileView";
 
 /** Instagram → Profiles: the open profile (by link, username, or one backed up before), or the list. */

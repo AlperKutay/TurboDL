@@ -1,4 +1,4 @@
-import type { Highlight, InstagramItem, InstagramLink, InstagramProfile, SavedCollection, SavedPage, SavedSource } from "./instagram";
+import type { Highlight, InstagramItem, InstagramLink, InstagramProfile, ProfileSaveOptions, SavedCollection, SavedPage, SavedSource } from "./instagram";
 import type { BrowserCookie, CaptureSource, MediaItem } from "./protocol";
 
 export type Category = "video" | "music" | "programs" | "archives" | "documents" | "images" | "other";
@@ -105,6 +105,8 @@ export interface Settings {
   watchClipboard: boolean;
   /** Instagram downloads in a folder per account (`Instagram/<username>/`) */
   instagramByAccount: boolean;
+  /** what an Instagram profile backup saves */
+  instagramSave: ProfileSaveOptions;
   scheduler: SchedulerSettings;
 }
 

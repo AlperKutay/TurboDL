@@ -37,6 +37,11 @@ describe("settings", () => {
     expect(normalizeSettings({ instagramByAccount: "no" }, defaults).instagramByAccount).toBe(true);
   });
 
+  it("saves everything of a profile unless told otherwise", () => {
+    expect(defaults.instagramSave).toEqual({ posts: true, highlights: true, tagged: true, photos: true, videos: true });
+    expect(normalizeSettings({ instagramSave: { posts: "x", videos: false } }, defaults).instagramSave).toEqual({ posts: true, highlights: true, tagged: true, photos: true, videos: false });
+  });
+
   it("validates scheduler times", () => {
     const s = normalizeSettings({ scheduler: { enabled: true, startTime: "25:00", stopTime: "07:30", afterAll: "explode" } }, defaults);
     expect(s.scheduler).toEqual({ enabled: true, startTime: "02:00", stopTime: "07:30", afterAll: "none" });

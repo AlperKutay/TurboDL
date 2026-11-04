@@ -1,5 +1,5 @@
 import path from "node:path";
-import { DEFAULT_BRIDGE_PORT, DEFAULT_CAPTURE_EXTENSIONS, type AfterAllAction, type Settings } from "@turbodl/shared";
+import { DEFAULT_BRIDGE_PORT, DEFAULT_CAPTURE_EXTENSIONS, DEFAULT_SAVE_OPTIONS, type AfterAllAction, type Settings } from "@turbodl/shared";
 
 const TIME = /^([01]\d|2[0-3]):[0-5]\d$/;
 const AFTER_ALL: AfterAllAction[] = ["none", "sleep", "shutdown", "quit"];
@@ -19,6 +19,7 @@ export function defaultSettings(downloadsDir: string): Settings {
     notifyOnComplete: true,
     watchClipboard: true,
     instagramByAccount: true,
+    instagramSave: { ...DEFAULT_SAVE_OPTIONS },
     scheduler: { enabled: false, startTime: "02:00", stopTime: null, afterAll: "none" },
   };
 }
@@ -45,6 +46,7 @@ export function normalizeExtensions(list: unknown[]): string[] {
 export function normalizeSettings(input: unknown, defaults: Settings): Settings {
   const src = (input && typeof input === "object" ? input : {}) as Record<string, unknown>;
   const schedSrc = (src.scheduler && typeof src.scheduler === "object" ? src.scheduler : {}) as Record<string, unknown>;
+  const saveSrc = (src.instagramSave && typeof src.instagramSave === "object" ? src.instagramSave : {}) as Record<string, unknown>;
   const d = defaults.scheduler;
   return {
     baseDir: typeof src.baseDir === "string" && src.baseDir.trim() ? src.baseDir : defaults.baseDir,
@@ -60,6 +62,13 @@ export function normalizeSettings(input: unknown, defaults: Settings): Settings 
     notifyOnComplete: bool(src.notifyOnComplete, defaults.notifyOnComplete),
     watchClipboard: bool(src.watchClipboard, defaults.watchClipboard),
     instagramByAccount: bool(src.instagramByAccount, defaults.instagramByAccount),
+    instagramSave: {
+      posts: bool(saveSrc.posts, defaults.instagramSave.posts),
+      highlights: bool(saveSrc.highlights, defaults.instagramSave.highlights),
+      tagged: bool(saveSrc.tagged, defaults.instagramSave.tagged),
+      photos: bool(saveSrc.photos, defaults.instagramSave.photos),
+      videos: bool(saveSrc.videos, defaults.instagramSave.videos),
+    },
     scheduler: {
       enabled: bool(schedSrc.enabled, d.enabled),
       startTime: typeof schedSrc.startTime === "string" && TIME.test(schedSrc.startTime) ? schedSrc.startTime : d.startTime,

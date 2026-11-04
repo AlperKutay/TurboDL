@@ -17,6 +17,14 @@ export type JobReason = "signInRequired" | "rateLimited" | "private" | "notFound
 /** Per-job switches; each applies only to the kinds it makes sense for. */
 export interface JobOptions {
   highlights?: boolean;
+  /** a profile: save its posts (default true) */
+  posts?: boolean;
+  /** a profile: save the posts it is tagged in (default false; needs a session) */
+  tagged?: boolean;
+  /** a profile: save photos (default true) */
+  photos?: boolean;
+  /** a profile: save videos (default true) */
+  videos?: boolean;
   highlightsOnly?: boolean;
   collections?: string[];
   allCollections?: boolean;

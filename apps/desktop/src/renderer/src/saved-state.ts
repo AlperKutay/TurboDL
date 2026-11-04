@@ -1,4 +1,4 @@
-import { parseInstagramLink, type BackupView, type SavedPage, type SavedPageResult, type SavedPost, type SavedSource } from "@turbodl/shared";
+import { type BackupView, type SavedPage, type SavedPageResult, type SavedPost, type SavedSource } from "@turbodl/shared";
 
 /** What a grid shows: All, one of the account's collections, or someone's profile. */
 export type FeedSource = SavedSource | { kind: "profile"; username: string };
@@ -69,15 +69,4 @@ export function backupAction(state: BackupView["state"]): "stop" | "continue" | 
 export function toggle(state: SavedState, postId: string): SavedState {
   const picked = state.picked.includes(postId) ? state.picked.filter((id) => id !== postId) : [...state.picked, postId];
   return { ...state, picked };
-}
-
-/** The username in a profile link or in what was typed (`@` or not), lowercased; null for anything else. */
-export function profileName(text: string): string | null {
-  const typed = text.trim();
-  if (/^https?:\/\//i.test(typed)) {
-    const link = parseInstagramLink(typed);
-    return link?.kind === "profile" ? link.username : null;
-  }
-  const name = typed.replace(/^@/, "");
-  return /^[a-z0-9._]{1,30}$/i.test(name) ? name.toLowerCase() : null;
 }
