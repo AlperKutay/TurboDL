@@ -30,9 +30,10 @@ describe("ProfileIndex", () => {
     index.record(person("52", "second.one"), 2000);
     ledgers.save("profile-51", { ...ENDED, saved: ["a", "b"] });
     ledgers.save("highlights-51", { ...ENDED, saved: ["c"] });
+    ledgers.save("tagged-51", { ...ENDED, saved: ["d"] });
     expect(index.list()).toEqual([
       { id: "52", username: "second.one", fullName: "Name second.one", picture: "https://cdn.example/52.jpg", lastRun: 2000, saved: 0 },
-      { id: "51", username: "first.one", fullName: "Name first.one", picture: "https://cdn.example/51.jpg", lastRun: 1000, saved: 3 },
+      { id: "51", username: "first.one", fullName: "Name first.one", picture: "https://cdn.example/51.jpg", lastRun: 1000, saved: 4 },
     ]);
   });
 
@@ -49,9 +50,10 @@ describe("ProfileIndex", () => {
     index.record(person("52", "second.one"), 2000);
     ledgers.save("profile-51", { ...ENDED, saved: ["a"] });
     ledgers.save("highlights-51", { ...ENDED, saved: ["c"] });
+    ledgers.save("tagged-51", { ...ENDED, saved: ["d"] });
     ledgers.save("profile-52", { ...ENDED, saved: ["z"] });
     index.remove("51");
     expect(index.list().map((e) => e.id)).toEqual(["52"]);
-    expect([ledgers.load("profile-51").saved, ledgers.load("highlights-51").saved, ledgers.load("profile-52").saved]).toEqual([[], [], ["z"]]);
+    expect([ledgers.load("profile-51").saved, ledgers.load("highlights-51").saved, ledgers.load("tagged-51").saved, ledgers.load("profile-52").saved]).toEqual([[], [], [], ["z"]]);
   });
 });

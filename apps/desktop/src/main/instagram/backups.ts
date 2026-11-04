@@ -22,8 +22,8 @@ export interface BackupsDeps {
   onBackup(view: BackupView): void;
 }
 
-/** Why a backup didn't start. */
-export type StartReason = "signInRequired" | "private" | "rateLimited" | "busy" | "empty" | "error";
+/** Why a backup didn't start (`unreadable`: a page TurboDL couldn't read, as a profile's tagged page may be). */
+export type StartReason = "signInRequired" | "private" | "rateLimited" | "busy" | "empty" | "unreadable" | "error";
 /** A Result whose failures say why (still a Result for the screens). */
 export type StartResult = { ok: true } | { ok: false; error: string; reason: StartReason };
 

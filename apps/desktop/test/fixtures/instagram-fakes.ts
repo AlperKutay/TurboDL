@@ -3,11 +3,17 @@ import { SavedError, type Highlight, type InstagramItem, type InstagramProfile, 
 import type { InstagramDeps } from "../../src/main/controller";
 import type { HttpGet } from "../../src/main/instagram/saved-client";
 
-/** Profile pages stood in for: each username's profile, its pages of posts, its highlights (one, unless given). */
-export function fakeProfiles(profiles: Record<string, { profile: InstagramProfile; pages: SavedPost[][]; highlights?: Highlight[] }>, o: { hangFetch?: boolean } = {}) {
+/**
+ * Profile pages stood in for: each username's profile, its pages of posts, its highlights (one, unless given), and its
+ * tagged page's pages (none, unless given; a SavedError is what loading the tagged page throws).
+ */
+export function fakeProfiles(profiles: Record<string, { profile: InstagramProfile; pages: SavedPost[][]; highlights?: Highlight[]; tagged?: SavedPost[][] | SavedError }>, o: { hangFetch?: boolean } = {}) {
   let now = 0;
   const opened: string[] = [];
   const closed: string[] = [];
+  /** the tagged pages opened and closed, by username */
+  const taggedOpened: string[] = [];
+  const taggedClosed: string[] = [];
   /** each page asked of a profile, with the fake clock's time */
   const asked: { username: string; cursor?: string; at: number }[] = [];
   const fetched: string[] = [];
@@ -48,8 +54,24 @@ export function fakeProfiles(profiles: Record<string, { profile: InstagramProfil
         close: () => closed.push(username),
       };
     },
+    openTagged: (username) => {
+      taggedOpened.push(username);
+      const tagged = profiles[username]?.tagged ?? [[]];
+      return {
+        load: async () => {
+          if (tagged instanceof SavedError) throw tagged;
+        },
+        page: async (cursor) => {
+          if (tagged instanceof SavedError) throw tagged;
+          asked.push({ username: `${username}/tagged`, cursor, at: now });
+          const k = cursor ? Number(cursor) : 0;
+          return { posts: tagged[k] ?? [], ...(k + 1 < tagged.length ? { next: String(k + 1) } : {}) };
+        },
+        close: () => taggedClosed.push(username),
+      };
+    },
   };
-  return { deps, opened, closed, asked, fetched };
+  return { deps, opened, closed, asked, fetched, taggedOpened, taggedClosed };
 }
 
 /** sample.user as signed-out visitors see it: public, not followed. */
@@ -77,6 +99,8 @@ export function fakeSignedOut(pages: Record<string, InstagramItem[] | DetailedPa
   const trayAsked: number[] = [];
   const opened: { username: string; cookies: string[] }[] = [];
   const closed: string[] = [];
+  /** the tagged pages opened (there is none signed out: a backup must not open one) */
+  const taggedOpened: string[] = [];
   const read: string[] = [];
   /** each page of the listing asked for, with the fake clock's time */
   const asked: { cursor?: string; at: number }[] = [];
@@ -122,8 +146,17 @@ export function fakeSignedOut(pages: Record<string, InstagramItem[] | DetailedPa
         close: () => closed.push(username),
       };
     },
+    // signed out, Instagram's tagged page is its sign-in page
+    openTagged: (username) => {
+      taggedOpened.push(username);
+      return {
+        load: () => Promise.reject(new SavedError("signedOut")),
+        page: () => Promise.reject(new SavedError("signedOut")),
+        close: () => undefined,
+      };
+    },
   };
-  return { deps, opened, closed, read, asked, trayAsked };
+  return { deps, opened, closed, read, asked, trayAsked, taggedOpened };
 }
 
 /**

@@ -154,6 +154,13 @@ const NO_PROFILE: ProfileSource = {
   close: () => undefined,
 };
 
+/** Without Instagram: no tagged page is ever read. */
+const NO_TAGGED_PAGE: TaggedSource = {
+  load: () => Promise.reject(new SavedError("badAnswer")),
+  page: () => Promise.reject(new SavedError("badAnswer")),
+  close: () => undefined,
+};
+
 const NO_INSTAGRAM: InstagramDeps = {
   find: async () => ({ type: "nothing" }),
   signIn: async () => null,
@@ -270,6 +277,7 @@ export class AppController {
     this.profiles = new ProfileService({
       session: this.instagramSession,
       open: (username, cookies) => (ig.openProfile ? ig.openProfile(username, cookies) : NO_PROFILE),
+      openTagged: (username, cookies) => (ig.openTagged ? ig.openTagged(username, cookies) : NO_TAGGED_PAGE),
       findHighlight: async (id, signal) => {
         const outcome = await ig.find({ kind: "highlight", id }, this.instagramSession.cookies(), signal);
         if (outcome.type === "signedOut") throw this.wallOrExpired();

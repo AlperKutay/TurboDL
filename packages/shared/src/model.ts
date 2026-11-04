@@ -217,8 +217,8 @@ export interface BackupPlan {
 /** A collection backup as its progress panel shows it. */
 export interface BackupView {
   targetId: string;
-  /** what is backed up: one of the account's collections, a profile's posts, or a profile's highlights */
-  kind: "collection" | "profile" | "highlights";
+  /** what is backed up: one of the account's collections, a profile's posts, its highlights, or the posts it is tagged in */
+  kind: "collection" | "profile" | "highlights" | "tagged";
   name: string;
   state: "running" | "stopped" | "finished" | "signedOut" | "rateLimited" | "failed";
   error?: string;

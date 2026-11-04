@@ -16,6 +16,11 @@ export function highlightsFolder(baseDir: string, username: string, byAccount: b
   return byAccount ? path.join(accountFolder(baseDir, username), "Highlights") : path.join(baseDir, "Instagram", sanitizeFilename(`${username} · Highlights`));
 }
 
+/** The posts an account is tagged in: under its folder, or beside it (`<username> · Tagged`) when not kept per account. */
+export function taggedFolder(baseDir: string, username: string, byAccount: boolean): string {
+  return byAccount ? path.join(accountFolder(baseDir, username), "Tagged") : path.join(baseDir, "Instagram", sanitizeFilename(`${username} · Tagged`));
+}
+
 /** Where one picked item goes: its account's folder (its highlights' for a highlight's stories) when kept per account. */
 export function itemFolder(defaultDir: string, item: InstagramItem, o: { baseDir: string; byAccount: boolean; highlight: boolean }): string {
   if (!o.byAccount || !item.owner) return defaultDir;

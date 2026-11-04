@@ -2,6 +2,9 @@ import { readFileSync, writeFileSync } from "node:fs";
 import type { InstagramProfile, ProfileEntry } from "@turbodl/shared";
 import type { LedgerStore } from "./ledger";
 
+/** A profile's backups' ledgers: its posts', its highlights', its tagged posts'. */
+const ledgerIds = (id: string) => [`profile-${id}`, `highlights-${id}`, `tagged-${id}`];
+
 interface ProfileRecord {
   id: string;
   username: string;
@@ -18,11 +21,11 @@ export class ProfileIndex {
     private readonly ledgers: LedgerStore,
   ) {}
 
-  /** Newest run first, with what its backups (posts and highlights) saved. */
+  /** Newest run first, with what its backups (posts, highlights and tagged posts) saved. */
   list(): ProfileEntry[] {
     return this.load()
       .sort((a, b) => b.lastRun - a.lastRun)
-      .map((r) => ({ ...r, saved: this.ledgers.load(`profile-${r.id}`).saved.length + this.ledgers.load(`highlights-${r.id}`).saved.length }));
+      .map((r) => ({ ...r, saved: ledgerIds(r.id).reduce((sum, id) => sum + this.ledgers.load(id).saved.length, 0) }));
   }
 
   /** Adds the profile, or refreshes its name, picture and the time of its last run. */
@@ -35,8 +38,7 @@ export class ProfileIndex {
   /** Forgets the profile and what its backups saved; its files stay. */
   remove(id: string): void {
     this.save(this.load().filter((r) => r.id !== id));
-    this.ledgers.remove(`profile-${id}`);
-    this.ledgers.remove(`highlights-${id}`);
+    for (const ledger of ledgerIds(id)) this.ledgers.remove(ledger);
   }
 
   private load(): ProfileRecord[] {
