@@ -1303,6 +1303,13 @@ describe("Instagram profiles", () => {
     expect(await c.jobs.ended(job.id)).toMatchObject({ state: "cancelled" });
     expect(c.snapshot().screenBackup).toMatchObject({ username: "sample.user", state: "cancelled" });
     expect(existsSync(path.join(root, "dl", "Instagram", "sample.user", "Highlights", "s1.jpg"))).toBe(false);
+    // the panel offers Continue: the whole job again, every part
+    expect(await c.continueBackup()).toEqual({ ok: true });
+    const again = c.jobs.list()[0];
+    expect(again.id).not.toBe(job.id);
+    expect(await c.jobs.ended(again.id)).toMatchObject({ state: "done" });
+    expect(c.snapshot().screenBackup).toMatchObject({ username: "sample.user", state: "done" });
+    expect(readdirSync(path.join(root, "dl", "Instagram", "sample.user", "Highlights"))).toEqual(["s1.jpg"]);
   });
 
   it("starts one job for two Continues at once", async () => {
