@@ -1,3 +1,5 @@
+import { hasTaggedConnection } from "@turbodl/shared";
+
 /** A request as the page sent it. */
 export type SentRequest = { url: string; method: string; headers: Record<string, string>; body?: string };
 
@@ -20,9 +22,9 @@ function ownHeaders(headers: Record<string, string>): Record<string, string> {
   return Object.fromEntries(Object.entries(headers).filter(([name]) => name.toLowerCase() === "content-type" || name.toLowerCase().startsWith("x-")));
 }
 
-/** A graphql POST whose `variables` carry a cursor (`after`) and whose answer contains `marker`. */
-function graphqlPaging(sent: SentRequest, answer: string, marker: string): PagingRequest | null {
-  if (sent.method.toUpperCase() !== "POST" || !sent.url.includes("graphql") || !sent.body || !answer.includes(marker)) return null;
+/** A graphql POST whose `variables` carry a cursor (`after`) and whose answer satisfies `holds`. */
+function graphqlPaging(sent: SentRequest, answer: string, holds: (answer: string) => boolean): PagingRequest | null {
+  if (sent.method.toUpperCase() !== "POST" || !sent.url.includes("graphql") || !sent.body || !holds(answer)) return null;
   let variables: unknown;
   try {
     variables = JSON.parse(new URLSearchParams(sent.body).get("variables") ?? "null");
@@ -39,15 +41,15 @@ function graphqlPaging(sent: SentRequest, answer: string, marker: string): Pagin
  * other request.
  */
 export function postsRequest(sent: SentRequest, answer: string): PagingRequest | null {
-  return graphqlPaging(sent, answer, POSTS);
+  return graphqlPaging(sent, answer, (a) => a.includes(POSTS));
 }
 
 /**
- * The tagged page's paging request, by shape: a graphql POST with a cursor whose answer mentions `usertags`, or a GET
+ * The tagged page's paging request, by shape: a graphql POST with a cursor whose answer holds a usertags connection, or a GET
  * of `/api/v1/usertags/...` whose answer has `items`. Null for any other request.
  */
 export function taggedRequest(sent: SentRequest, answer: string): PagingRequest | null {
-  const graphql = graphqlPaging(sent, answer, "usertags");
+  const graphql = graphqlPaging(sent, answer, hasTaggedConnection);
   if (graphql) return graphql;
   if (sent.method.toUpperCase() !== "GET" || !answer.includes('"items"')) return null;
   let path: string;

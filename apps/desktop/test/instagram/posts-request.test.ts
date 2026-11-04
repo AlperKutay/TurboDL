@@ -88,6 +88,13 @@ describe("the tagged page's own request", () => {
     expect(postsRequest(paging, TAGGED_ANSWER)).toBeNull();
   });
 
+  it("is not a profile posts answer whose media merely carry a usertags field", () => {
+    const media = { pk: "1", code: "A", usertags: { in: [{ user: { username: "x" } }] } };
+    const answer = JSON.stringify({ data: { xdt_api__v1__feed__user_timeline_graphql_connection: { edges: [{ node: media }], page_info: { has_next_page: false } } } });
+    expect(taggedRequest(paging, answer)).toBeNull();
+    expect(postsRequest(paging, answer)).toMatchObject({ kind: "graphql" });
+  });
+
   it("is the usertags GET whose answer has items", () => {
     expect(taggedRequest(rest, '{"items":[],"more_available":false}')).toEqual({
       kind: "rest",

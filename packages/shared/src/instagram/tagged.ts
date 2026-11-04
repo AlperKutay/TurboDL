@@ -30,6 +30,11 @@ function postsIn(find: (match: (o: Json) => boolean) => Json[]): ProfilePosts | 
   return feed && restPosts(feed);
 }
 
+/** Whether the answer holds a usertags connection (a key naming user tags whose value has `edges`), by the shape `taggedPosts` reads. */
+export function hasTaggedConnection(answer: string): boolean {
+  return objectsInDocuments([answer], (o) => connectionsIn(o).length > 0).length > 0;
+}
+
 /**
  * The posts the signed-in tagged page shows, recognised by shape (nobody has seen that page's queries): a connection
  * under a `usertags` key, or the REST feed's `items`. Undefined while the documents hold neither.
