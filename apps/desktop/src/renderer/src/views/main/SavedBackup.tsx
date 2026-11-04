@@ -2,7 +2,7 @@ import { useState, type ReactNode } from "react";
 import { formatBytes, type BackupPlan, type BackupView, type ScreenBackupView } from "@turbodl/shared";
 import { api } from "../../api";
 import { Modal } from "../../components/Modal";
-import { backupAction, panelState } from "../../saved-state";
+import { backupAction, panelState, panelWarnings } from "../../saved-state";
 
 /**
  * What starting a backup means: how many posts, roughly how large, where they go, and the warnings that go with it; then
@@ -94,6 +94,7 @@ export function BackupPanel({ backup, screen = null, username, onSignedIn }: { b
   const running = shown.state === "running";
   const action = backupAction(shown.state);
   const own = screen && username !== undefined && screen.username.toLowerCase() === username.toLowerCase() ? screen : null;
+  const warnings = panelWarnings(backup, own);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const resume = async () => {
@@ -125,7 +126,7 @@ export function BackupPanel({ backup, screen = null, username, onSignedIn }: { b
         </span>
         {backup.signInOnly ? <span className="muted">{backup.signInOnly} shown only to signed-in visitors</span> : null}
         {backup.warning && <span className="muted">{backup.warning}</span>}
-        {own?.warnings.map((warning, k) => (
+        {warnings.map((warning, k) => (
           <span key={k} className="muted">
             {warning}
           </span>

@@ -42,7 +42,7 @@ describe("applyEvent", () => {
   });
 
   it("keeps the screen's profile backup as it goes on and ends", () => {
-    const screenBackup = { username: "sample.user", state: "done" as const, warnings: ["This profile has no highlights."] };
+    const screenBackup = { username: "sample.user", state: "done" as const, warnings: ["This profile has no highlights."], ran: true };
     expect(applyEvent(snapshot([]), { type: "screenBackup", screenBackup }).screenBackup).toEqual(screenBackup);
     expect(applyEvent({ ...snapshot([]), screenBackup }, { type: "screenBackup", screenBackup: null }).screenBackup).toBeNull();
   });

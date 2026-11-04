@@ -59,19 +59,40 @@ export function retry(state: SavedState): SavedState {
   return state.status === "failed" || state.status === "rateLimited" ? { ...state, status: "idle", error: undefined } : state;
 }
 
-/** What a backup's panel offers: Stop while it runs, sign-in when Instagram signed TurboDL out, else Continue. */
+/** Whether the backup is one of the profile's parts: its posts' ("sample.user"), highlights' or tagged posts' ("sample.user · Highlights"). */
+function belongsTo(backup: BackupView, username: string): boolean {
+  const name = backup.name.toLowerCase();
+  const user = username.toLowerCase();
+  if (backup.kind === "profile") return name === user;
+  if (backup.kind === "highlights") return name === `${user} · highlights`;
+  return backup.kind === "tagged" && name === `${user} · tagged`;
+}
+
+/** The screen's backup, when it is the one the panel's backup is a part of: one that never ran, or ran for another profile, isn't. */
+function ownScreen(backup: BackupView, screen: ScreenBackupView | null): ScreenBackupView | null {
+  return screen?.ran && belongsTo(backup, screen.username) ? screen : null;
+}
+
 /**
  * What the backup panel says of the backup: its own state, except while the screen's profile backup goes on (between
  * its parts too, when no backup runs: Stop), and how that ended once its last part had finished (stopped between parts,
- * or a later part refused).
+ * or a later part refused). Only for the screen's own profile's backup: a screen backup refused before it ran, or
+ * running for another profile, leaves the panel alone.
  */
 export function panelState(backup: BackupView, screen: ScreenBackupView | null): { state: BackupView["state"]; error?: string } {
-  if (screen?.state === "running") return { state: "running" };
-  if (backup.state === "finished" && screen?.state === "cancelled") return { state: "stopped" };
-  if (backup.state === "finished" && screen?.state === "failed") return { state: "failed", ...(screen.error ? { error: screen.error } : {}) };
+  const own = ownScreen(backup, screen);
+  if (own?.state === "running") return { state: "running" };
+  if (backup.state === "finished" && own?.state === "cancelled") return { state: "stopped" };
+  if (backup.state === "finished" && own?.state === "failed") return { state: "failed", ...(own.error ? { error: own.error } : {}) };
   return { state: backup.state, ...(backup.state === "failed" && backup.error ? { error: backup.error } : {}) };
 }
 
+/** What the screen's backup warned of beyond the backup's own progress; the part's own warning (shown with it) not twice. */
+export function panelWarnings(backup: BackupView, screen: ScreenBackupView | null): string[] {
+  return ownScreen(backup, screen)?.warnings.filter((w) => w !== backup.warning) ?? [];
+}
+
+/** What a backup's panel offers: Stop while it runs, sign-in when Instagram signed TurboDL out, else Continue. */
 export function backupAction(state: BackupView["state"]): "stop" | "continue" | "signIn" | "none" {
   if (state === "running") return "stop";
   if (state === "signedOut") return "signIn";

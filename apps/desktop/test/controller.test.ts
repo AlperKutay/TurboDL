@@ -1238,11 +1238,11 @@ describe("Instagram profiles", () => {
     expect(await c.jobs.ended(job.id)).toMatchObject({ state: "done" });
     const unreadable = "TurboDL couldn't read @sample.user's tagged posts; Instagram may have changed its page.";
     // the backup's plan isn't a warning for the screen: its confirmation showed it
-    const ended = { username: "sample.user", state: "done", warnings: [unreadable] };
+    const ended = { username: "sample.user", state: "done", warnings: [unreadable], ran: true };
     expect(c.snapshot().screenBackup).toEqual(ended);
     const events = screenEvents();
-    expect(events[0]).toEqual({ username: "sample.user", state: "running", warnings: [] });
-    expect(events).toContainEqual({ username: "sample.user", state: "running", warnings: [unreadable] });
+    expect(events[0]).toEqual({ username: "sample.user", state: "running", warnings: [], ran: false });
+    expect(events).toContainEqual({ username: "sample.user", state: "running", warnings: [unreadable], ran: true });
     expect(events.at(-1)).toEqual(ended);
   });
 
@@ -1267,8 +1267,28 @@ describe("Instagram profiles", () => {
     expect(await c.jobs.ended(job.id)).toMatchObject({ state: "failed", reason: "rateLimited" });
     // the posts' backup finished; the job didn't
     expect(c.snapshot().instagramBackup).toMatchObject({ kind: "profile", state: "finished" });
-    expect(c.snapshot().screenBackup).toEqual({ username: "sample.user", state: "failed", warnings: [], error: "Instagram asked TurboDL to slow down. Try again in a few minutes." });
+    expect(c.snapshot().screenBackup).toEqual({ username: "sample.user", state: "failed", warnings: [], error: "Instagram asked TurboDL to slow down. Try again in a few minutes.", ran: true });
     expect(screenEvents().at(-1)).toEqual(c.snapshot().screenBackup);
+  });
+
+  it("tells the screen whether its backup ever ran, and keeps Continue on the last backup that did", async () => {
+    const ig = fakeProfiles({ "sample.user": SAMPLE, "shut.door": { profile: person("52", "shut.door", { isPrivate: true }), pages: [[photo("1")]] } });
+    const c = await signedIn(ig.deps);
+    expect(await c.startProfileBackup("sample.user", POSTS_ONLY)).toEqual({ ok: true });
+    await c.jobs.ended(c.jobs.list()[0].id);
+    expect(c.snapshot().screenBackup).toMatchObject({ username: "sample.user", state: "done", ran: true });
+    const finished = c.snapshot().instagramBackup;
+    expect(finished).toMatchObject({ kind: "profile", name: "sample.user", state: "finished" });
+    // refused at its first part: nothing of it ran
+    expect(await c.startProfileBackup("shut.door", POSTS_ONLY)).toEqual({ ok: false, error: "This account is private." });
+    expect(c.snapshot().screenBackup).toEqual({ username: "shut.door", state: "failed", warnings: [], error: "This account is private.", ran: false });
+    expect(c.snapshot().instagramBackup).toEqual(finished);
+    // Continue still goes to the backup the panel shows: profile sample.user's job again
+    expect(await c.continueBackup()).toEqual({ ok: true });
+    const mine = c.jobs.list().filter((j) => j.url === "https://www.instagram.com/sample.user/");
+    expect(mine).toHaveLength(2);
+    await Promise.all(mine.map((j) => c.jobs.ended(j.id)));
+    expect(c.snapshot().screenBackup).toMatchObject({ username: "sample.user", ran: true });
   });
 
   it("stops a screen backup between its parts", async () => {

@@ -294,6 +294,8 @@ export interface ScreenBackupView {
   warnings: string[];
   /** why it failed, or was stopped */
   error?: string;
+  /** whether one of its backups started: one that was refused before that has nothing to say of any backup's panel */
+  ran: boolean;
 }
 
 export type AppEvent =

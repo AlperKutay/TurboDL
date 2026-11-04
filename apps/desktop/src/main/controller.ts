@@ -803,19 +803,26 @@ export class AppController {
   private followScreenJob(id: string, username: string): void {
     const job = this.jobs.get(id);
     if (!job) return;
+    // a job runs once its first backup started
+    let ran = job.state === "running";
     const ended = (j: Job) =>
       this.tellScreen({
         username,
         state: j.state === "queued" ? "running" : j.state,
         warnings: j.warnings.filter((w) => !isPlanWarning(w)),
         ...(j.state !== "done" && j.error ? { error: j.error } : {}),
+        ran,
       });
     if (isJobEnded(job.state)) return ended(job);
-    let view: ScreenBackupView = { username, state: "running", warnings: job.warnings.filter((w) => !isPlanWarning(w)) };
+    let view: ScreenBackupView = { username, state: "running", warnings: job.warnings.filter((w) => !isPlanWarning(w)), ran };
     this.tellScreen(view);
     let unsubscribe: (() => void) | undefined;
     unsubscribe = this.jobs.subscribe(id, (event) => {
-      if (event.type === "warning" && !isPlanWarning(event.message)) {
+      if (event.type === "state" && event.state === "running") {
+        ran = true;
+        view = { ...view, ran };
+        if (this.screenJobId === id) this.tellScreen(view);
+      } else if (event.type === "warning" && !isPlanWarning(event.message)) {
         view = { ...view, warnings: [...view.warnings, event.message] };
         if (this.screenJobId === id) this.tellScreen(view);
       } else if (event.type === "end") {
