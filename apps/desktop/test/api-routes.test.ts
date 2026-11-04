@@ -1,6 +1,6 @@
 import http from "node:http";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { isJobEnded, type ApiInfo, type Job, type JobEvent, type JobRequest } from "@turbodl/shared";
+import { API_FEATURES, isJobEnded, type ApiInfo, type Job, type JobEvent, type JobRequest, type ListWait, type ProfileListView, type ProfileSaveOptions } from "@turbodl/shared";
 import { createBridgeServer, type BridgeServer } from "../src/main/bridge-server";
 import type { ApiHandlers } from "../src/main/api-routes";
 
@@ -13,6 +13,9 @@ let port: number;
 let jobs: Map<string, Job>;
 let listeners: Map<string, Set<(event: JobEvent) => void>>;
 let requests: JobRequest[];
+let list: ProfileListView | null;
+let listRequests: { name: string; usernames: string[]; options: ProfileSaveOptions; wait: ListWait }[];
+let startResult: { ok: false; error: string } | null;
 
 const info: ApiInfo = { app: "turbodl", version: "1.2.3", api: 1, instagram: { signedIn: false }, features: ["posts"] };
 
@@ -55,12 +58,45 @@ const fake: ApiHandlers = {
   },
   instagramLogin: async () => ({ signedIn: true, username: "someone" }),
   instagramLogout: async () => undefined,
+  list: () => list,
+  startList: async (request) => {
+    if (list && list.state !== "finished") return { ok: false, error: "Close the list that is there first." };
+    if (startResult) return startResult;
+    listRequests.push(request);
+    list = {
+      name: request.name,
+      rows: request.usernames.map((username) => ({ username, state: "waiting" as const })),
+      index: 0,
+      state: "running",
+      options: request.options,
+      wait: request.wait,
+    };
+    return { ok: true };
+  },
+  stopList: async () => {
+    if (list && list.state === "running") list.state = "stopped";
+  },
+  continueList: async () => {
+    if (!list) return { ok: false, error: "There is no list." };
+    if (list.state !== "stopped") return { ok: false, error: "The list is running." };
+    list.state = "running";
+    return { ok: true };
+  },
+  closeList: async () => {
+    if (!list) return { ok: false, error: "There is no list." };
+    if (list.state === "running") return { ok: false, error: "Stop the list first." };
+    list = null;
+    return { ok: true };
+  },
 };
 
 beforeEach(async () => {
   jobs = new Map();
   listeners = new Map();
   requests = [];
+  list = null;
+  listRequests = [];
+  startResult = null;
   server = createBridgeServer({
     version: "1.2.3",
     allowedOrigin: ORIGIN,
@@ -103,6 +139,7 @@ function call(path: string, o: CallOptions = {}): Promise<{ status: number; json
   });
 }
 
+const del = (path: string, o: CallOptions = {}) => call(path, { ...o, method: "DELETE" });
 const post = (path: string, body: unknown, o: CallOptions = {}) => call(path, { ...o, method: "POST", body: JSON.stringify(body) });
 
 /** Opens an event stream and hands back what was read so far; lines are parsed as they arrive. */
@@ -283,6 +320,135 @@ describe("jobs", () => {
   it("runs the Instagram routes", async () => {
     expect((await post("/v1/instagram/login", {})).json).toEqual({ signedIn: true, username: "someone" });
     expect((await post("/v1/instagram/logout", {})).json).toEqual({ signedIn: false });
+  });
+});
+
+const WAIT_TEXT = "Waits are whole minutes from 0 to 1440, the most at least the least.";
+
+describe("lists", () => {
+  const ALL_ON = { posts: true, highlights: true, tagged: false, photos: true, videos: true };
+
+  it("refuses the lists routes without the token and from a website", async () => {
+    expect((await call("/v1/lists/current", { token: null })).status).toBe(403);
+    expect((await post("/v1/lists", { profiles: ["a"] }, { token: "wrong" })).status).toBe(403);
+    expect((await del("/v1/lists/current", { token: null })).status).toBe(403);
+    expect((await call("/v1/lists/current", { origin: "https://site.example" })).status).toBe(403);
+    expect((await del("/v1/lists/current", { origin: "https://site.example" })).status).toBe(403);
+    expect(listRequests).toEqual([]);
+  });
+
+  it("starts a list with the defaults: posts, highlights, photos and videos on, tagged off, a 2 to 5 minute wait", async () => {
+    const res = await post("/v1/lists", { profiles: ["@Alice", "https://www.instagram.com/bob/", "alice"] });
+    expect(res.status).toBe(201);
+    expect(res.json.list).toMatchObject({ name: "API list", state: "running" });
+    expect(listRequests).toEqual([{ name: "API list", usernames: ["alice", "bob"], options: ALL_ON, wait: { min: 2, max: 5 } }]);
+  });
+
+  it("takes options, a wait and a name, and fills the options it was not given", async () => {
+    const res = await post("/v1/lists", { profiles: ["a"], name: "Friends", wait: { min: 0, max: 1 }, options: { tagged: true, videos: false } });
+    expect(res.status).toBe(201);
+    expect(listRequests).toEqual([
+      { name: "Friends", usernames: ["a"], options: { posts: true, highlights: true, tagged: true, photos: true, videos: false }, wait: { min: 0, max: 1 } },
+    ]);
+  });
+
+  it.each([
+    ["no profiles field", {}, "profiles"],
+    ["profiles that is not an array", { profiles: "a" }, "profiles"],
+    ["an empty profiles", { profiles: [] }, "The list has no profiles."],
+    ["a non-string profile", { profiles: [1] }, "The list holds something that isn't a profile's name."],
+    ["a profile that is not a name", { profiles: ["a", "not a profile!"] }, `"not a profile!" isn't a profile.`],
+    ["over 1000 profiles", { profiles: Array.from({ length: 1001 }, (_, i) => `user${i}`) }, "A list can hold at most 1,000 profiles."],
+    ["options that is not an object", { profiles: ["a"], options: "x" }, "options"],
+    ["an option that is not a boolean", { profiles: ["a"], options: { posts: "yes" } }, "options"],
+    ["an unknown option", { profiles: ["a"], options: { audio: true } }, "options"],
+    ["a profile job's option the list lacks", { profiles: ["a"], options: { postsOnly: true } }, "options"],
+    ["a wait that is not an object", { profiles: ["a"], wait: 5 }, WAIT_TEXT],
+    ["a wait with the most under the least", { profiles: ["a"], wait: { min: 5, max: 2 } }, WAIT_TEXT],
+    ["a wait over a day", { profiles: ["a"], wait: { min: 0, max: 1441 } }, WAIT_TEXT],
+    ["an empty name", { profiles: ["a"], name: "" }, "name"],
+    ["a name over 255 characters", { profiles: ["a"], name: "x".repeat(256) }, "name"],
+    ["a name that is not text", { profiles: ["a"], name: 3 }, "name"],
+  ])("answers 400 for %s", async (_name, body, error) => {
+    const res = await post("/v1/lists", body);
+    expect(res.status).toBe(400);
+    expect(res.json).toEqual({ error });
+    expect(listRequests).toEqual([]);
+  });
+
+  it("answers 400 for broken JSON and for a body that is not an object", async () => {
+    const broken = await call("/v1/lists", { method: "POST", body: "{" });
+    expect(broken.status).toBe(400);
+    expect(broken.json).toEqual({ error: "json" });
+    const array = await post("/v1/lists", []);
+    expect(array.status).toBe(400);
+    expect(array.json).toEqual({ error: "body" });
+  });
+
+  it("answers 409 for a list while another is not finished, and allows one after it finished", async () => {
+    await post("/v1/lists", { profiles: ["a"] });
+    const second = await post("/v1/lists", { profiles: ["b"] });
+    expect(second.status).toBe(409);
+    expect(second.json).toEqual({ error: "Close the list that is there first." });
+    list!.state = "finished";
+    expect((await post("/v1/lists", { profiles: ["b"] })).status).toBe(201);
+  });
+
+  it("answers 400 with the app's own message when the app refuses the options", async () => {
+    startResult = { ok: false, error: "Pick photos, videos or both." };
+    const res = await post("/v1/lists", { profiles: ["a"], options: { photos: false, videos: false } });
+    expect(res.status).toBe(400);
+    expect(res.json).toEqual({ error: "Pick photos, videos or both." });
+  });
+
+  it("answers the current list, or null when there is none", async () => {
+    const none = await call("/v1/lists/current");
+    expect(none.status).toBe(200);
+    expect(none.json).toEqual({ list: null });
+    await post("/v1/lists", { profiles: ["a"] });
+    const res = await call("/v1/lists/current");
+    expect(res.status).toBe(200);
+    expect(res.json.list.rows).toEqual([{ username: "a", state: "waiting" }]);
+  });
+
+  it("stops, continues and closes the list", async () => {
+    await post("/v1/lists", { profiles: ["a"] });
+    const refused = await del("/v1/lists/current");
+    expect(refused.status).toBe(409);
+    expect(refused.json).toEqual({ error: "Stop the list first." });
+    const stopped = await post("/v1/lists/current/stop", {});
+    expect(stopped.status).toBe(200);
+    expect(stopped.json.list.state).toBe("stopped");
+    const running = await post("/v1/lists/current/continue", {});
+    expect(running.status).toBe(200);
+    expect(running.json.list.state).toBe("running");
+    const again = await post("/v1/lists/current/continue", {});
+    expect(again.status).toBe(409);
+    expect(again.json).toEqual({ error: "The list is running." });
+    await post("/v1/lists/current/stop", {});
+    const closed = await del("/v1/lists/current");
+    expect(closed.status).toBe(200);
+    expect(closed.json).toEqual({ list: null });
+  });
+
+  it("answers null for stop and close with no list, and 409 for continue", async () => {
+    expect((await post("/v1/lists/current/stop", {})).json).toEqual({ list: null });
+    expect((await del("/v1/lists/current")).json).toEqual({ list: null });
+    const res = await post("/v1/lists/current/continue", {});
+    expect(res.status).toBe(409);
+    expect(res.json).toEqual({ error: "There is no list." });
+  });
+
+  it("answers 404 for other lists routes and methods", async () => {
+    expect((await call("/v1/lists")).status).toBe(404);
+    expect((await call("/v1/lists/other")).status).toBe(404);
+    expect((await post("/v1/lists/current", {})).status).toBe(404);
+    expect((await call("/v1/lists/current/stop")).status).toBe(404);
+    expect((await del("/v1/lists")).status).toBe(404);
+  });
+
+  it("is a feature clients can look for", () => {
+    expect(API_FEATURES).toContain("lists");
   });
 });
 

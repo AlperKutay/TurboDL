@@ -4,7 +4,7 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { API_FEATURES, API_VERSION, APP_ID, type ApiFile, type ApiInfo, type AppEvent, type BrowserCookie, type Job, type JobEvent, type PendingItem } from "@turbodl/shared";
+import { API_FEATURES, API_VERSION, APP_ID, type ApiFile, type ApiInfo, type AppEvent, type BrowserCookie, type Job, type JobEvent, type PendingItem, type ProfileListView } from "@turbodl/shared";
 import { AppController, type ControllerUi, type InstagramDeps } from "../src/main/controller";
 import { startTestServer, type TestServer } from "./fixtures/test-server";
 
@@ -214,6 +214,59 @@ describe("jobs API", () => {
     asked = 0;
     expect((await info()).instagram).toEqual({ signedIn: true, username: "sample.user" });
     expect(asked).toBe(0);
+  });
+
+  it("runs a profile list: start, one at a time, stop, continue, close, behind the token", async () => {
+    const instagram: InstagramDeps = {
+      find: async () => ({ type: "nothing" }),
+      signIn: async () => null,
+      crypt: { available: () => false, encrypt: (t: string) => Buffer.from(t), decrypt: (b: Buffer) => b.toString() },
+      agent: "TestAgent/1",
+      get: async () => ({ status: 404, body: "{}" }),
+      collections: async () => [],
+    };
+    await start(undefined, instagram);
+    const tokenless = await new Promise<number>((resolve, reject) => {
+      const req = http.request({ host: "127.0.0.1", port, path: "/v1/lists/current", method: "DELETE" }, (r) => {
+        r.resume();
+        resolve(r.statusCode ?? 0);
+      });
+      req.on("error", reject);
+      req.end();
+    });
+    expect(tokenless).toBe(403);
+    expect(((await call("GET", "/v1/lists/current")).json as { list: unknown }).list).toBeNull();
+
+    const bad = await call("POST", "/v1/lists", { profiles: ["a", "not a profile!"] });
+    expect(bad).toEqual({ status: 400, json: { error: `"not a profile!" isn't a profile.` } });
+
+    const created = await call("POST", "/v1/lists", { profiles: ["Alice", "bob"], name: "Friends", wait: { min: 60, max: 60 } });
+    expect(created.status).toBe(201);
+    const view = (created.json as { list: ProfileListView }).list;
+    expect(view).toMatchObject({ name: "Friends", options: { posts: true, highlights: true, tagged: false, photos: true, videos: true }, wait: { min: 60, max: 60 } });
+    expect(view.rows.map((r) => r.username)).toEqual(["alice", "bob"]);
+    // what the app keeps for the next start holds booleans only: a list stored with other values is lost on a restart
+    const storedFile = path.join(userData(), "instagram-profile-list.json");
+    for (let i = 0; i < 100 && !existsSync(storedFile); i++) await new Promise((r) => setTimeout(r, 25));
+    const stored = JSON.parse(readFileSync(storedFile, "utf8")) as ProfileListView;
+    expect(Object.values(stored.options).every((v) => typeof v === "boolean")).toBe(true);
+
+    expect(await call("POST", "/v1/lists", { profiles: ["c"] })).toEqual({ status: 409, json: { error: "Close the list that is there first." } });
+    expect(await call("DELETE", "/v1/lists/current")).toEqual({ status: 409, json: { error: "Stop the list first." } });
+    expect(await call("POST", "/v1/lists/current/continue", {})).toMatchObject({ status: 409 });
+
+    const stopped = await call("POST", "/v1/lists/current/stop", {});
+    expect(stopped.status).toBe(200);
+    expect((stopped.json as { list: ProfileListView }).list.state).toBe("stopped");
+    expect(((await call("GET", "/v1/lists/current")).json as { list: ProfileListView }).list.state).toBe("stopped");
+
+    const resumed = await call("POST", "/v1/lists/current/continue", {});
+    expect(resumed.status).toBe(200);
+    expect(["running", "waiting"]).toContain((resumed.json as { list: ProfileListView }).list.state);
+    await call("POST", "/v1/lists/current/stop", {});
+    expect(await call("DELETE", "/v1/lists/current")).toEqual({ status: 200, json: { list: null } });
+    expect(((await call("GET", "/v1/lists/current")).json as { list: unknown }).list).toBeNull();
+    expect((await call("GET", "/v1/info")).json).toMatchObject({ features: expect.arrayContaining(["lists"]) });
   });
 
   it("closes event streams on shutdown", async () => {

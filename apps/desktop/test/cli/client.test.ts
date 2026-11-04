@@ -41,6 +41,11 @@ const fake: ApiHandlers = {
   },
   instagramLogin: async () => ({ signedIn: true, username: "someone" }),
   instagramLogout: async () => void (loggedOut = true),
+  list: () => null,
+  startList: async () => ({ ok: false, error: "not in the fake" }),
+  stopList: async () => undefined,
+  continueList: async () => ({ ok: false, error: "not in the fake" }),
+  closeList: async () => ({ ok: false, error: "not in the fake" }),
 };
 
 beforeEach(async () => {

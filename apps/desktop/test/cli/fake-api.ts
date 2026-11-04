@@ -86,6 +86,11 @@ export async function startFakeApi(): Promise<FakeApi> {
       fake.loggedOut = true;
       fake.instagram = { signedIn: false };
     },
+    list: () => null,
+    startList: async () => ({ ok: false, error: "not in the fake" }),
+    stopList: async () => undefined,
+    continueList: async () => ({ ok: false, error: "not in the fake" }),
+    closeList: async () => ({ ok: false, error: "not in the fake" }),
   };
 
   const serve = async (): Promise<number> => {

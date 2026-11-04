@@ -1267,6 +1267,11 @@ export class AppController {
         return this.instagramApiAccount();
       },
       instagramLogout: () => this.instagramSignOut(),
+      list: () => this.lists.view(),
+      startList: (request) => this.startProfileList(request),
+      stopList: () => this.stopProfileList(),
+      continueList: () => this.continueProfileList(),
+      closeList: () => this.closeProfileList(),
     };
   }
 

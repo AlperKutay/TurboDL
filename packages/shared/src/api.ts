@@ -1,3 +1,4 @@
+import type { ListWait, ProfileSaveOptions } from "./instagram";
 import { TAGGED_AVAILABLE } from "./instagram/options";
 
 /** Version of the local jobs API; clients check it against `api.json`. */
@@ -123,7 +124,7 @@ export interface ApiInfo {
 }
 
 /** The features this version reports in `ApiInfo.features`. */
-export const API_FEATURES: readonly string[] = ["posts", "profileOptions", ...(TAGGED_AVAILABLE ? ["tagged"] : [])];
+export const API_FEATURES: readonly string[] = ["posts", "profileOptions", "lists", ...(TAGGED_AVAILABLE ? ["tagged"] : [])];
 
 /** The command that starts the app in the background. */
 export interface ApiLaunch {
@@ -179,4 +180,16 @@ export function parseIsoTime(s: string): string | undefined {
     return undefined;
   }
   return new Date(ms).toISOString();
+}
+
+/** What a client sends to start the profile list (`POST /v1/lists`); what it leaves out takes the list defaults. */
+export interface ListRequest {
+  /** 1 to 1000 profiles: names, `@names` or profile links */
+  profiles: string[];
+  /** posts, highlights and photos and videos on, tagged off, unless given */
+  options?: Partial<ProfileSaveOptions>;
+  /** minutes between profiles, default 2 to 5 */
+  wait?: ListWait;
+  /** default "API list" */
+  name?: string;
 }
