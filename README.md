@@ -26,6 +26,7 @@ turbodl get https://www.instagram.com/someone/ --highlights-only
 turbodl get https://www.instagram.com/someone/ --tagged --videos-only   # ... and the posts it is tagged in, videos only
 turbodl get https://www.instagram.com/someone/saved/ --collection "Travel"   # a Saved collection (repeat the option, or use --all-collections)
 turbodl get https://x.com/someone/status/123 --dir D:\Videos   # an X link into a folder
+turbodl get --from-file profiles.txt --wait 2-5             # back up a list of profiles, one after another
 turbodl posts https://www.instagram.com/someone/ --since 2026-01-01 --limit 20   # list a profile's posts, save nothing
 turbodl add https://example.com/a.zip https://example.com/b.zip   # queue and return at once; prints the job ids
 turbodl wait <id> [<id>...]                                 # wait until queued jobs finish
@@ -41,7 +42,8 @@ Other options for `get` and `add`: `--name <file>` (one link only), `--audio`, `
 - Profiles and highlights work without signing in, more slowly (each post is read from its own page). Posts Instagram shows only to signed-in visitors are skipped: the rest are saved, and the command ends with exit code 3. Saved, story links and private profiles need `turbodl instagram login`.
 - A profile backup saves the posts by default. `--highlights` and `--tagged` add to them, `--no-posts` leaves them out, and `--photos-only` or `--videos-only` limits the kinds. Tagged posts go to `Instagram/<username>/Tagged` (or `Instagram/<username> · Tagged` when downloads aren't kept per account). Instagram shows the Tagged tab only to signed-in visitors: signed out, the rest is saved, the tagged part is skipped with a warning, and the command ends with exit code 3. A later run with more kinds ticked also fetches them for posts saved before.
 - `turbodl posts <link>` lists an Instagram profile's or post's posts without saving anything: one line per post with its code, time and item count (`pinned`, `sign-in only` or `known` follow when they apply). `--since <ISO time>` (`2026-01-01`, read as UTC, or a time ending in `Z` or `+02:00`) stops at the first post taken at or before it that isn't pinned, past the first 3 positions: a profile can pin up to 3 posts at its top, so up to 3 older posts there are still listed. `--limit <n>` caps the posts listed. Tagged users are read signed out too. With `--json`, `posts` prints every event of the list (the job, its warnings and its end too), not only the posts. It doesn't reconnect: when TurboDL quits mid-list, it exits with code 5.
-- `--json` prints one JSON object per line, for scripts.
+- `turbodl get --from-file <txt>` backs up the profiles a text file lists as TurboDL's profile list (see [Profile lists](#profile-lists)), following it until it ends. `--wait <min>-<max>` (or one number) is the wait between profiles in whole minutes, picked at random each time (default `2-5`; `0` for none). The save options are the profile ones above, sent as given: posts on, highlights only with `--highlights`, tagged only with `--tagged`. `--from-file` can't be combined with links. One line is printed per profile as it finishes (backed up, skipped or failed), then how the list ended. A line of the file that isn't a profile is warned about and left out. A finished list ends with exit code 1 when a profile failed (skipped ones are fine), 4 when Instagram asked TurboDL to slow down 3 times in a row, 3 when the session expired, and 6 when it was stopped in TurboDL (Continue it there); Ctrl+C stops the list (130). Only one list can be unfinished at a time.
+- `--json` prints one JSON object per line, for scripts. For a list, one object per profile as it finishes, then `{"list": ...}`; the warnings about lines of the file are typed `{"type":"warning",...}` lines.
 - Ctrl+C in `get`, `posts` or `wait` cancels the jobs it is waiting for; a second Ctrl+C gives up at once.
 
 | Exit code | Meaning |
@@ -69,6 +71,29 @@ Other programs can use the same engine. While TurboDL runs it writes `api.json` 
 
 `takenAt` is an ISO time or `null`; `caption`, `signInOnly` and `known` appear only when they apply; an item's `kind` is `image` or `video`, and its `mediaId`, `width`, `height` and `duration` can be missing (reels signed out often have no `duration`). The list stops at the first post taken at or before `since` that isn't pinned, past the first 3 positions: a profile can pin up to 3 posts at its top, and Instagram doesn't always mark them (signed out, never), so up to 3 old posts at the top are sent. A post whose page shows nothing, read twice, is left out, counted in the job's `failedItems` and named in a warning. It ends with `done`; `done` with `limited` and a warning when some posts are shown only to signed-in visitors; or `failed` with `rateLimited`, `private`, `signInRequired` (the session expired, or a post link Instagram shows only to signed-in visitors), `unsupported` (stories, highlights, Saved and other sites) or `error` (also a profile or post link whose page showed nothing: it may not exist, or the page was too slow, so it isn't `notFound`). A list reads nothing until a client follows its events, and one nobody follows for 60 seconds is cancelled.
 
+## Profile lists
+
+**Back up a list…** on the Profiles screen backs up many Instagram profiles one after another. Choose a `.txt` file with one profile per line: a profile link (also the `/reels/` and `/tagged/` forms), `@name` or `name`. Blank lines and lines starting with `#` are skipped, a profile written twice is backed up once, and a list holds up to 1,000 profiles. Then choose what to save (Posts, Highlights, Tagged; Photos, Videos) and the wait between profiles: whole minutes, at least and at most, picked at random for each pause (0 and 0 means no wait). Tagged posts need a sign-in; profiles and highlights work without one.
+
+- The list panel shows one row per profile: backed up (with the files and new files counts, and a warning if there was one), skipped (the profile is private, or "Instagram showed nothing for @name…", which is also what a name that doesn't exist looks like), or failed. While it waits, it counts down to the next profile.
+- **Stop** ends the list after the profile being saved, and **Continue** goes on from there. **Close** removes the panel. A banner above an open profile shows the list's progress.
+- When Instagram asks TurboDL to slow down, the list waits 15 minutes and tries the same profile again; after 3 slow-downs in a row it stops, and you can Continue later. Three profiles in a row that showed nothing count as a slow-down too; a profile that shows nothing again after that wait is skipped.
+- When the Instagram session expires, the list stops: sign in, then Continue.
+- After TurboDL restarts, an unfinished list shows as stopped, with Continue.
+- TurboDL shows a notification when a list finishes or stops by itself.
+- The list holds nothing during its waits: other downloads, other backups and API jobs run meanwhile. Only one list can be unfinished at a time.
+
+The same list can be started from the command line (`turbodl get --from-file`), the API and Python.
+
+### Lists in the API
+
+`POST /v1/lists` with `{"profiles": [...], "options": {...}, "wait": {"min": 2, "max": 5}, "name": "..."}` starts a list and answers 201 with `{"list": ...}`. `profiles` are names, `@names` or profile links (up to 1,000). `options` takes `posts`, `highlights`, `tagged`, `photos` and `videos`. **A list's options default to posts and highlights on and tagged off, with photos and videos on. This differs from a single profile job, where highlights are off unless asked.** `wait` is in whole minutes (default 2 to 5), and `name` is what the app shows for the list (default `API list`). A bad field is refused with 400 and its name or a message.
+
+- `GET /v1/lists/current` returns `{"list": ...}`, or `{"list": null}` when there is none. The list has a `state` (`running`, `waiting`, `slowedDown`, `stopped`, `signedOut`, `rateLimited` or `finished`) and `rows`, each with a `username`, a `state` (`waiting`, `running`, `done`, `skipped` or `failed`) and maybe a `note`, `files` and `fetched`.
+- `POST /v1/lists/current/stop` stops it; `POST /v1/lists/current/continue` goes on from where it stopped (409 when it can't); `DELETE /v1/lists/current` closes it (409 when it can't).
+- Starting a list while another is unfinished is refused with 409.
+- `GET /v1/info` lists `"lists"` in `"features"` when the app has these routes.
+
 ## Python
 
 `turbodl-client` is a small Python package (3.9 or newer, standard library only) for the same local API. TurboDL must be installed and opened once on this computer; after that the package starts it by itself when it is closed.
@@ -78,7 +103,7 @@ pip install "git+https://github.com/AlperKutay/TurboDL#subdirectory=clients/pyth
 ```
 
 ```python
-from turbodl_client import TurboDL, SignInRequired
+from turbodl_client import TurboDL, SignInRequired, read_profile_list
 
 tdl = TurboDL()                      # TurboDL(user_data=None, start=True, timeout=30)
 try:
@@ -97,6 +122,9 @@ for post in posts:
     print(post.code, post.taken_at, len(post.items))    # lists posts, saves nothing
 print(posts.job.failed_items, posts.job.warnings)       # the posts whose page showed nothing
 
+run = tdl.backup_profiles(read_profile_list("profiles.txt"), wait=(2, 5), highlights=True)   # TurboDL's profile list
+print(run.wait()["state"])           # finished, stopped, rateLimited or signedOut
+
 tdl.jobs(); tdl.job(job.id); tdl.cancel(job.id)
 tdl.instagram_login(); tdl.instagram_logout(); tdl.info()
 ```
@@ -104,6 +132,7 @@ tdl.instagram_login(); tdl.instagram_logout(); tdl.info()
 - Options are the command's, in snake_case: `dir`, `name`, `audio`, `max_height`, `highlights`, `highlights_only`, `posts`, `tagged`, `photos`, `videos`, `collections`, `all_collections`. For a profile, `posts`, `photos` and `videos` default to `True`, `tagged` to `False`; `get(url, tagged=True, videos=False)` saves the posts' photos and the tagged photos (needs a sign-in). A relative `dir` is resolved against the process's current working directory.
 - `get()` and `Job.wait()` return the `Job` when it ends `done` and raise otherwise; a `limited` job (a profile saved without signing in, all but the posts Instagram shows only to signed-in visitors) ends `done` but still raises `SignInRequired`. The exceptions for how a job ended, and `AppNotReachable` when TurboDL quits during `get()`, `wait()` or `events()`, carry the job as `e.job`, with the files already saved. All derive from `TurboDLError`.
 - `posts(url, since=None, limit=None, known=None)` is eager: it checks the app, starts the list and opens its events stream when called, and returns a `PostList`. Iterate it for `Post` objects: `code`, `url`, `taken_at` (aware UTC or `None`), `pinned`, `owner`, `caption`, `tagged_users`, `sign_in_only`, `known` and `items`, a list of `PostItem` (`kind`, `"image"` or `"video"`; `url`, `media_id`, `width`, `height`, `duration`). Its `job` is the `Job` being followed, kept up to date as the list runs: after the loop, `job.failed_items` counts the posts left out because their page showed nothing, and `job.warnings` says so. It doesn't reconnect: a stream that breaks raises `AppNotReachable`. The exceptions below are raised at the end (`SignInRequired` after all posts when some were shown only to signed-in visitors). `close()`, leaving the loop early or Ctrl+C cancels the job, before the first post too. An app older than 0.8.0 raises `TurboDLError("Update TurboDL to 0.8.0 or newer to list posts.")`.
+- `backup_profiles(profiles, wait=(2, 5), *, posts=True, highlights=False, tagged=False, photos=True, videos=True, name=None)` starts [a profile list](#profile-lists) and returns a `ProfileListRun`. `profiles` is a list of names, `@names` or profile links; a single string raises `TypeError`. `wait` is the random wait between profiles in whole minutes, `(least, most)` or one number. Every option is sent as given, so highlights are off here unless you pass `highlights=True`. `read_profile_list(path)` reads a `.txt` as the app does (blank and `#` lines skipped, duplicates once) and raises `ValueError` naming every line that isn't a profile. On the run, `list` is the API's view of the list, `state` its state, `refresh()` reads it again, `stop()` stops it (continue it in TurboDL), and `wait(poll=2.0, timeout=None)` returns the list once it no longer goes on by itself. Nothing is raised for how it ended: look at `state` and at each row's `state`. Ctrl+C in `wait()` stops the list. An app older than 0.9.0 raises `TurboDLError("Update TurboDL to 0.9.0 or newer to back up a list of profiles.")`.
 - `wait(timeout=...)` raises the built-in `TimeoutError` when the time is up and leaves the job running; `get()` waits as long as the job runs.
 
 | Exception | Raised when |
