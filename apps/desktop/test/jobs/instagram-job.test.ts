@@ -547,10 +547,50 @@ describe("Instagram profile jobs", () => {
     const ig = fakeProfiles({ "sample.user": { ...SAMPLE(), tagged: new SavedError("badAnswer") } });
     const c = await signedIn(ig.deps);
     const job = await run(c, { url: PROFILE_URL, options: { tagged: true } });
-    expect(job).toMatchObject({ state: "done", limited: true, failedItems: 0 });
+    // not a sign-in matter: the job is done, its reason not "signInRequired"
+    expect(job).toMatchObject({ state: "done", failedItems: 0 });
+    expect(job.limited).toBeUndefined();
+    expect(job.reason).toBeUndefined();
     expect(job.warnings).toContain("TurboDL couldn't read @sample.user's tagged posts; Instagram may have changed its page.");
     expect(job.files).toEqual([dl("sample.user", "1.jpg"), dl("sample.user", "2.jpg"), dl("sample.user", "3.jpg")]);
     expect(ig.taggedClosed).toEqual(["sample.user"]);
+  });
+
+  it("closes the tagged page when its backup doesn't start, and opens a new one when it is tried again", async () => {
+    const ig = fakeProfiles({ "sample.user": { ...SAMPLE(), tagged: [[photo("t1")]] }, "other.user": OTHER() });
+    const held = heldFetch(ig.deps);
+    const c = await signedIn(ig.deps);
+    // the first time, a backup from the app's screens starts while the tagged page loads: the slot is taken (busy)
+    // when the tagged backup asks for it; the job waits for that backup to end and tries again
+    const open = ig.deps.openTagged!;
+    let opens = 0;
+    const closedBeforeRetry: number[] = [];
+    ig.deps.openTagged = (username, cookies) => {
+      const source = open(username, cookies);
+      if (++opens > 1) {
+        closedBeforeRetry.push(ig.taggedClosed.length);
+        return source;
+      }
+      return { ...source, load: async () => void (await c.startProfileBackup("other.user")) };
+    };
+    const { id } = c.jobs.create({ url: PROFILE_URL, options: { posts: false, tagged: true } });
+    await until(() => ig.taggedClosed.length === 1);
+    expect(c.snapshot().instagramBackup).toMatchObject({ kind: "profile", name: "other.user", state: "running" });
+    held.open();
+    const job = (await c.jobs.ended(id))!;
+    expect(job).toMatchObject({ state: "done", files: [dl("sample.user", "Tagged", "t1.jpg")] });
+    expect(closedBeforeRetry).toEqual([1]);
+    expect(ig.taggedOpened).toEqual(["sample.user", "sample.user"]);
+    expect(ig.taggedClosed).toEqual(["sample.user", "sample.user"]);
+  });
+
+  it("fails private for a private profile's tagged posts, opening no tagged page", async () => {
+    const ig = fakeProfiles({ "shut.door": { profile: person("52", "shut.door", { isPrivate: true, following: false }), pages: [[photo("1")]], tagged: [[photo("t1")]] } });
+    const c = await signedIn(ig.deps);
+    const job = await run(c, { url: "https://www.instagram.com/shut.door/", options: { posts: false, tagged: true } });
+    expect(job).toMatchObject({ state: "failed", reason: "private", error: "This account is private." });
+    expect(ig.taggedOpened).toEqual([]);
+    expect(ig.fetched).toEqual([]);
   });
 
   it("warns when a profile has no tagged posts", async () => {

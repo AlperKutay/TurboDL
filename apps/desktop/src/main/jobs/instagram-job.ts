@@ -38,7 +38,8 @@ const IGNORED = "Instagram downloads go to TurboDL's Instagram folders; dir and 
 export const SIGN_IN_TO_READ = "Sign in to Instagram to read this link.";
 export const POST_SIGN_IN_ONLY = "Instagram shows this post only to signed-in visitors.";
 const NO_HIGHLIGHTS = "This profile has no highlights.";
-const TAGGED_SKIPPED = "Tagged posts need a sign-in to Instagram; they weren't saved.";
+const TAGGED_NEEDS_SESSION = "Tagged posts need a sign-in to Instagram; they weren't saved.";
+const TAGGED_UNAVAILABLE = "Tagged posts aren't available in this version; they weren't saved.";
 const SIGN_IN_TO_SAVED = "Sign in to Instagram to back up Saved.";
 const STOPPED = "The backup was stopped in TurboDL.";
 /** a signed-out backup's progress while it reads posts from their own pages */
@@ -115,26 +116,24 @@ async function profileJob(job: JobRecord, username: string, deps: InstagramJobDe
     else return refused(job, deps, stories);
   }
   let missedTagged = 0;
-  /** the tagged part was left out (no session) or its page couldn't be read: the job is done, but limited */
-  let taggedMissing = false;
+  /** the tagged part was left out (no session, or tagged posts unavailable): the job is done, but limited */
+  let skippedTagged = false;
   if (tagged && (!TAGGED_AVAILABLE || !deps.session.signedIn())) {
-    job.warn(TAGGED_SKIPPED);
-    taggedMissing = true;
+    job.warn(TAGGED_AVAILABLE ? TAGGED_NEEDS_SESSION : TAGGED_UNAVAILABLE);
+    skippedTagged = true;
   } else if (tagged) {
     const part = await backup(job, deps, () => profiles.startTaggedBackup(username, kinds));
     if (part === null) return;
     if (typeof part === "number") missedTagged = part;
-    else if (part.reason === "empty") job.warn(NO_TAGGED);
-    else if (part.reason === "unreadable") {
-      job.warn(part.error);
-      taggedMissing = true;
-    } else return refused(job, deps, part);
+    // neither is a sign-in matter: the job is done, with the warning
+    else if (part.reason === "empty" || part.reason === "unreadable") job.warn(part.reason === "empty" ? NO_TAGGED : part.error);
+    else return refused(job, deps, part);
   }
   complete(job, deps, [
     [missedPosts, "post"],
     [missedHighlights, "highlight"],
     [missedTagged, "tagged post"],
-  ], skipped.signInOnly, taggedMissing);
+  ], skipped.signInOnly, skippedTagged);
 }
 
 /** Saved: the account's own collections picked by name (or all of them), backed up one after another. */
