@@ -524,6 +524,44 @@ describe("BackupRun saving chosen kinds of media", () => {
     expect(again.fetched).toEqual([]);
   });
 
+  it("still retries a failed post's missing kind after a run that asked for fewer kinds cleared its failure", async () => {
+    const pages = [[both("N")], [both("F")]];
+    const first = setup({ pages, count: 2, failing: [videoOf("F")] });
+    await first.run.start();
+    expect(first.ledgers.load("102")).toMatchObject({ failedPosts: ["F"], reachedEnd: end(true) });
+    // photos only: F's photo is saved, so F is done for photos and no longer failed
+    const photos = setup({ pages, count: 2, kinds: ["image"] });
+    await photos.run.start();
+    expect(photos.fetched).toEqual([]);
+    expect(photos.ledgers.load("102")).toMatchObject({ failedPosts: [], done: { image: ["N", "F"], video: ["N"] } });
+    // photos and videos: F's video is still missing, so the run goes past N's page to fetch it
+    const again = setup({ pages, count: 2 });
+    await again.run.start();
+    expect(again.asked).toEqual([undefined, "1"]);
+    expect(again.fetched).toEqual([videoOf("F")]);
+    expect(again.ledgers.load("102")).toMatchObject({ failedPosts: [], done: done("N", "F"), reachedEnd: end(true) });
+  });
+
+  it("still saves a sign-in post's missing kind after a signed-in run that asked for fewer kinds saved the rest", async () => {
+    // signed out, S is shown only to signed-in visitors
+    const read = async (p: SavedPost): Promise<SavedPost> => (p.id === "S" ? { ...p, signInOnly: true } : { ...both(p.id), unread: false });
+    const first = setup({ pages: [[cover("N")], [cover("S")]], read, count: 2 });
+    await first.run.start();
+    expect(first.ledgers.load("102")).toMatchObject({ signInPosts: ["S"], reachedEnd: end(true) });
+    // signed in, photos only: S's photo is saved, so S no longer waits for a sign-in
+    const pages = [[both("N")], [both("S")]];
+    const photos = setup({ pages, count: 2, kinds: ["image"] });
+    await photos.run.start();
+    expect(photos.fetched).toEqual([photoOf("S")]);
+    expect(photos.ledgers.load("102")).toMatchObject({ signInPosts: [], done: { image: ["N", "S"], video: ["N"] } });
+    // signed in, photos and videos: S's video is still missing, so the run goes past N's page to fetch it
+    const again = setup({ pages, count: 2 });
+    await again.run.start();
+    expect(again.asked).toEqual([undefined, "1"]);
+    expect(again.fetched).toEqual([videoOf("S")]);
+    expect(again.ledgers.load("102")).toMatchObject({ signInPosts: [], done: done("N", "S"), reachedEnd: end(true) });
+  });
+
   it("saves only the wanted kinds of a highlight's stories, and the others on a later run that asks for them", async () => {
     const pages = [[post("h1", item("s1"), item("s2", "video"))]];
     const photos = setup({ kind: "highlights", pages, count: 1, kinds: ["image"] });

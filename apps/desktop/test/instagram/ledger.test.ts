@@ -125,4 +125,9 @@ describe("the ledger's rules", () => {
     // a post with no items at all still never is
     expect(postDone({ id: "3", items: [] }, ["image"], doneSets([]), new Set())).toBe(false);
   });
+
+  it("asks nothing of a run with no kinds: a post with no items isn't done, and no early stop", () => {
+    expect(postDone({ id: "3", items: [] }, [], doneSets(["3"]), new Set())).toBe(false);
+    expect(allowsEarlyStop({ ...EMPTY, reachedEnd: { image: true, video: true } }, [])).toBe(false);
+  });
 });

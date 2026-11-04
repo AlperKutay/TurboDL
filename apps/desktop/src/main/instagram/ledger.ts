@@ -35,7 +35,7 @@ export function postDone(
   done: Record<InstagramMediaKind, ReadonlySet<string>>,
   saved: ReadonlySet<string>,
 ): boolean {
-  if (kinds.every((kind) => done[kind].has(post.id))) return true;
+  if (kinds.length > 0 && kinds.every((kind) => done[kind].has(post.id))) return true;
   return post.items.length > 0 && wantedItems(post, kinds).every((item) => saved.has(itemId(post, item)));
 }
 
@@ -46,7 +46,7 @@ export function itemId(post: SavedPost, item: InstagramItem): string {
 
 /** Only after a complete pass for each kind asked, with nothing left failed, may a run stop at the first page it already has. */
 export function allowsEarlyStop(ledger: BackupLedger, kinds: readonly InstagramMediaKind[]): boolean {
-  return kinds.every((kind) => ledger.reachedEnd[kind]) && ledger.failedPosts.length === 0;
+  return kinds.length > 0 && kinds.every((kind) => ledger.reachedEnd[kind]) && ledger.failedPosts.length === 0;
 }
 
 /** One JSON file per collection. */
