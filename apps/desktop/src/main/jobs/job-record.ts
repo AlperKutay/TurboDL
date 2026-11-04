@@ -3,7 +3,7 @@ import { isJobEnded, type InstagramPostInfo, type Job, type JobEvent, type JobEv
 /** How a job finished. */
 export type JobOutcome =
   | { state: "done"; limited?: boolean }
-  | { state: "failed"; reason: JobReason; error: string }
+  | { state: "failed"; reason: JobReason; error: string; missedItems?: number }
   | { state: "cancelled"; reason?: "stopped"; error?: string };
 
 const PROGRESS_INTERVAL_MS = 250;
@@ -119,6 +119,7 @@ export class JobRecord {
     } else if (outcome.state === "failed") {
       this.job.reason = outcome.reason;
       this.job.error = outcome.error;
+      if (outcome.missedItems !== undefined) this.job.missedItems = outcome.missedItems;
     } else {
       if (outcome.reason) this.job.reason = outcome.reason;
       if (outcome.error) this.job.error = outcome.error;

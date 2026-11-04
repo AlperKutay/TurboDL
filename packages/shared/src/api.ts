@@ -99,6 +99,11 @@ export interface Job {
   warnings: string[];
   files: string[];
   failedItems: number;
+  /**
+   * A backup job that failed only because its backups couldn't save these posts (or stories): everything else was
+   * saved, and they're tried again on the next run. Absent when it failed for anything else.
+   */
+  missedItems?: number;
   progress: JobProgress;
   createdAt: number;
   endedAt?: number;

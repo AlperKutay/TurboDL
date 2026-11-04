@@ -264,16 +264,17 @@ async function paced<T>(job: JobRecord, deps: InstagramJobDeps, read: () => Prom
 }
 
 /**
- * Done when every part saved everything; otherwise failed, naming what is missing, its saved files still listed.
- * Posts shown only to signed-in visitors are named in a warning either way; alone, they leave it done, but limited, as
- * a part left out (`limited`, its warning given already) does.
+ * Done when every part saved everything; otherwise failed, naming what is missing (counted in `missedItems`: a list
+ * takes such a profile as backed up, with this warning), its saved files still listed. Posts shown only to signed-in
+ * visitors are named in a warning either way; alone, they leave it done, but limited, as a part left out (`limited`,
+ * its warning given already) does.
  */
 function complete(job: JobRecord, deps: InstagramJobDeps, missed: [count: number, unit: string][], signInOnly = 0, limited = false): void {
   const parts = missed.filter(([count]) => count > 0).map(([count, unit]) => counted(count, unit));
   if (signInOnly > 0) job.warn(`${signInOnly === 1 ? "1 post is" : `${signInOnly} posts are`} shown only to signed-in visitors; sign in to save them.`);
   if (parts.length === 0) return job.end(signInOnly > 0 || limited ? { state: "done", limited: true } : { state: "done" });
   const total = missed.reduce((sum, [count]) => sum + count, 0);
-  fail(job, deps, "error", `${parts.join(" and ")} couldn't be saved; ${total === 1 ? "it's" : "they're"} tried again on the next run.`);
+  job.end({ state: "failed", reason: "error", error: `${parts.join(" and ")} couldn't be saved; ${total === 1 ? "it's" : "they're"} tried again on the next run.`, missedItems: total });
 }
 
 /** "1 post", "3 posts". */

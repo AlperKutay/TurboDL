@@ -298,13 +298,15 @@ export class ProfileLists {
 
   /** What a profile's ended job means for its row. */
   private outcome(username: string, { job, fetched }: { job: Job; fetched: number }): Outcome {
-    if (job.state === "done") {
+    const done = (note: string | undefined): Outcome => {
       const files = this.deps.savedTotal(username);
-      const note = job.warnings.filter((w) => !isPlanWarning(w)).at(-1);
       return { type: "done", ...(files !== undefined ? { files } : {}), fetched, ...(note !== undefined ? { note } : {}) };
-    }
+    };
+    if (job.state === "done") return done(job.warnings.filter((w) => !isPlanWarning(w)).at(-1));
     if (job.state === "cancelled") return { type: "stopped" };
     const error = job.error ?? "The backup failed.";
+    // failed only by the posts its backups couldn't save (tried again on its next run): backed up, with that warning
+    if (job.reason === "error" && (job.missedItems ?? 0) > 0) return done(error);
     switch (job.reason) {
       case "private":
         return { type: "skipped", note: error };

@@ -1555,6 +1555,30 @@ describe("Instagram profiles", () => {
       expect(told().at(-1)).toBeNull();
     });
 
+    it("counts a profile whose backup couldn't save some posts as backed up, saying so", async () => {
+      const ig = fakeProfiles({ "sample.user": SAMPLE, "other.user": OTHER() });
+      const fetch = ig.deps.fetch!;
+      ig.deps.fetch = async (url, file, o) => {
+        if (url.endsWith("/2.jpg")) throw new Error("The file is gone.");
+        return fetch(url, file, o);
+      };
+      const c = await signedIn(ig.deps);
+      expect(await c.startProfileList(list(["sample.user", "other.user"]))).toEqual({ ok: true });
+      expect(await listEnds(c)).toMatchObject({
+        state: "finished",
+        rows: [
+          { username: "sample.user", state: "done", files: 2, fetched: 2, note: "1 post couldn't be saved; it's tried again on the next run." },
+          { username: "other.user", state: "done", files: 2, fetched: 2 },
+        ],
+      });
+      expect(ui.listNotes).toEqual(["Profile list finished: 2 backed up, 0 skipped."]);
+      // the profile's own job ends as a single backup's does
+      expect(c.jobs.list().map((j) => [j.url, j.state])).toEqual([
+        ["https://www.instagram.com/other.user/", "done"],
+        ["https://www.instagram.com/sample.user/", "failed"],
+      ]);
+    });
+
     it("keeps tagged posts off in a list started signed out, as its dialog shows them, and remembers the tick for a session", async () => {
       const ig = fakeProfiles({ "sample.user": SAMPLE });
       const c = await start({}, null, ig.deps);

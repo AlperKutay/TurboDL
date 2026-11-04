@@ -209,7 +209,7 @@ describe("ProfileLists", () => {
         "shut.door": [PRIVATE],
         // the error names the profile as Instagram's address does, lowercased
         "No.Such.One": [nothing("no.such.one")],
-        "broken.one": [{ state: "failed", reason: "error", error: "2 posts couldn't be saved; they're tried again on the next run." }],
+        "broken.one": [{ state: "failed", reason: "error", error: "The backup failed.", failedItems: 2 }],
       },
     });
     start(h, ["first.one", "shut.door", "No.Such.One", "broken.one", "last.one"]);
@@ -219,11 +219,27 @@ describe("ProfileLists", () => {
       { username: "first.one", state: "done", fetched: 0 },
       { username: "shut.door", state: "skipped", note: "This account is private." },
       { username: "No.Such.One", state: "skipped", note: profileShowedNothing("no.such.one") },
-      { username: "broken.one", state: "failed", note: "2 posts couldn't be saved; they're tried again on the next run." },
+      // posts it couldn't save before it broke don't make it a partial backup
+      { username: "broken.one", state: "failed", note: "The backup failed." },
       { username: "last.one", state: "done", fetched: 0 },
     ]);
     expect(h.lists.view()!.state).toBe("finished");
     expect(h.notes).toEqual(["Profile list finished: 2 backed up, 2 skipped, 1 failed."]);
+  });
+
+  it("counts a profile whose backups couldn't save some posts as backed up, with the job's words", async () => {
+    const missed = "2 posts couldn't be saved; they're tried again on the next run.";
+    const h = harness({
+      script: { "some.missed": [{ state: "failed", reason: "error", error: missed, failedItems: 2, missedItems: 2, fetched: 5 }] },
+      totals: { "some.missed": 40 },
+    });
+    start(h, ["some.missed", "next.one"]);
+    await settle(h);
+    expect(h.lists.view()!.rows).toEqual([
+      { username: "some.missed", state: "done", files: 40, fetched: 5, note: missed },
+      { username: "next.one", state: "done", fetched: 0 },
+    ]);
+    expect(h.notes).toEqual(["Profile list finished: 2 backed up, 0 skipped."]);
   });
 
   it("fails a profile whose run broke, and goes on", async () => {

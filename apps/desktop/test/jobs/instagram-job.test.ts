@@ -356,8 +356,30 @@ describe("Instagram profile jobs", () => {
       reason: "error",
       error: "1 post couldn't be saved; it's tried again on the next run.",
       failedItems: 1,
+      // what it couldn't save is all that failed
+      missedItems: 1,
       files: [dl("sample.user", "1.jpg"), dl("sample.user", "3.jpg"), dl("sample.user", "Highlights", "s1.jpg")],
     });
+  });
+
+  it("ends failed with a later part's error, not as posts it couldn't save, when that part breaks", async () => {
+    const ig = fakeProfiles({ "sample.user": SAMPLE() });
+    const fetch = ig.deps.fetch!;
+    ig.deps.fetch = async (url, file, o) => {
+      if (url.endsWith("/2.jpg")) throw new Error("The file is gone.");
+      return fetch(url, file, o);
+    };
+    // the highlights part's own page shows nothing
+    const open = ig.deps.openProfile!;
+    let opens = 0;
+    ig.deps.openProfile = (username, cookies) => {
+      const source = open(username, cookies);
+      return ++opens === 1 ? source : { ...source, profile: () => Promise.reject(new SavedError("badAnswer")) };
+    };
+    const c = await signedIn(ig.deps);
+    const job = await run(c, { url: PROFILE_URL, options: { highlights: true } });
+    expect(job).toMatchObject({ state: "failed", reason: "error", error: profileShowedNothing("sample.user"), failedItems: 1 });
+    expect(job.missedItems).toBeUndefined();
   });
 
   it("waits its turn while a backup from the app's screens runs, then starts", async () => {
@@ -493,6 +515,7 @@ describe("Instagram profile jobs", () => {
       reason: "error",
       error: "1 post couldn't be saved; it's tried again on the next run.",
       failedItems: 1,
+      missedItems: 1,
     });
     expect(sorted(job.files)).toEqual([dl("sample.user", "a.jpg"), dl("sample.user", "b.jpg")]);
   });
