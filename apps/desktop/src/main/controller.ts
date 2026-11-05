@@ -63,6 +63,7 @@ import {
   type BrowserCookie,
   SavedError,
   parseInstagramLink,
+  profileUrl,
 } from "@turbodl/shared";
 import { apiToken, writeApiFile } from "./api-file";
 import type { ApiHandlers } from "./api-routes";
@@ -738,7 +739,7 @@ export class AppController {
     this.openPending({
       type: "instagram",
       pendingId,
-      pageUrl: `https://www.instagram.com/${encodeURIComponent(username)}/`,
+      pageUrl: profileUrl(username),
       link: { kind: "profile", username },
       keepsFolder: `Instagram › ${username}`,
       defaultDir: this.profiles.folder(username),
@@ -795,7 +796,7 @@ export class AppController {
     if (problem) return { ok: false, error: problem };
     // a job holding the lane's turn would have this backup come between its parts
     if (this.backups.isRunning() || this.lane.busy()) return { ok: false, error: BACKUP_RUNNING };
-    return this.startScreenJob({ url: `https://www.instagram.com/${encodeURIComponent(username)}/`, options: saveJobOptions(effective) }, username);
+    return this.startScreenJob({ url: profileUrl(username), options: saveJobOptions(effective) }, username);
   }
 
   /**
@@ -945,7 +946,7 @@ export class AppController {
    * with a warning, which the profile's row shows.
    */
   private runListProfile(username: string, options: ProfileSaveOptions): ProfileRun {
-    const { id } = this.jobs.create({ url: `https://www.instagram.com/${encodeURIComponent(username)}/`, options: saveJobOptions(options) });
+    const { id } = this.jobs.create({ url: profileUrl(username), options: saveJobOptions(options) });
     let fetched = 0;
     let tell: ((p: JobProgress) => void) | undefined;
     // followed in the turn it was created in: nothing it reports is missed

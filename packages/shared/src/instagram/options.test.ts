@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_SAVE_OPTIONS, effectiveSaveOptions, mediaKinds, profileName, saveJobOptions, saveOptionsProblem } from "./options";
+import { DEFAULT_SAVE_OPTIONS, effectiveSaveOptions, mediaKinds, profileName, profileUrl, saveJobOptions, saveOptionsProblem } from "./options";
 
 describe("save options", () => {
   it("maps photos and videos to media kinds", () => {
@@ -32,5 +32,12 @@ describe("profileName", () => {
     expect(profileName(" @sample_user.2 ")).toBe("sample_user.2");
     expect(profileName("sample.user")).toBe("sample.user");
     for (const text of ["https://www.instagram.com/p/C1abcDEF/", "https://example.com/sample.user", "a-b", "not a name!", "", "@"]) expect(profileName(text), text).toBeNull();
+  });
+});
+
+describe("profileUrl", () => {
+  it("encodes the name", () => {
+    expect(profileUrl("demo.person")).toBe("https://www.instagram.com/demo.person/");
+    expect(profileUrl("a b")).toBe("https://www.instagram.com/a%20b/");
   });
 });

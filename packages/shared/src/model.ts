@@ -1,5 +1,6 @@
 import type { Highlight, InstagramItem, InstagramLink, InstagramProfile, ListWait, ParsedProfileList, ProfileListView, ProfileSaveOptions, SavedCollection, SavedPage, SavedSource } from "./instagram";
 import type { BrowserCookie, CaptureSource, MediaItem } from "./protocol";
+import type { TelegramSettings } from "./telegram";
 
 export type Category = "video" | "music" | "programs" | "archives" | "documents" | "images" | "other";
 export type DownloadStatus = "queued" | "scheduled" | "downloading" | "paused" | "completed" | "error";
@@ -110,6 +111,7 @@ export interface Settings {
   /** the random wait between a profile list's profiles, minutes */
   listWait: ListWait;
   scheduler: SchedulerSettings;
+  telegram: TelegramSettings;
 }
 
 export interface NewDownload {

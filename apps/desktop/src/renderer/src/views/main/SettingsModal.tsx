@@ -42,7 +42,7 @@ export function SettingsModal({ settings, version, onClose }: { settings: Settin
 
   const save = async () => {
     setSaving(true);
-    const { scheduler: _unused, ...rest } = draft;
+    const { scheduler: _scheduler, telegram: _telegram, ...rest } = draft;
     await api.updateSettings({
       ...rest,
       captureExtensions: extensions.split(/[\s,;]+/).filter(Boolean),

@@ -1,5 +1,5 @@
 import path from "node:path";
-import { DEFAULT_BRIDGE_PORT, DEFAULT_CAPTURE_EXTENSIONS, DEFAULT_LIST_WAIT, DEFAULT_SAVE_OPTIONS, waitProblem, type AfterAllAction, type Settings } from "@turbodl/shared";
+import { DEFAULT_BRIDGE_PORT, DEFAULT_CAPTURE_EXTENSIONS, DEFAULT_LIST_WAIT, DEFAULT_SAVE_OPTIONS, DEFAULT_TELEGRAM, chatIdProblem, waitProblem, type AfterAllAction, type Settings } from "@turbodl/shared";
 
 const TIME = /^([01]\d|2[0-3]):[0-5]\d$/;
 const AFTER_ALL: AfterAllAction[] = ["none", "sleep", "shutdown", "quit"];
@@ -22,6 +22,7 @@ export function defaultSettings(downloadsDir: string): Settings {
     instagramSave: { ...DEFAULT_SAVE_OPTIONS },
     listWait: { ...DEFAULT_LIST_WAIT },
     scheduler: { enabled: false, startTime: "02:00", stopTime: null, afterAll: "none" },
+    telegram: { ...DEFAULT_TELEGRAM },
   };
 }
 
@@ -48,6 +49,7 @@ export function normalizeSettings(input: unknown, defaults: Settings): Settings 
   const src = (input && typeof input === "object" ? input : {}) as Record<string, unknown>;
   const schedSrc = (src.scheduler && typeof src.scheduler === "object" ? src.scheduler : {}) as Record<string, unknown>;
   const saveSrc = (src.instagramSave && typeof src.instagramSave === "object" ? src.instagramSave : {}) as Record<string, unknown>;
+  const telegramSrc = (src.telegram && typeof src.telegram === "object" ? src.telegram : {}) as Record<string, unknown>;
   const d = defaults.scheduler;
   const waitSrc = (src.listWait && typeof src.listWait === "object" ? src.listWait : {}) as { min: unknown; max: unknown };
   return {
@@ -83,12 +85,16 @@ export function normalizeSettings(input: unknown, defaults: Settings): Settings 
             : d.stopTime,
       afterAll: AFTER_ALL.includes(schedSrc.afterAll as AfterAllAction) ? (schedSrc.afterAll as AfterAllAction) : d.afterAll,
     },
+    telegram: {
+      enabled: bool(telegramSrc.enabled, defaults.telegram.enabled),
+      chatId: chatIdProblem(telegramSrc.chatId) === null ? (telegramSrc.chatId as number) : null,
+    },
   };
 }
 
 export function mergeSettings(current: Settings, patch: Partial<Settings>, defaults: Settings): Settings {
   return normalizeSettings(
-    { ...current, ...patch, scheduler: { ...current.scheduler, ...(patch.scheduler ?? {}) } },
+    { ...current, ...patch, scheduler: { ...current.scheduler, ...(patch.scheduler ?? {}) }, telegram: { ...current.telegram, ...(patch.telegram ?? {}) } },
     defaults,
   );
 }

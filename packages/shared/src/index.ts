@@ -8,3 +8,4 @@ export * from "./format";
 export * from "./clipboard";
 export * from "./instagram";
 export * from "./api";
+export * from "./telegram";

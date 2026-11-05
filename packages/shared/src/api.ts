@@ -129,7 +129,7 @@ export interface ApiInfo {
 }
 
 /** The features this version reports in `ApiInfo.features`. */
-export const API_FEATURES: readonly string[] = ["posts", "profileOptions", "lists", ...(TAGGED_AVAILABLE ? ["tagged"] : [])];
+export const API_FEATURES: readonly string[] = ["posts", "profileOptions", "lists", ...(TAGGED_AVAILABLE ? ["tagged"] : []), "telegram"];
 
 /** The command that starts the app in the background. */
 export interface ApiLaunch {

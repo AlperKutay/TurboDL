@@ -65,4 +65,19 @@ describe("settings", () => {
     const cleared = mergeSettings({ ...defaults, scheduler: { ...defaults.scheduler, stopTime: "06:00" } }, { scheduler: { stopTime: null } as never }, defaults);
     expect(cleared.scheduler.stopTime).toBeNull();
   });
+
+  it("telegram defaults to off with no chat", () => {
+    expect(defaultSettings("/home/u/Downloads").telegram).toEqual({ enabled: false, chatId: null });
+  });
+
+  it("telegram normalises", () => {
+    expect(normalizeSettings({ telegram: { enabled: "yes", chatId: -5 } }, defaults).telegram).toEqual(defaults.telegram);
+    expect(normalizeSettings({ telegram: { enabled: true, chatId: 123456789 } }, defaults).telegram).toEqual({ enabled: true, chatId: 123456789 });
+    for (const chatId of [1.5, "42", 2 ** 53]) expect(normalizeSettings({ telegram: { enabled: true, chatId } }, defaults).telegram.chatId).toBeNull();
+  });
+
+  it("mergeSettings merges telegram", () => {
+    const merged = mergeSettings({ ...defaults, telegram: { enabled: true, chatId: 7 } }, { telegram: { enabled: false } as never }, defaults);
+    expect(merged.telegram).toEqual({ enabled: false, chatId: 7 });
+  });
 });
