@@ -1,36 +1,13 @@
-import { effectiveSaveOptions, parseProfileList, profileUrl, saveJobOptions } from "@turbodl/shared";
 import type { ApiInfo, Job, JobEvent, JobRequest, ListWait, ProfileListView, ProfileSaveOptions, Result, TelegramPairing, TelegramState } from "@turbodl/shared";
 import type { ParsedListRequest } from "../api-routes";
-import { UNFINISHED, listNames } from "../instagram/profile-lists";
 import type { JsonStore } from "../store";
 import { TelegramError, scrub, type BotApi } from "./bot-api";
 import { JobFollower } from "./bot-jobs";
-import { ownerUpdate, pairingStart, type OwnerUpdate } from "./gate";
-import { readIntent, type Command, type Intent } from "./intent";
+import { OwnerHandler } from "./bot-owner";
+import { ownerUpdate, pairingStart } from "./gate";
 import { Outbox } from "./outbox";
-import { Prompts, promptKeyboard, promptText, type ListPrompt, type ProfilePrompt } from "./prompts";
 import { EMPTY_STATE, isBotStateFile, type BotStateFile } from "./state";
-import {
-  CANCELLED,
-  EXPIRED,
-  FILE_NOT_RECEIVED,
-  HELP,
-  LIST_TOO_LARGE,
-  NOTHING_RUNNING,
-  NO_LIST,
-  PAIRED,
-  SAVED_REFUSED,
-  SEND_SOMETHING,
-  SHOW_LIST_KEYBOARD,
-  STOP_WHAT,
-  clip,
-  jobLabel,
-  listKeyboard,
-  listText,
-  notStartedText,
-  statusText,
-  stopKeyboard,
-} from "./texts";
+import { HELP, PAIRED } from "./texts";
 import type { Keyboard, Update } from "./types";
 
 /** What the bot may ask of the app: ApiHandlers' job and list calls, plus the settings' defaults. */
@@ -70,22 +47,6 @@ const BACKOFF_START_MS = 5000;
 const BACKOFF_MAX_MS = 60_000;
 const CONFLICT_RETRY_MS = 30_000;
 const DEFAULT_RETRY_AFTER_S = 5;
-/** The largest .txt list the bot reads, as the app's own list requests. */
-const LIST_FILE_MAX = 1024 * 1024;
-/** Telegram shows at most 200 characters of a button's answer. */
-const TOAST_MAX = 200;
-
-type Press = Extract<OwnerUpdate, { type: "press" }>;
-
-/** The list goes on by itself: running, waiting for its next profile, or slowed down. */
-function isActive(list: ProfileListView | null): boolean {
-  return list !== null && (list.state === "running" || list.state === "waiting" || list.state === "slowedDown");
-}
-
-/** A refused Result's words, for the button's answer. */
-function failure(result: Result): string | undefined {
-  return result.ok ? undefined : result.error;
-}
 
 const COMMANDS = [
   { command: "status", description: "What is running" },
@@ -98,8 +59,8 @@ export class TelegramBot {
   private readonly o: BotOptions;
   private readonly ctl = new AbortController();
   private readonly outbox: Outbox;
-  private readonly prompts = new Prompts({ now: () => this.o.now() });
   private readonly jobs: JobFollower;
+  private readonly owner: OwnerHandler;
   private readonly timers = new Set<{ timer: NodeJS.Timeout; resolve: () => void }>();
   private state: BotStateFile;
   private running: Promise<void> | null = null;
@@ -126,6 +87,22 @@ export class TelegramBot {
         this.saveState();
       },
       stopped: () => this.stopped,
+      log: (text) => this.log(text),
+    });
+    this.owner = new OwnerHandler({
+      app: o.app,
+      api: o.api,
+      jobs: this.jobs,
+      signal: this.ctl.signal,
+      now: () => o.now(),
+      send: (chatId, text, opts) => this.send(chatId, text, opts),
+      edit: (chatId, messageId, text, keyboard, opts) => this.edit(chatId, messageId, text, keyboard, opts),
+      listOpened: (chatId, messageId, active) => {
+        this.state.list = { chatId, messageId, active };
+        this.saveState();
+      },
+      stopped: () => this.stopped,
+      text: (err) => this.text(err),
       log: (text) => this.log(text),
     });
   }
@@ -327,7 +304,7 @@ export class TelegramBot {
       const owner = ownerUpdate(update, this.o.chatId());
       if (owner) {
         this.persistNow();
-        await this.handleOwner(owner);
+        await this.owner.handle(owner);
       }
     } catch (err) {
       this.log(`update ${update.update_id} failed: ${this.text(err)}`);
@@ -341,216 +318,5 @@ export class TelegramBot {
 
   private edit(chatId: number, messageId: number, text: string, keyboard: Keyboard | null, o: { final?: boolean } = {}): Promise<void> {
     return chatId === this.o.chatId() ? this.outbox.edit(chatId, messageId, text, keyboard, o) : Promise.resolve();
-  }
-
-  /** Runs work without holding up the poll loop or stop() (a download from Telegram, a message's id); failures are logged. */
-  private detach(work: Promise<unknown>, what: string): void {
-    work.catch((err) => this.log(`${what} failed: ${this.text(err)}`));
-  }
-
-  /** The one place an update from the bound chat is handled. */
-  private async handleOwner(update: OwnerUpdate): Promise<void> {
-    if (update.type === "press") return this.onPress(update);
-    const chatId = update.message.chat.id;
-    const intent = readIntent(update.message);
-    switch (intent.type) {
-      case "command":
-        return this.command(chatId, intent.name);
-      case "profile":
-        return this.openProfile(chatId, intent.name);
-      case "names": {
-        const names = listNames(intent.names);
-        if ("error" in names) void this.send(chatId, names.error);
-        else await this.openList(chatId, "Telegram list", names.names, []);
-        return;
-      }
-      case "links":
-        return this.startLinks(chatId, intent.urls, intent.saved);
-      case "document":
-        return this.detach(this.readList(chatId, intent), `reading ${intent.fileName}`);
-      case "otherFile":
-        void this.send(chatId, SEND_SOMETHING);
-        return;
-      case "unknown":
-        void this.send(chatId, HELP);
-        return;
-    }
-  }
-
-  private async command(chatId: number, name: Command): Promise<void> {
-    switch (name) {
-      case "start":
-      case "help":
-        void this.send(chatId, HELP);
-        return;
-      case "status": {
-        const info = await this.o.app.info();
-        if (this.stopped) return;
-        void this.send(chatId, statusText({ version: info.version, instagram: info.instagram, jobs: this.jobs.running(), list: this.o.app.list() }));
-        return;
-      }
-      case "stop": {
-        const keyboard = stopKeyboard(this.jobs.running(), isActive(this.o.app.list()));
-        void this.send(chatId, keyboard ? STOP_WHAT : NOTHING_RUNNING, keyboard ? { keyboard } : {});
-        return;
-      }
-      case "list":
-        if (!this.showList(chatId)) void this.send(chatId, NO_LIST);
-        return;
-    }
-  }
-
-  private async openProfile(chatId: number, name: string): Promise<void> {
-    const { signedIn, username } = (await this.o.app.info()).instagram;
-    if (this.stopped) return;
-    const prompt = this.prompts.openProfile(name, this.o.app.defaults().save, signedIn, username);
-    void this.send(chatId, promptText(prompt), { keyboard: promptKeyboard(prompt) });
-  }
-
-  private async openList(chatId: number, listName: string, usernames: string[], skipped: string[]): Promise<void> {
-    const { signedIn, username } = (await this.o.app.info()).instagram;
-    if (this.stopped) return;
-    const { save, wait } = this.o.app.defaults();
-    const prompt = this.prompts.openList(listName, usernames, skipped, save, wait, signedIn, username);
-    void this.send(chatId, promptText(prompt), { keyboard: promptKeyboard(prompt) });
-  }
-
-  /** A .txt of profiles, read as the app reads its own lists. */
-  private async readList(chatId: number, doc: Extract<Intent, { type: "document" }>): Promise<void> {
-    if (doc.size !== undefined && doc.size > LIST_FILE_MAX) {
-      void this.send(chatId, LIST_TOO_LARGE);
-      return;
-    }
-    let bytes: Buffer;
-    try {
-      bytes = await this.o.api.downloadDocument(doc.fileId, LIST_FILE_MAX);
-    } catch (err) {
-      if (this.stopped) return;
-      const tooLarge = err instanceof TelegramError && err.kind === "tooLarge";
-      if (!tooLarge) this.log(`could not get ${doc.fileName}: ${this.text(err)}`);
-      void this.send(chatId, tooLarge ? LIST_TOO_LARGE : FILE_NOT_RECEIVED);
-      return;
-    }
-    if (this.stopped) return;
-    const parsed = parseProfileList(bytes.toString("utf8").replace(/^\uFEFF/, ""));
-    // no names, or more than a list holds: the app's own words
-    const names = listNames(parsed.usernames);
-    if ("error" in names) {
-      void this.send(chatId, names.error);
-      return;
-    }
-    const skipped = parsed.invalid.map((line) => line.text);
-    await this.openList(chatId, doc.fileName.replace(/\.txt$/i, ""), names.names, skipped);
-  }
-
-  private startLinks(chatId: number, urls: string[], saved: number): void {
-    if (saved > 0) void this.send(chatId, SAVED_REFUSED);
-    for (const url of urls) {
-      let job: Job;
-      try {
-        job = this.o.app.createJob({ url });
-      } catch (err) {
-        void this.send(chatId, notStartedText(url, this.text(err)));
-        continue;
-      }
-      this.jobs.follow(chatId, job, jobLabel(job));
-    }
-  }
-
-  /** Sends the list message anew; it becomes the one the bot follows. False when there is no list. */
-  private showList(chatId: number): boolean {
-    const list = this.o.app.list();
-    if (!list) return false;
-    const keyboard = listKeyboard(list);
-    const sent = this.send(chatId, listText(list, this.o.now()), keyboard ? { keyboard } : {}).then((messageId) => {
-      if (messageId === null || this.stopped) return;
-      this.state.list = { chatId, messageId, active: isActive(this.o.app.list()) };
-      this.saveState();
-    });
-    this.detach(sent, "showing the list");
-    return true;
-  }
-
-  /** Every press is answered, so the phone stops waiting; with a toast only when it is refused or fails. */
-  private async onPress(press: Press): Promise<void> {
-    let toast: string | undefined;
-    try {
-      toast = await this.pressed(press);
-    } catch (err) {
-      toast = this.text(err);
-      this.log(`button ${press.data} failed: ${toast}`);
-    }
-    if (this.stopped) return;
-    await this.o.api.answerCallbackQuery(press.id, toast === undefined ? undefined : clip(toast, TOAST_MAX), this.ctl.signal).catch((err) => {
-      if (!this.stopped) this.log(`could not answer a button: ${this.text(err)}`);
-    });
-  }
-
-  /** What a button does; the toast when it is refused or fails. */
-  private async pressed({ chatId, messageId, data }: Press): Promise<string | undefined> {
-    if (data.startsWith("p:")) return this.pressPrompt(chatId, messageId, data);
-    if (data.startsWith("s:")) {
-      this.o.app.cancelJob(data.slice(2));
-      return undefined;
-    }
-    switch (data) {
-      case "sa":
-        for (const { job } of this.jobs.running()) this.o.app.cancelJob(job.id);
-        if (isActive(this.o.app.list())) this.detach(this.o.app.stopList(), "stopping the list");
-        return undefined;
-      case "sl":
-        // it resolves once the list has stopped, which may take a while
-        this.detach(this.o.app.stopList(), "stopping the list");
-        return undefined;
-      case "lc":
-        return failure(await this.o.app.continueList());
-      case "lx":
-        return failure(await this.o.app.closeList());
-      case "lv":
-        return this.showList(chatId) ? undefined : NO_LIST;
-      default:
-        return EXPIRED;
-    }
-  }
-
-  private async pressPrompt(chatId: number, messageId: number, data: string): Promise<string | undefined> {
-    const out = this.prompts.press(data);
-    switch (out.type) {
-      case "expired":
-        return EXPIRED;
-      case "refused":
-        return out.toast;
-      case "changed":
-        void this.edit(chatId, messageId, promptText(out.prompt), promptKeyboard(out.prompt), { final: true });
-        return undefined;
-      case "cancel":
-        void this.edit(chatId, messageId, CANCELLED, null, { final: true });
-        return undefined;
-      case "start":
-        if (out.prompt.kind === "profile") this.startProfile(chatId, messageId, out.prompt);
-        else await this.startList(chatId, messageId, out.prompt);
-        return undefined;
-    }
-  }
-
-  /** The profile backup; the prompt message becomes the job's message. */
-  private startProfile(chatId: number, messageId: number, p: ProfilePrompt): void {
-    const job = this.o.app.createJob({ url: profileUrl(p.name), options: saveJobOptions(effectiveSaveOptions(p.options, p.signedIn)) });
-    this.jobs.follow(chatId, job, jobLabel(job), messageId);
-  }
-
-  /** The profile list; the prompt message becomes the list message, or says why the list didn't start. */
-  private async startList(chatId: number, messageId: number, p: ListPrompt): Promise<void> {
-    const result = await this.o.app.startList({ name: p.listName, usernames: p.usernames, options: effectiveSaveOptions(p.options, p.signedIn), wait: p.wait });
-    if (this.stopped) return;
-    if (!result.ok) {
-      void this.edit(chatId, messageId, result.error, result.error === UNFINISHED ? SHOW_LIST_KEYBOARD : null, { final: true });
-      return;
-    }
-    const list = this.o.app.list();
-    if (!list) return;
-    this.state.list = { chatId, messageId, active: isActive(list) };
-    this.saveState();
-    void this.edit(chatId, messageId, listText(list, this.o.now()), listKeyboard(list), { final: true });
   }
 }
