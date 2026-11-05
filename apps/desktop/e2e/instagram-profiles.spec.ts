@@ -507,8 +507,7 @@ test("settings: Instagram downloads can all go into one folder instead of one pe
     const perAccount = main.getByRole("checkbox", { name: "Put Instagram downloads in a folder per account" });
     await expect(perAccount).toBeChecked();
     await perAccount.uncheck();
-    // the window's own Save, in its footer (the Telegram section has a Save for the bot token)
-    await main.getByRole("dialog", { name: "Settings" }).locator("footer").getByRole("button", { name: "Save", exact: true }).click();
+    await main.getByRole("dialog", { name: "Settings" }).getByRole("button", { name: "Save", exact: true }).click();
     await main.getByRole("button", { name: "Add URL" }).click();
     await main.getByPlaceholder("https://…").fill("https://www.instagram.com/p/DP3/");
     const dialogOpened = app.waitForEvent("window");

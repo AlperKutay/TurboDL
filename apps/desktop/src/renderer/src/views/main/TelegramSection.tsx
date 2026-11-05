@@ -86,7 +86,7 @@ export function TelegramSection({ status }: { status: TelegramStatus }) {
             <div className="field-row">
               <input type="password" autoComplete="off" value={token} onChange={(e) => setToken(e.target.value)} />
               <button type="button" className="btn" disabled={busy || !token.trim()} onClick={() => void saveToken()}>
-                Save
+                Save token
               </button>
               {replacing && (
                 <button type="button" className="btn" disabled={busy} onClick={() => { setReplacing(false); setToken(""); }}>
