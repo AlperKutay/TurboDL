@@ -1,4 +1,7 @@
-/** What the app keeps about the Telegram bot (the token itself lives in the OS keychain, never here). */
+/**
+ * What the app keeps about the Telegram bot. The token is never here: it has a file of its own, encrypted by the
+ * system when the system can encrypt, else in plain text that only the user can read.
+ */
 export interface TelegramSettings {
   enabled: boolean;
   /** the one private chat the bot answers; null until a chat is paired */
