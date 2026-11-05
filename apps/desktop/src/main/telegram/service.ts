@@ -23,6 +23,7 @@ export const TOKEN_FORMAT = /^\d{3,20}:[A-Za-z0-9_-]{20,100}$/;
 
 const BAD_TOKEN = "That doesn't look like a bot token from @BotFather.";
 const NO_TOKEN = "Save the bot token first.";
+const UNREADABLE = "TurboDL couldn't read the saved bot token. Save it again.";
 
 export interface TelegramServiceDeps {
   userDataDir: string;
@@ -95,24 +96,24 @@ export class TelegramService {
     if (this.started || this.closed) return;
     this.started = true;
     try {
-      const version = this.tokenVersion;
-      const loaded = await this.tokens.load();
-      // a token set meanwhile is newer than the one read
-      if (version === this.tokenVersion) {
-        this.token = loaded && "token" in loaded ? loaded.token : null;
-        this.unreadable = loaded !== null && "unreadable" in loaded;
-        if (this.unreadable) this.log("the saved bot token couldn't be read");
-      }
+      await this.readToken();
       this.loaded = true;
-      await this.apply();
+      // not apply(): the token was just read, a second try now would only wait on the keyring again
+      await this.serial(() => this.reconcile());
     } catch (err) {
       this.log(`could not start: ${message(err)}`);
     }
   }
 
-  /** After a settings change: starts, stops or keeps the bot. */
+  /**
+   * After a settings change: starts, stops or keeps the bot. A token that couldn't be read is read again first when
+   * the bot should run (the keyring may have been unlocked since, as at a login after the app started).
+   */
   apply(): Promise<void> {
-    return this.serial(() => this.reconcile());
+    return this.serial(async () => {
+      await this.retryToken();
+      await this.reconcile();
+    });
   }
 
   status(): TelegramStatus {
@@ -166,6 +167,10 @@ export class TelegramService {
   /** A code the chat to bind sends the bot (`/start <code>`), valid for 10 minutes; the bot runs meanwhile. */
   async pair(): Promise<TelegramPairResult> {
     if (this.closed) return { ok: false, error: "TurboDL is quitting." };
+    // a pairing wants the bot to run: a token that couldn't be read gets another try
+    if (this.unreadable) await this.serial(() => this.retryToken(true));
+    if (this.closed) return { ok: false, error: "TurboDL is quitting." };
+    if (this.unreadable) return { ok: false, error: UNREADABLE };
     if (this.token === null) return { ok: false, error: NO_TOKEN };
     const pairing = { code: String(randomInt(0, 1_000_000)).padStart(6, "0"), expiresAt: this.now() + PAIRING_MS };
     this.endPairing();
@@ -254,6 +259,23 @@ export class TelegramService {
       (err: unknown) => this.log(`lifecycle change failed: ${message(err)}`),
     );
     return run;
+  }
+
+  /** Reads the saved token (never longer than the store's timeout); a token set meanwhile is newer than the one read. */
+  private async readToken(): Promise<void> {
+    const version = this.tokenVersion;
+    const loaded = await this.tokens.load();
+    if (version !== this.tokenVersion) return;
+    this.token = loaded && "token" in loaded ? loaded.token : null;
+    this.unreadable = loaded !== null && "unreadable" in loaded;
+    if (this.unreadable) this.log("the saved bot token couldn't be read");
+  }
+
+  /** In the chain only: a token that couldn't be read is read again when the bot should run (or will, for a pairing). */
+  private async retryToken(forPairing = false): Promise<void> {
+    if (!this.unreadable || this.closed || !this.loaded || !(forPairing || this.wanted())) return;
+    await this.readToken();
+    if (!this.unreadable) this.log("the saved bot token could be read this time");
   }
 
   /** In the chain only: the bot as the token and settings want it, then the status. */

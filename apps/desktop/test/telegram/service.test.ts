@@ -3,12 +3,12 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PAIRING_MS, type TelegramSettings, type TelegramStatus } from "@turbodl/shared";
-import { TelegramService, type TelegramServiceDeps } from "../../src/main/telegram/service";
+import { TOKEN_FORMAT, TelegramService, type TelegramServiceDeps } from "../../src/main/telegram/service";
 import { READ_TIMEOUT_MS, TokenStore, type TokenCrypt } from "../../src/main/telegram/token-store";
 import { PAIRED, RESTARTED_LINK } from "../../src/main/telegram/texts";
 import type { BotStateFile } from "../../src/main/telegram/state";
 import { makeApp } from "../fixtures/fake-bot-app";
-import { startFakeTelegram, type FakeTelegram } from "../fixtures/fake-telegram";
+import { FAKE_TOKEN, startFakeTelegram, type FakeTelegram } from "../fixtures/fake-telegram";
 
 const OWNER = 7;
 /** tokens in @BotFather's format: digits, a colon, 20 or more of [A-Za-z0-9_-] */
@@ -24,6 +24,25 @@ const ENCRYPTING: TokenCrypt = {
   encrypt: (text) => Buffer.from(`enc:${text}`),
   decrypt: async (data) => data.toString().slice(4),
 };
+
+/**
+ * The system's encryption with a keyring that answers each read in turn: "locked" refuses, "hang" never answers; once
+ * the list is used up it decrypts as ENCRYPTING does.
+ */
+function keyring(answers: ("locked" | "hang")[]): TokenCrypt & { reads: number } {
+  const crypt = {
+    reads: 0,
+    available: () => true,
+    encrypt: ENCRYPTING.encrypt,
+    decrypt: (data: Buffer): Promise<string> => {
+      const answer = answers[crypt.reads++];
+      if (answer === "locked") return Promise.reject(new Error("The keyring is locked"));
+      if (answer === "hang") return new Promise<string>(() => undefined);
+      return ENCRYPTING.decrypt(data);
+    },
+  };
+  return crypt;
+}
 
 let fake: FakeTelegram;
 let dir: string;
@@ -246,6 +265,16 @@ describe("telegram service", () => {
     expect(statuses.at(-1)?.pairing).toBeUndefined();
   });
 
+  it("the fake Telegram's own token is one the app takes", async () => {
+    expect(TOKEN_FORMAT.test(FAKE_TOKEN)).toBe(true);
+    const own = await startFakeTelegram();
+    try {
+      expect(own.token).toBe(FAKE_TOKEN);
+    } finally {
+      await own.close();
+    }
+  });
+
   it("bad token format is refused", async () => {
     const service = makeService();
     await service.start();
@@ -297,11 +326,83 @@ describe("telegram service", () => {
     expect(service.status()).toMatchObject({ state: "connecting", tokenSet: true });
   });
 
+  it("a token that couldn't be read is read again once the bot should run", async () => {
+    settings = { enabled: false, chatId: OWNER };
+    saveToken(TOKEN_A, ENCRYPTING);
+    // the keyring is locked when the app starts, and unlocked later (a login after the app started)
+    const crypt = keyring(["locked"]);
+    const service = makeService({ crypt });
+    await service.start();
+    expect(service.status()).toEqual({ state: "tokenUnreadable", tokenSet: true, chatId: OWNER, enabled: false });
+    expect(crypt.reads).toBe(1);
+
+    // the bot is off: nothing to read the token for
+    await service.apply();
+    expect(crypt.reads).toBe(1);
+
+    expect(await service.setEnabled(true)).toEqual({ ok: true });
+    expect(crypt.reads).toBe(2);
+    await until(() => service.status().state === "ok");
+    expect(service.status()).toEqual({ state: "ok", tokenSet: true, bot: "turbodl_test_bot", chatId: OWNER, enabled: true });
+    expect(logs.join("\n")).not.toContain(TOKEN_A);
+  });
+
+  it("apply reads an unreadable token again when the bot is on", async () => {
+    saveToken(TOKEN_A, ENCRYPTING);
+    const crypt = keyring(["locked", "locked"]);
+    const service = makeService({ crypt });
+    await service.start();
+    expect(service.status().state).toBe("tokenUnreadable");
+    // still locked
+    await service.apply();
+    expect(crypt.reads).toBe(2);
+    expect(service.status().state).toBe("tokenUnreadable");
+    expect(statuses.at(-1)).toMatchObject({ state: "tokenUnreadable" });
+    await service.apply();
+    expect(crypt.reads).toBe(3);
+    await until(() => service.status().state === "ok");
+  });
+
+  it("pairing reads an unreadable token again", async () => {
+    settings = { enabled: false, chatId: null };
+    saveToken(TOKEN_A, ENCRYPTING);
+    const crypt = keyring(["locked", "locked"]);
+    const service = makeService({ crypt });
+    await service.start();
+    expect(await service.pair()).toEqual({ ok: false, error: "TurboDL couldn't read the saved bot token. Save it again." });
+    expect(crypt.reads).toBe(2);
+    expect(service.status()).toMatchObject({ state: "tokenUnreadable", tokenSet: true });
+    expect(service.status().pairing).toBeUndefined();
+
+    const result = await service.pair();
+    if (!result.ok) throw new Error(result.error);
+    expect(result.code).toMatch(/^\d{6}$/);
+    expect(crypt.reads).toBe(3);
+    await until(() => service.status().state === "ok");
+    expect(service.status()).toMatchObject({ pairing: { code: result.code }, tokenSet: true, bot: "turbodl_test_bot" });
+  });
+
+  it("reading the token again waits no longer than the first read", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    saveToken(TOKEN_A, ENCRYPTING);
+    const crypt = keyring(["locked", "hang"]);
+    const service = makeService({ crypt, fetch: hung });
+    await service.start();
+    let done = false;
+    void service.apply().then(() => (done = true));
+    await vi.advanceTimersByTimeAsync(READ_TIMEOUT_MS - 100);
+    expect(done).toBe(false);
+    await vi.advanceTimersByTimeAsync(200);
+    expect(done).toBe(true);
+    expect(service.status().state).toBe("tokenUnreadable");
+  });
+
   it("only the first bot that reaches Telegram since the app started tells of a restart", async () => {
     const state = (jobId: string): BotStateFile => ({
       botId: fake.bot.id,
       offset: 0,
-      jobs: [{ jobId, chatId: OWNER, messageId: 1, kind: "file", label: "a.zip" }],
+      // a download that got under way: it goes on in the app after the restart
+      jobs: [{ jobId, chatId: OWNER, messageId: 1, kind: "file", label: "a.zip", started: true }],
       list: null,
     });
     const stateFile = path.join(dir, "telegram-state.json");

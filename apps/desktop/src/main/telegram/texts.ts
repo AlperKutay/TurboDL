@@ -26,6 +26,7 @@ export const NOTHING_RUNNING = "Nothing is running.";
 export const NO_LIST = "There is no list.";
 export const RESTARTED_PROFILE = "TurboDL restarted before this finished. Send it again; it skips what it already saved.";
 export const RESTARTED_LINK = "TurboDL restarted. This download goes on in TurboDL, but the bot can't follow it any more.";
+export const RESTARTED_UNSTARTED = "TurboDL restarted before this started. Send it again.";
 export const LIST_CLOSED = "The list was closed.";
 export const CANCELLED = "Cancelled.";
 export const STOP_WHAT = "What should TurboDL stop?";
@@ -125,7 +126,13 @@ export function jobSummary(job: Job, label: string, existing: number): string {
   if (job.state === "cancelled") return cut(`Stopped: ${name}`);
   const failed = job.failedItems > 0 ? ` with ${job.failedItems} failed ${job.failedItems === 1 ? "item" : "items"}` : "";
   const folder = job.files.length > 0 ? `\nFolder: ${folderOf(job.files[0])}` : "";
-  return cut(`Done${failed}: ${name} — ${saved(job, existing)}.${folder}`);
+  return cut(`Done${failed}: ${name} — ${saved(job, existing)}.${leftOut(job)}${folder}`);
+}
+
+/** A job done without some of its parts (signed out, or with warnings) says so: "Done" alone would hide it. */
+function leftOut(job: Job): string {
+  if (job.warnings.length > 0) return `\nSome parts were left out: ${clip(job.warnings[0], 200)}`;
+  return job.limited ? "\nSome parts were left out." : "";
 }
 
 const STATE_WORDS: Record<ProfileListView["state"], string> = {

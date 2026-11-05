@@ -72,6 +72,11 @@ describe("texts", () => {
     expect(listRestartedText(big).length).toBeLessThanOrEqual(MAX_TEXT);
     const noisy = job({ warnings: Array.from({ length: 50 }, () => longNote), files: ["/a/b.jpg"], progress: { done: 1, note: longNote } });
     expect(jobText(noisy, "L".repeat(9000)).length).toBeLessThanOrEqual(MAX_TEXT);
+    // a done job with a long warning, a long label and a very deep folder
+    const deep = job({ state: "done", limited: true, warnings: ["w".repeat(9000)], files: [`/${"d".repeat(9000)}/a.jpg`] });
+    const summary = jobSummary(deep, "L".repeat(9000), 3);
+    expect(summary).toHaveLength(MAX_TEXT);
+    expect(summary).toContain("\nSome parts were left out: ");
     const jobs = Array.from({ length: 12 }, (_, i) => ({ label: "L".repeat(500) + i, job: job({ id: `j${i}`, progress: { done: 1, note: longNote } }) }));
     const status = statusText({ version: "0.10.0", instagram: { signedIn: true, username: "me" }, jobs, list: big });
     expect(status.length).toBeLessThanOrEqual(MAX_TEXT);
@@ -122,6 +127,26 @@ describe("texts", () => {
   it("jobSummary says failed items and failures", () => {
     expect(jobSummary(job({ state: "done", files: ["/a/b"], failedItems: 2 }), "x", 0)).toMatch(/^Done with 2 failed items: /);
     expect(jobSummary(job({ state: "failed", reason: "private" }), "x", 0)).toMatch(/^Failed: /);
+  });
+
+  it("jobSummary says when parts were left out", () => {
+    const files = ["/dl/nasa/a.jpg"];
+    const warned = job({ state: "done", files, limited: true, warnings: ["Tagged posts need an Instagram sign-in.", "Second warning."] });
+    expect(jobSummary(warned, "@nasa profile backup", 0)).toBe(
+      "Done: @nasa profile backup — 1 file saved.\nSome parts were left out: Tagged posts need an Instagram sign-in.\nFolder: /dl/nasa",
+    );
+    expect(jobSummary(job({ state: "done", files, limited: true }), "x", 0)).toBe("Done: x — 1 file saved.\nSome parts were left out.\nFolder: /dl/nasa");
+    expect(jobSummary(job({ state: "done", files, warnings: ["Some posts are shown only to signed-in visitors."] }), "x", 0)).toContain(
+      "\nSome parts were left out: Some posts are shown only to signed-in visitors.\n",
+    );
+    // the warning is clipped to 200
+    const long = jobSummary(job({ state: "done", files, warnings: ["w".repeat(500)] }), "x", 0);
+    expect(long).toContain(`\nSome parts were left out: ${"w".repeat(199)}…\nFolder: `);
+    // nothing left out: nothing said
+    expect(jobSummary(job({ state: "done", files }), "x", 0)).toBe("Done: x — 1 file saved.\nFolder: /dl/nasa");
+    // a failed or stopped job says only that
+    expect(jobSummary(job({ state: "failed", reason: "private", warnings: ["w"], limited: true }), "x", 0)).not.toContain("left out");
+    expect(jobSummary(job({ state: "cancelled", warnings: ["w"] }), "x", 0)).not.toContain("left out");
   });
 
   it("jobSummary names the folder of the first file", () => {

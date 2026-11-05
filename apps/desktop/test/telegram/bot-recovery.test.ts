@@ -7,7 +7,7 @@ import { JsonStore } from "../../src/main/store";
 import { BotApi } from "../../src/main/telegram/bot-api";
 import { TelegramBot, type BotApp } from "../../src/main/telegram/bot";
 import { EMPTY_STATE, type BotStateFile } from "../../src/main/telegram/state";
-import { LIST_CLOSED, RESTARTED_LINK, RESTARTED_PROFILE, jobRestartedText, jobSummary, jobText, listRestartedText, listText } from "../../src/main/telegram/texts";
+import { LIST_CLOSED, RESTARTED_LINK, RESTARTED_PROFILE, RESTARTED_UNSTARTED, jobRestartedText, jobSummary, jobText, listRestartedText, listText } from "../../src/main/telegram/texts";
 import type { Keyboard } from "../../src/main/telegram/types";
 import { listView, makeApp, type FakeApp } from "../fixtures/fake-bot-app";
 import { startFakeTelegram, type FakeTelegram } from "../fixtures/fake-telegram";
@@ -251,26 +251,29 @@ describe("following the list", () => {
     expect(calls("sendMessage")).toBe(sends);
   });
 
-  it("a new list in place of a finished one leaves the finished list's message alone", async () => {
+  it.each([
+    ["before startList answers", true],
+    ["only after startList answered", false],
+  ])("a new list in place of a finished one leaves the finished list's words without its Close (app tells %s)", async (_when, early) => {
     const h = makeApp();
     const bot = await startBot(h);
-    // the app tells the bot of every change, of a list started from Telegram too (before startList answers)
+    // the app tells the bot of every change, of a list started from Telegram too
     const startList = h.app.startList;
     h.app.startList = async (request) => {
       const result = await startList(request);
-      bot.listChanged(h.list);
+      if (early) bot.listChanged(h.list);
+      else setTimeout(() => bot.listChanged(h.list), 50);
       return result;
     };
     const finished = listWith("finished", 3);
-    const done = [[{ text: "Close", callback_data: "lx" }]];
 
-    // started in the app: the finished list's message is no longer followed
+    // started in the app: the finished list's message is no longer followed, and its Close would close the new list
     const first = await showList(h, finished);
     h.list = listWith("running", 0);
     bot.listChanged(h.list);
     await fake.waitFor(() => stateFile().list === null);
-    await settle();
-    expect(sent()[0]).toMatchObject({ messageId: first, text: listText(finished, 0), keyboard: done });
+    await fake.waitFor(() => sent()[0].keyboard === undefined);
+    expect(sent()[0]).toMatchObject({ messageId: first, text: listText(finished, 0), keyboard: undefined });
 
     // started from Telegram: the prompt becomes the new list's message
     const second = await showList(h, finished);
@@ -279,8 +282,35 @@ describe("following the list", () => {
     await fake.waitFor(() => sent()[2].text === listText(h.list!, 0));
     expect(sent()[2].keyboard).toEqual(STOP_LIST);
     expect(stateFile().list).toEqual({ chatId: OWNER, messageId: prompt, active: true });
-    expect(sent()[1]).toMatchObject({ messageId: second, text: listText(finished, 0), keyboard: done });
+    await fake.waitFor(() => sent()[1].keyboard === undefined);
+    expect(sent()[1]).toMatchObject({ messageId: second, text: listText(finished, 0), keyboard: undefined });
+    await settle();
+    // the new list's message still has its Stop, and nothing else was sent
+    expect(sent()[2].keyboard).toEqual(STOP_LIST);
     expect(sent()).toHaveLength(3);
+  });
+
+  it("/list again moves the buttons to the new list message", async () => {
+    const h = makeApp();
+    const bot = await startBot(h);
+    const first = await showList(h, listWith("running", 1));
+    expect(sent()[0].keyboard).toEqual(STOP_LIST);
+    const second = await showList(h, listWith("running", 1));
+    await fake.waitFor(() => sent()[0].keyboard === undefined);
+    // the old message keeps the list's words, without a Stop that would act on whatever list comes next
+    expect(sent()[0]).toMatchObject({ messageId: first, text: listText(h.list!, 0), keyboard: undefined });
+    expect(sent()[1]).toMatchObject({ messageId: second, keyboard: STOP_LIST });
+    expect(stateFile().list).toEqual({ chatId: OWNER, messageId: second, active: true });
+
+    // only the new message follows the list from now on
+    const from = fake.calls.length;
+    h.list = listWith("stopped", 2);
+    bot.listChanged(h.list);
+    await fake.waitFor(() => sent()[1].text === listText(h.list!, 0));
+    expect(sent()[1].keyboard).toEqual(CONTINUE_CLOSE);
+    await settle();
+    expect(editsOf(first, from)).toEqual([]);
+    expect(sent()).toHaveLength(2);
   });
 
   it("a list change after the bot stopped keeps the list active for the restart notice", async () => {
@@ -338,6 +368,56 @@ describe("after a restart", () => {
     expect(sent()[1]).toMatchObject({ text: RESTARTED_LINK, keyboard: undefined, replyTo: id });
     for (const m of sent()) expect(m.text).not.toMatch(/send it again/i);
     await fake.waitFor(() => stateFile().jobs.length === 0);
+  });
+
+  it("after a restart a link job that never got under way says send it again", async () => {
+    const before = makeApp();
+    const first = await startBot(before);
+    fake.text(OWNER, "https://example.com/a.zip https://example.com/b.zip");
+    await fake.waitFor(() => stateFile().jobs.length === 2);
+    // a resolves, b is still queued: neither has a file or any progress, so nothing of them is in the app's list
+    before.records.get("job1")!.start();
+    before.records.get("job1")!.progress({ done: 0, note: "Reading the page" });
+    await fake.waitFor(() => sent()[0].text.startsWith("example.com a.zip\nRunning"));
+    await first.stop();
+    expect(stateFile().jobs.map((j) => j.started)).toEqual([undefined, undefined]);
+    const [idA, idB] = [sent()[0].messageId, sent()[1].messageId];
+
+    await startBot(makeApp(), true);
+    await fake.waitFor(() => sent().length === 4);
+    expect(sent()[0]).toMatchObject({ messageId: idA, text: "example.com a.zip\nTurboDL restarted.", keyboard: undefined });
+    expect(sent()[1]).toMatchObject({ messageId: idB, text: "example.com b.zip\nTurboDL restarted.", keyboard: undefined });
+    expect(sent().slice(2)).toEqual([
+      expect.objectContaining({ text: RESTARTED_UNSTARTED, keyboard: undefined, replyTo: idA }),
+      expect.objectContaining({ text: RESTARTED_UNSTARTED, keyboard: undefined, replyTo: idB }),
+    ]);
+    expect(RESTARTED_UNSTARTED).toBe("TurboDL restarted before this started. Send it again.");
+    await fake.waitFor(() => stateFile().jobs.length === 0);
+  });
+
+  it("a job's first file or progress is on disk at once", async () => {
+    // a debounce that never fires in the test: only an explicit flush writes the file
+    store = new JsonStore<BotStateFile>(path.join(dir, "telegram-state.json"), 60_000);
+    const h = makeApp();
+    await startBot(h);
+    fake.text(OWNER, "https://example.com/a.zip https://example.com/b.zip https://example.com/c.zip");
+    await fake.waitFor(() => sent().length === 3);
+    await settle();
+    const [a, b, c] = ["job1", "job2", "job3"].map((id) => h.records.get(id)!);
+    // running, and progress without anything done yet, isn't under way
+    a.start();
+    a.progress({ done: 0, bytes: 0 });
+    await settle();
+    expect(stateFile().jobs.filter((j) => j.started)).toEqual([]);
+
+    a.progress({ done: 0, bytes: 2048, totalBytes: 4096 });
+    expect(stateFile().jobs.filter((j) => j.started).map((j) => j.jobId)).toEqual(["job1"]);
+    b.start();
+    b.progress({ done: 1, total: 3 });
+    expect(stateFile().jobs.filter((j) => j.started).map((j) => j.jobId)).toEqual(["job1", "job2"]);
+    c.start();
+    c.file("C:/dl/c.zip");
+    expect(stateFile().jobs.filter((j) => j.started).map((j) => j.jobId)).toEqual(["job1", "job2", "job3"]);
   });
 
   it("after a restart an active list that came back stopped gets Continue and Close", async () => {
@@ -417,7 +497,7 @@ describe("after a restart", () => {
   it.each([
     ["after a restart", true],
     ["inside one app run", false],
-  ])("a job that ended before its summary went out is dropped silently %s", async (_when, afterAppStart) => {
+  ])("a job that ended before its summary went out only loses its Stop button %s", async (_when, afterAppStart) => {
     const before = makeApp();
     const first = await startBot(before);
     fake.text(OWNER, "https://example.com/a.zip");
@@ -429,15 +509,20 @@ describe("after a restart", () => {
     record.end({ state: "done" });
     // the bot stops before its final edit and summary go out
     await first.stop();
-    expect(stateFile().jobs).toEqual([{ jobId: "job1", chatId: OWNER, messageId: id, kind: "file", label: "example.com a.zip", ended: true }]);
+    expect(stateFile().jobs).toEqual([{ jobId: "job1", chatId: OWNER, messageId: id, kind: "file", label: "example.com a.zip", started: true, ended: true }]);
     expect(sent()).toEqual([{ messageId: id, text: "example.com a.zip\nQueued", keyboard: [[{ text: "Stop", callback_data: "s:job1" }]], replyTo: undefined }]);
 
-    const writes = calls("sendMessage") + calls("editMessageText");
+    const sends = calls("sendMessage");
+    const from = fake.calls.length;
     await startBot(afterAppStart ? makeApp() : before, afterAppStart);
     await fake.waitFor(() => stateFile().jobs.length === 0);
+    await fake.waitFor(() => editsOf(id, from).length === 1);
     await settle();
+    // its message is left without a live Stop button
+    expect(editsOf(id, from)).toEqual([{ chat_id: OWNER, message_id: id, text: jobRestartedText("example.com a.zip"), reply_markup: { inline_keyboard: [] } }]);
+    expect(sent()[0]).toMatchObject({ messageId: id, keyboard: undefined });
     // neither "restarted before this finished" nor a second summary
-    expect(calls("sendMessage") + calls("editMessageText")).toBe(writes);
+    expect(calls("sendMessage")).toBe(sends);
   });
 
   it("a bot restart inside one app run follows its jobs again and sends no restart notice", async () => {
@@ -469,7 +554,8 @@ describe("after a restart", () => {
     // the list is followed again, without a notice
     expect(sent()[3]).toMatchObject({ messageId: listId, text: listText(h.list!, 0), keyboard: STOP_LIST });
     await fake.waitFor(() => stateFile().jobs.length === 1);
-    expect(stateFile().jobs).toEqual([{ jobId: "job1", chatId: OWNER, messageId: idA, kind: "file", label: "example.com a.zip" }]);
+    // a made progress while the bot was off: followed again, it counts as under way
+    expect(stateFile().jobs).toEqual([{ jobId: "job1", chatId: OWNER, messageId: idA, kind: "file", label: "example.com a.zip", started: true }]);
     expect(stateFile().list).toEqual({ chatId: OWNER, messageId: listId, active: true });
 
     a.progress({ done: 3, total: 4 });

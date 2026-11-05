@@ -14,6 +14,8 @@ export interface JobFollowerDeps {
   opened(job: OpenJob): void;
   /** the job ended and its last words are going out: the state file marks it, so a restart doesn't call it unfinished */
   ended(jobId: string): void;
+  /** the job saved a file or made progress (once): the state file marks it, so a restart knows it got under way */
+  started(jobId: string): void;
   /** the job's summary went out: it leaves the state file */
   closed(jobId: string): void;
   stopped(): boolean;
@@ -31,7 +33,15 @@ interface Followed {
   /** its progress message: undefined while it is being sent, null when it couldn't be */
   messageId: number | null | undefined;
   ended: boolean;
+  /** it saved a file or made progress */
+  started: boolean;
   unsubscribe: (() => void) | undefined;
+}
+
+/** A job that has saved a file or made progress; one that is queued, resolving or waiting for its turn hasn't. */
+function hasStarted(job: Job): boolean {
+  const { done, bytes } = job.progress;
+  return job.files.length > 0 || done > 0 || (bytes ?? 0) > 0;
 }
 
 /** The jobs the bot started: each has one message that shows its progress, then its final words and a summary reply. */
@@ -40,14 +50,19 @@ export class JobFollower {
 
   constructor(private readonly d: JobFollowerDeps) {}
 
-  /** Follows a job the bot just started; `messageId` is a message to take over (a prompt's), else one is sent. */
-  follow(chatId: number, created: Job, label: string, messageId?: number): void {
-    const f: Followed = { chatId, label, kind: created.kind, job: created, existing: 0, messageId: undefined, ended: false, unsubscribe: undefined };
+  /**
+   * Follows a job the bot just started; `messageId` is a message to take over (a prompt's), else one is sent.
+   * `started`: the state file says the job got under way before the bot restarted.
+   */
+  follow(chatId: number, created: Job, label: string, messageId?: number, started = false): void {
+    const f: Followed = { chatId, label, kind: created.kind, job: created, existing: 0, messageId: undefined, ended: false, started: false, unsubscribe: undefined };
     const id = created.id;
     this.followed.set(id, f);
     // events aren't replayed: subscribe, then read the job once, so nothing in between is missed
     f.unsubscribe = this.d.app.subscribe(id, (event) => this.hear(f, event));
     f.job = this.d.app.job(id) ?? f.job;
+    // followed again after the bot restarted: the job may be well under way
+    f.started = started || hasStarted(f.job);
     if (isJobEnded(f.job.state)) this.end(f);
     else if (!f.unsubscribe) {
       this.followed.delete(id);
@@ -90,6 +105,7 @@ export class JobFollower {
     switch (event.type) {
       case "job":
         f.job = event.job;
+        if (hasStarted(event.job)) this.start(f);
         break;
       case "state":
         // an ended state comes with its `end`, which finishes the message
@@ -98,9 +114,11 @@ export class JobFollower {
         break;
       case "progress":
         f.job = { ...f.job, progress: event.progress };
+        if (event.progress.done > 0 || (event.progress.bytes ?? 0) > 0) this.start(f);
         break;
       case "file":
         if (event.existing) f.existing += 1;
+        this.start(f);
         return;
       case "end":
         f.job = event.job;
@@ -112,11 +130,20 @@ export class JobFollower {
     this.show(f, false);
   }
 
+  /** The job got under way: the state file hears of it once, if the job has its message by then (else `attach` tells). */
+  private start(f: Followed): void {
+    if (f.started) return;
+    f.started = true;
+    if (typeof f.messageId === "number") this.d.started(f.job.id);
+  }
+
   /** Its message is there (or couldn't be sent). */
   private attach(f: Followed, messageId: number | null): void {
     if (this.d.stopped()) return;
     f.messageId = messageId;
-    if (messageId !== null) this.d.opened({ jobId: f.job.id, chatId: f.chatId, messageId, kind: f.kind, label: f.label });
+    if (messageId !== null) {
+      this.d.opened({ jobId: f.job.id, chatId: f.chatId, messageId, kind: f.kind, label: f.label, ...(f.started ? { started: true as const } : {}) });
+    }
     if (f.ended) this.quietly(this.conclude(f));
     // a prompt turning into the job's message changes at once
     else this.show(f, true);
@@ -144,7 +171,8 @@ export class JobFollower {
       void this.d.edit(chatId, messageId, jobFinalText(job, label, existing), null, { final: true });
     }
     const sent = await this.d.send(chatId, jobSummary(job, label, existing), typeof messageId === "number" ? { replyTo: messageId } : {});
-    // stopped before the summary went: the state file keeps the job, so the next start can finish it
+    // stopped before the summary went: the state file keeps the job, marked ended, so the next start takes the Stop
+    // button off its message in case the final edit didn't go out either (it sends no summary of its own)
     if (sent === null && this.d.stopped()) return;
     if (typeof messageId === "number") this.d.closed(job.id);
   }

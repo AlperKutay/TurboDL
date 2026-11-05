@@ -14,6 +14,7 @@ import {
   PAIRED,
   RESTARTED_LINK,
   RESTARTED_PROFILE,
+  RESTARTED_UNSTARTED,
   clip,
   jobRestartedText,
   listKeyboard,
@@ -80,8 +81,11 @@ export class TelegramBot {
   private ready = false;
   /** what the last run left open has been taken up (once per bot) */
   private resumed = false;
-  /** the followed list's state when the bot last heard of it: a finished list that changes is a new list in its place */
-  private listSeen: ProfileListView["state"] | undefined;
+  /**
+   * The followed list as the bot last heard of it (what its message shows): a finished list that changes is a new list
+   * in its place.
+   */
+  private listLast: ProfileListView | undefined;
   private current: TelegramState = "off";
   private botName: string | undefined;
   private backoffMs = BACKOFF_START_MS;
@@ -105,6 +109,14 @@ export class TelegramBot {
         this.saveState();
         this.persistNow();
       },
+      started: (jobId) => {
+        const entry = this.state.jobs.find((j) => j.jobId === jobId);
+        if (!entry || entry.started) return;
+        entry.started = true;
+        // on disk at once: a restart right after must not tell the owner to send a resumed download again
+        this.saveState();
+        this.persistNow();
+      },
       closed: (jobId) => {
         this.state.jobs = this.state.jobs.filter((j) => j.jobId !== jobId);
         this.saveState();
@@ -121,8 +133,11 @@ export class TelegramBot {
       send: (chatId, text, opts) => this.send(chatId, text, opts),
       edit: (chatId, messageId, text, keyboard, opts) => this.edit(chatId, messageId, text, keyboard, opts),
       listOpened: (chatId, messageId, active) => {
+        const old = this.state.list;
+        // the message followed until now would keep buttons that act on whatever list is there from now on
+        if (old && (old.chatId !== chatId || old.messageId !== messageId)) this.retireList(old);
         this.state.list = { chatId, messageId, active };
-        this.listSeen = o.app.list()?.state;
+        this.listLast = o.app.list() ?? undefined;
         this.saveState();
       },
       stopped: () => this.stopped,
@@ -170,12 +185,14 @@ export class TelegramBot {
       this.listClosed(followed);
       return;
     }
-    if (this.listSeen === "finished" && list.state !== "finished") {
-      // a new list took the finished one's place: the message keeps the finished list's last words
+    if (this.listLast?.state === "finished" && list.state !== "finished") {
+      // a new list took the finished one's place: the message keeps the finished list's last words, without the Close
+      // button, which would now close the new list
+      this.retireList(followed);
       this.forgetList();
       return;
     }
-    this.listSeen = list.state;
+    this.listLast = list;
     const active = isActive(list);
     if (followed.active !== active) {
       followed.active = active;
@@ -196,8 +213,14 @@ export class TelegramBot {
   /** The bot no longer follows a list message. */
   private forgetList(): void {
     this.state.list = null;
-    this.listSeen = undefined;
+    this.listLast = undefined;
     this.saveState();
+  }
+
+  /** A list message the bot stops following keeps its last words, without buttons that would act on another list. */
+  private retireList(followed: { chatId: number; messageId: number }): void {
+    const list = this.listLast ?? this.o.app.list();
+    if (list) void this.edit(followed.chatId, followed.messageId, listText(list, this.o.now()), null, { final: true });
   }
 
   /** The list is gone: its message says so, without buttons that could only fail, and is forgotten. */
@@ -322,10 +345,15 @@ export class TelegramBot {
     // the jobs followed again come back through `opened`
     this.state.jobs = [];
     for (const entry of open) {
-      // an ended job's last words were on their way when the bot stopped: never "unfinished", never a second summary
-      if (entry.chatId !== chatId || entry.ended) continue;
+      if (entry.chatId !== chatId) continue;
+      if (entry.ended) {
+        // its last words were on their way when the bot stopped: never "unfinished", never a second summary; but the
+        // final edit may not have gone out, so the message loses its Stop button
+        void this.edit(entry.chatId, entry.messageId, jobRestartedText(entry.label), null, { final: true });
+        continue;
+      }
       const job = this.o.app.job(entry.jobId);
-      if (job) this.jobs.follow(entry.chatId, job, entry.label, entry.messageId);
+      if (job) this.jobs.follow(entry.chatId, job, entry.label, entry.messageId, entry.started === true);
       // within one app run a job the app has let go of ended long ago: nothing to say
       else if (this.o.afterAppStart) this.restarted(entry);
     }
@@ -335,11 +363,16 @@ export class TelegramBot {
     this.persistNow();
   }
 
-  /** A job the restart ended (a backup) or took out of the bot's hands (a download that goes on in the app). */
-  private restarted({ chatId, messageId, kind, label }: OpenJob): void {
+  /**
+   * A job the restart ended (a backup, or a link that hadn't got under way) or took out of the bot's hands (a download
+   * that goes on in the app).
+   */
+  private restarted({ chatId, messageId, kind, label, started }: OpenJob): void {
     void this.edit(chatId, messageId, jobRestartedText(label), null, { final: true });
-    // a download must not be sent again: it would make a second, numbered copy next to the resumed one
-    void this.send(chatId, kind === "instagramProfile" ? RESTARTED_PROFILE : RESTARTED_LINK, { replyTo: messageId });
+    // a download that started must not be sent again: it would make a second, numbered copy next to the resumed one.
+    // One still queued or resolving left nothing in the app to resume.
+    const notice = kind === "instagramProfile" ? RESTARTED_PROFILE : started ? RESTARTED_LINK : RESTARTED_UNSTARTED;
+    void this.send(chatId, notice, { replyTo: messageId });
   }
 
   /**
@@ -360,7 +393,7 @@ export class TelegramBot {
     }
     const wasActive = followed.active;
     followed.active = isActive(list);
-    this.listSeen = list.state;
+    this.listLast = list;
     const keyboard = listKeyboard(list);
     void this.edit(followed.chatId, followed.messageId, listText(list, this.o.now()), keyboard);
     // the app stops a running list when it starts; it goes on only when the owner says so

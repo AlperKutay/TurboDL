@@ -9,6 +9,8 @@ export interface OpenJob {
   label: string;
   /** the job has ended and its last words were on their way: a restart must not call it unfinished */
   ended?: true;
+  /** the job got as far as a file or some progress: a link job's download is then in the app's list and resumes there */
+  started?: true;
 }
 
 /** What the bot keeps between runs (`<userData>/telegram-state.json`). */
@@ -35,7 +37,8 @@ function isOpenJob(v: unknown): v is OpenJob {
     isInt(v.messageId) &&
     typeof v.kind === "string" &&
     typeof v.label === "string" &&
-    (v.ended === undefined || v.ended === true)
+    (v.ended === undefined || v.ended === true) &&
+    (v.started === undefined || v.started === true)
   );
 }
 

@@ -116,12 +116,12 @@ What the bot understands:
 | `/list` | The profile list's message again, with its buttons |
 | `/help` | What the bot understands |
 
-- Each download has one message that updates itself while it runs, then a short reply when it ends: the files saved and their folder, or why it failed. A list has one message that follows it (with Stop, Continue and Close), and TurboDL's own notice when the list finishes or stops by itself.
+- Each download has one message that updates itself while it runs, then a short reply when it ends: the files saved and their folder (and what was left out, if anything), or why it failed. A list has one message that follows it (with Stop, Continue and Close), and TurboDL's own notice when the list finishes or stops by itself.
 - Files stay on the computer running TurboDL, in its usual download folders. Telegram only gets status messages, never the files.
 - The bot answers only the bound private chat. Messages and button presses from anyone else, and from groups, get no reply at all.
 - Instagram Saved collections can't be backed up from Telegram yet; use the TurboDL app. The Instagram sign-in happens on that computer, in the app or with `turbodl instagram login`; the bot only says whether TurboDL is signed in.
 - The bot shows only what it started, and the profile list, whoever started it.
-- After TurboDL restarts, the bot says so in the messages of what was running: send a profile backup again (it skips what it already saved); a link's download goes on in TurboDL; a list waits for Continue.
+- After TurboDL restarts, the bot says so in the messages of what was running: send a profile backup again (it skips what it already saved); a link's download goes on in TurboDL (send a link again only when the bot says it hadn't started yet); a list waits for Continue.
 - The token is stored encrypted by the system (where it can't be, in a file only you can read) and never shown: Settings, `turbodl` and the API only tell whether one is saved and the bot's @name.
 
 On the command line, `turbodl telegram status` shows the bot's state (`--json` for scripts), `token` saves or replaces the token, `chat <id>` binds a chat, `pair` shows a code and waits until a chat sends it, `unpair` unbinds the chat, and `on` and `off` turn the bot on and off. In the local API: `GET /v1/telegram`, and `POST /v1/telegram/token` (`{"token": "…"}`, or `null` to remove it), `/chat` (`{"chatId": 123}` or `null`), `/enabled` (`{"enabled": true}`) and `/pair`. `GET /v1/info` lists `"telegram"` in `"features"`.
