@@ -1,4 +1,4 @@
-import { PROFILE_LIST_MAX, parseInstagramLink, profileName } from "@turbodl/shared";
+import { parseInstagramLink, profileName } from "@turbodl/shared";
 import type { TgMessage } from "./types";
 
 export type Command = "start" | "help" | "status" | "stop" | "list";
@@ -33,7 +33,8 @@ export function readIntent(message: TgMessage): Intent {
 
   const names = tokens.map(profileName);
   if (names.every((n): n is string => n !== null)) {
-    const unique = [...new Set(names)].slice(0, PROFILE_LIST_MAX);
+    // every name: the list's own check refuses too many, in the app's words
+    const unique = [...new Set(names)];
     return unique.length === 1 ? { type: "profile", name: unique[0] } : { type: "names", names: unique };
   }
 

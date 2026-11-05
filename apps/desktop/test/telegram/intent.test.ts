@@ -18,6 +18,11 @@ describe("readIntent", () => {
     expect(readIntent(text("nasa vercel, raycast"))).toEqual({ type: "names", names: ["nasa", "vercel", "raycast"] });
   });
 
+  it("keeps every name, so the list's own check refuses too many", () => {
+    const names = Array.from({ length: 1001 }, (_, i) => `user${i}`);
+    expect(readIntent(text(names.join(" ")))).toEqual({ type: "names", names });
+  });
+
   it("reads links and counts saved links", () => {
     const a = "https://youtu.be/aaaaaaaaaaa";
     const b = "https://www.youtube.com/watch?v=bbbbbbbbbbb";

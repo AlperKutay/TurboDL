@@ -115,7 +115,7 @@ describe("bot loop", () => {
     const first = makeBot();
     first.start();
     await fake.waitFor(() => polls().length > 0);
-    fake.text(OWNER, "hello");
+    fake.text(OWNER, "/help");
     await fake.waitFor(() => fake.sent(OWNER).length === 1);
     await first.stop();
     const before = fake.calls.length;
@@ -207,7 +207,7 @@ describe("bot loop", () => {
     expect(fake.sent()).toEqual([]);
   });
 
-  it("the owner's message is answered with the help for now", async () => {
+  it("the owner's /help is answered with the help", async () => {
     makeBot().start();
     await fake.waitFor(() => polls().length > 0);
     fake.text(OWNER, "/help");
@@ -231,7 +231,7 @@ describe("bot loop", () => {
     const slow = new JsonStore<BotStateFile>(file, 60_000);
     makeBot({ store: slow }).start();
     await fake.waitFor(() => polls().length > 0);
-    fake.text(OWNER, "hello");
+    fake.text(OWNER, "/help");
     await fake.waitFor(() => fake.sent(OWNER).length === 1);
     expect(JSON.parse(readFileSync(file, "utf8")).offset).toBe(102);
   });

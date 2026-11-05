@@ -26,6 +26,10 @@ export const NOTHING_RUNNING = "Nothing is running.";
 export const NO_LIST = "There is no list.";
 export const RESTARTED_PROFILE = "TurboDL restarted before this finished. Send it again; it skips what it already saved.";
 export const RESTARTED_LINK = "TurboDL restarted. This download goes on in TurboDL, but the bot can't follow it any more.";
+export const CANCELLED = "Cancelled.";
+export const STOP_WHAT = "What should TurboDL stop?";
+export const LIST_TOO_LARGE = "This file is too large for a list of profiles (over 1 MB).";
+export const FILE_NOT_RECEIVED = "TurboDL couldn't get the file from Telegram; send it again.";
 
 const STATUS_JOBS_MAX = 10;
 const LIST_ROWS_SHOWN = 5;
@@ -213,4 +217,12 @@ export function stopKeyboard(jobs: { label: string; job: Job }[], listActive: bo
 
 export function jobKeyboard(jobId: string): Keyboard {
   return [[{ text: "Stop", callback_data: `s:${jobId}` }]];
+}
+
+/** Offered when a new list can't start because the old one is still there. */
+export const SHOW_LIST_KEYBOARD: Keyboard = [[{ text: "Show list", callback_data: "lv" }]];
+
+/** A link the app refused to take as a job. */
+export function notStartedText(url: string, error: string): string {
+  return cut(`TurboDL couldn't start ${clip(url, 200)}: ${error}`);
 }
