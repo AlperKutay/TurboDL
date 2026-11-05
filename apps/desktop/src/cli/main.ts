@@ -399,16 +399,30 @@ async function follow(ctx: Ctx, start: (f: Follower) => Promise<number | undefin
   }
 }
 
-/** Waits and reads the bot's status until `done` holds of it, the wait ran out (`ms`), or Ctrl+C; null on Ctrl+C. */
-async function pollTelegram(ctx: Ctx, every: number, done: (status: TelegramStatus) => boolean, ms: number, signal: AbortSignal): Promise<TelegramStatus | null> {
+/**
+ * Waits and reads the bot's status until `done` holds of it, the wait ran out (`ms`), or Ctrl+C; null on Ctrl+C.
+ * `each` sees every status read while the wait goes on.
+ */
+async function pollTelegram(
+  ctx: Ctx,
+  every: number,
+  done: (status: TelegramStatus) => boolean,
+  ms: number,
+  signal: AbortSignal,
+  each?: (status: TelegramStatus) => void,
+): Promise<TelegramStatus | null> {
   const start = ctx.now();
   for (;;) {
     await ctx.sleep(every, signal);
     if (signal.aborted) return null;
     const status = await ctx.client.telegram();
     if (done(status) || ctx.now() - start >= ms) return status;
+    each?.(status);
   }
 }
+
+/** The token is there but Telegram refused it, or it couldn't be read: no pairing can go through. */
+const badToken = (s: TelegramStatus) => s.state === "tokenRejected" || s.state === "tokenUnreadable";
 
 /** `turbodl telegram …`: the token never leaves `setTelegramToken`, so nothing here can print it. */
 async function telegram(ctx: Ctx, cmd: Extract<Command, { type: "telegram" }>): Promise<number> {
@@ -447,22 +461,38 @@ async function telegram(ctx: Ctx, cmd: Extract<Command, { type: "telegram" }>): 
           status = settled;
         }
         out.telegram(status);
-        if (status.state === "off") out.notice("Token saved; the bot is off. Turn it on with: turbodl telegram on");
+        if (status.state === "off") {
+          // on a fresh profile the bot is off until a chat is paired, and pairing turns it on
+          out.notice(status.chatId === null ? "Token saved. Pair your chat with: turbodl telegram pair" : "Token saved; the bot is off. Turn it on with: turbodl telegram on");
+        }
         return status.state === "ok" ? EXIT.ok : EXIT.failed;
       }
       case "pair": {
         const pairing = await client.pairTelegram();
         out.pairing(pairing);
+        // a bot that was off starts for the pairing, so its @name may come only once it has reached Telegram
+        let named = pairing.bot !== undefined;
+        const nameArrived = (s: TelegramStatus) => {
+          if (named || !s.bot) return;
+          named = true;
+          out.pairing({ ...pairing, bot: s.bot });
+        };
         // the app stamps a successful pairing; a code that is gone without a stamp newer than this code was cancelled
         // (a restart, a new token, the bot turned off, another code) or ran out. A re-pair from the bound chat leaves the id as it was.
         const issuedAt = pairing.expiresAt - PAIRING_MS;
         const paired = (s: TelegramStatus) => s.pairedAt !== undefined && s.pairedAt >= issuedAt && s.chatId !== null;
-        const status = await pollTelegram(ctx, TELEGRAM_PAIR_POLL_MS, (s) => paired(s) || !s.pairing || ctx.now() >= pairing.expiresAt, Infinity, interrupt.signal);
+        const ended = (s: TelegramStatus) => paired(s) || badToken(s) || !s.pairing || ctx.now() >= pairing.expiresAt;
+        // a conflict or a lost connection may pass: the wait goes on
+        const status = await pollTelegram(ctx, TELEGRAM_PAIR_POLL_MS, ended, Infinity, interrupt.signal, nameArrived);
         if (!status) return EXIT.interrupted;
         if (paired(status)) {
           if (cmd.json) out.telegram(status);
           else out.notice(`Paired with chat ${status.chatId}.`);
           return EXIT.ok;
+        }
+        if (badToken(status)) {
+          out.telegram(status);
+          return EXIT.failed;
         }
         out.error(ctx.now() >= pairing.expiresAt ? "The code ran out." : "The pairing was cancelled.");
         return EXIT.failed;

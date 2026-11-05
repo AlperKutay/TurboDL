@@ -114,10 +114,10 @@ test.skip(process.platform !== "win32", "the app is driven on Windows, as the ot
 test("pairs from the command line and backs up a profile from Telegram", async () => {
   test.setTimeout(180_000);
   await withBot({}, async ({ fake, userData, baseDir }) => {
-    // a fresh profile: the bot is off, so the token is only saved
+    // a fresh profile: the bot is off, so the token is only saved, and pairing comes next
     const saved = await turbodl(userData, ["telegram", "token"], `${TOKEN}\n`);
     expect(saved.stdout).toContain("State: off");
-    expect(saved.stderr).toContain("Token saved; the bot is off.");
+    expect(saved.stderr).toContain("Token saved. Pair your chat with: turbodl telegram pair");
     expect(saved.stdout + saved.stderr).not.toContain(TOKEN);
     expect(await telegramStatus(userData)).toMatchObject({ state: "off", tokenSet: true, chatId: null, enabled: false });
 
@@ -132,6 +132,11 @@ test("pairs from the command line and backs up a profile from Telegram", async (
       const exited = new Promise<number | null>((resolve) => pairing.on("close", resolve));
       await expect.poll(() => /\/start (\d{6})/.exec(stdout)?.[1] ?? null, { timeout: 15_000 }).not.toBeNull();
       const code = /\/start (\d{6})/.exec(stdout)![1];
+      // the bot was off, so the code comes before the bot's name; the name and the link follow once it is connected
+      await expect.poll(() => stdout, { timeout: 15_000 }).toContain(`https://t.me/${fake.bot.username}?start=${code}`);
+      expect(stdout).toBe(
+        `Send this to your bot in Telegram: /start ${code}\nSend this to @${fake.bot.username} in Telegram: /start ${code}\nhttps://t.me/${fake.bot.username}?start=${code}\n`,
+      );
       fake.text(OWNER, `/start ${code}`);
       expect(await exited, stderr).toBe(0);
       expect(stderr).toContain(`Paired with chat ${OWNER}.`);
