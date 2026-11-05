@@ -3,6 +3,7 @@ import { spawnDetached } from "./discover";
 import { EXIT } from "./exit";
 import { APPIMAGE_NODE_FLAG } from "../main/app-location";
 import { run } from "./main";
+import { readSecret } from "./secret";
 
 /** The app's version, set by the build. */
 declare const __TURBODL_VERSION__: string;
@@ -37,6 +38,7 @@ run({
     return () => void interruptHandlers.delete(handler);
   },
   spawn: (launch) => spawnDetached(launch, process.env),
+  readSecret: (prompt) => readSecret(prompt, process.stdin, process.stderr),
 }).then(
   (code) => {
     process.exitCode = code;

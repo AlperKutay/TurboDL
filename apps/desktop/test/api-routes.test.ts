@@ -1,6 +1,6 @@
 import http from "node:http";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { API_FEATURES, isJobEnded, type ApiInfo, type Job, type JobEvent, type JobRequest, type ListWait, type ProfileListView, type ProfileSaveOptions } from "@turbodl/shared";
+import { API_FEATURES, isJobEnded, type ApiInfo, type Job, type JobEvent, type JobRequest, type ListWait, type ProfileListView, type ProfileSaveOptions, type TelegramStatus } from "@turbodl/shared";
 import { createBridgeServer, type BridgeServer } from "../src/main/bridge-server";
 import type { ApiHandlers } from "../src/main/api-routes";
 
@@ -16,6 +16,9 @@ let requests: JobRequest[];
 let list: ProfileListView | null;
 let listRequests: { name: string; usernames: string[]; options: ProfileSaveOptions; wait: ListWait }[];
 let startResult: { ok: false; error: string } | null;
+let telegramStatus: TelegramStatus;
+let telegramCalls: unknown[][];
+let telegramRefusal: string | null;
 
 const info: ApiInfo = { app: "turbodl", version: "1.2.3", api: 1, instagram: { signedIn: false }, features: ["posts"] };
 
@@ -88,13 +91,31 @@ const fake: ApiHandlers = {
     list = null;
     return { ok: true };
   },
-  // the Telegram routes are tested on their own
   telegram: {
-    status: () => ({ state: "off", tokenSet: false, chatId: null, enabled: false }),
-    setToken: async () => ({ ok: false, error: "not in the fake" }),
-    setChat: async () => ({ ok: false, error: "not in the fake" }),
-    setEnabled: async () => ({ ok: false, error: "not in the fake" }),
-    pair: async () => ({ ok: false, error: "not in the fake" }),
+    status: () => telegramStatus,
+    setToken: async (token) => {
+      telegramCalls.push(["token", token]);
+      if (telegramRefusal) return { ok: false, error: telegramRefusal };
+      telegramStatus = { ...telegramStatus, tokenSet: token !== null, state: token === null ? "noToken" : "connecting" };
+      return { ok: true };
+    },
+    setChat: async (chatId) => {
+      telegramCalls.push(["chat", chatId]);
+      if (telegramRefusal) return { ok: false, error: telegramRefusal };
+      telegramStatus = { ...telegramStatus, chatId };
+      return { ok: true };
+    },
+    setEnabled: async (enabled) => {
+      telegramCalls.push(["enabled", enabled]);
+      if (telegramRefusal) return { ok: false, error: telegramRefusal };
+      telegramStatus = { ...telegramStatus, enabled };
+      return { ok: true };
+    },
+    pair: async () => {
+      telegramCalls.push(["pair"]);
+      if (telegramRefusal) return { ok: false, error: telegramRefusal };
+      return { ok: true, code: "123456", bot: "turbo_bot", expiresAt: 1_700_000_600_000 };
+    },
   },
 };
 
@@ -105,6 +126,9 @@ beforeEach(async () => {
   list = null;
   listRequests = [];
   startResult = null;
+  telegramStatus = { state: "off", tokenSet: false, chatId: null, enabled: false };
+  telegramCalls = [];
+  telegramRefusal = null;
   server = createBridgeServer({
     version: "1.2.3",
     allowedOrigin: ORIGIN,
@@ -457,6 +481,91 @@ describe("lists", () => {
 
   it("is a feature clients can look for", () => {
     expect(API_FEATURES).toContain("lists");
+  });
+});
+
+describe("telegram", () => {
+  it("GET /v1/telegram returns the status", async () => {
+    const r = await call("/v1/telegram");
+    expect(r.status).toBe(200);
+    expect(r.json).toEqual({ telegram: telegramStatus });
+  });
+
+  it("POST token, chat and enabled call the handlers and return the status", async () => {
+    const token = await post("/v1/telegram/token", { token: "123:abc" });
+    expect(token.status).toBe(200);
+    expect(token.json).toEqual({ telegram: { state: "connecting", tokenSet: true, chatId: null, enabled: false } });
+    const chat = await post("/v1/telegram/chat", { chatId: 42 });
+    expect(chat.json.telegram.chatId).toBe(42);
+    const enabled = await post("/v1/telegram/enabled", { enabled: true });
+    expect(enabled.json.telegram.enabled).toBe(true);
+    expect((await post("/v1/telegram/chat", { chatId: null })).json.telegram.chatId).toBeNull();
+    expect((await post("/v1/telegram/token", { token: null })).json.telegram.tokenSet).toBe(false);
+    expect(telegramCalls).toEqual([["token", "123:abc"], ["chat", 42], ["enabled", true], ["chat", null], ["token", null]]);
+  });
+
+  it("answers a bad body with 400 and calls nothing", async () => {
+    for (const [path, body] of [
+      ["/v1/telegram/token", { token: 5 }],
+      ["/v1/telegram/token", {}],
+      ["/v1/telegram/chat", { chatId: "42" }],
+      ["/v1/telegram/chat", { chatId: 0 }],
+      ["/v1/telegram/chat", { chatId: 1.5 }],
+      ["/v1/telegram/chat", {}],
+      ["/v1/telegram/enabled", { enabled: "yes" }],
+      ["/v1/telegram/enabled", [true]],
+    ] as const) {
+      const r = await post(path, body);
+      expect(r.status, path).toBe(400);
+      expect(typeof r.json.error).toBe("string");
+    }
+    const notJson = await call("/v1/telegram/enabled", { method: "POST", body: "{nope" });
+    expect(notJson.status).toBe(400);
+    expect(notJson.json).toEqual({ error: "json" });
+    expect(telegramCalls).toEqual([]);
+  });
+
+  it("answers the app's refusal with 400 and its message", async () => {
+    telegramRefusal = "Telegram refused that token.";
+    const r = await post("/v1/telegram/token", { token: "123:abc" });
+    expect(r.status).toBe(400);
+    expect(r.json).toEqual({ error: "Telegram refused that token." });
+    expect((await post("/v1/telegram/pair", {})).status).toBe(400);
+  });
+
+  it("pair returns the code", async () => {
+    const r = await post("/v1/telegram/pair", {});
+    expect(r.status).toBe(200);
+    expect(r.json).toEqual({ code: "123456", bot: "turbo_bot", expiresAt: 1_700_000_600_000 });
+    expect((await call("/v1/telegram/pair", { method: "POST" })).status).toBe(200);
+  });
+
+  it("knows only its own routes and methods", async () => {
+    expect((await call("/v1/telegram/nope")).status).toBe(404);
+    expect((await call("/v1/telegram/token")).status).toBe(404);
+    expect((await post("/v1/telegram", {})).status).toBe(404);
+  });
+
+  it("never echoes the token", async () => {
+    const secret = "987654321:SECRET-token-value";
+    const seen = [
+      await post("/v1/telegram/token", { token: secret }),
+      await call("/v1/telegram"),
+      await post("/v1/telegram/token", { token: 5 }),
+      await post("/v1/telegram/chat", { chatId: 7 }),
+      await post("/v1/telegram/pair", {}),
+    ];
+    telegramRefusal = "nope";
+    seen.push(await post("/v1/telegram/token", { token: secret }));
+    for (const r of seen) expect(JSON.stringify(r.json)).not.toContain("SECRET");
+  });
+
+  it("needs the API token", async () => {
+    for (const [method, path] of [["GET", "/v1/telegram"], ["POST", "/v1/telegram/token"], ["POST", "/v1/telegram/pair"]]) {
+      const r = await call(path, { method, token: null, body: method === "POST" ? "{}" : undefined });
+      expect(r.status, path).toBe(403);
+    }
+    expect(telegramCalls).toEqual([]);
   });
 });
 

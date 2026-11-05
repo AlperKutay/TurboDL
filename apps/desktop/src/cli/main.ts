@@ -1,12 +1,20 @@
 import fsp from "node:fs/promises";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { PROFILE_LIST_MAX, parseProfileList, type ApiLaunch, type Job, type JobOptions, type JobRequest, type ListRequest, type ListState, type ProfileListView } from "@turbodl/shared";
+import { PROFILE_LIST_MAX, parseProfileList, type ApiLaunch, type Job, type JobOptions, type JobRequest, type ListRequest, type ListState, type ProfileListView, type TelegramStatus } from "@turbodl/shared";
 import { HELP, parseArgs, type Command } from "./args";
 import { ApiClient, ApiError, ping } from "./client";
 import { connect, readApiFile, userDataDir, type Connection } from "./discover";
 import { EXIT, combineExit, exitCodeOf, listExitCode } from "./exit";
 import { createOutput, type Output } from "./output";
+
+/** `CliIo.readSecret` rejects with this when the person pressed Ctrl+C while typing. */
+export class SecretInterrupted extends Error {
+  constructor() {
+    super("interrupted");
+    this.name = "SecretInterrupted";
+  }
+}
 
 /** What the command needs from the process it runs in. */
 export interface CliIo {
@@ -29,6 +37,11 @@ export interface CliIo {
   now?(): number;
   /** reads a text file (UTF-8); the disk when absent */
   readFile?(file: string): Promise<string>;
+  /**
+   * Reads a secret: on a terminal it asks `prompt` on stderr and reads a line without echoing it, piped it reads stdin to
+   * its end. Rejects with SecretInterrupted on Ctrl+C. Absent: the command can't ask for one.
+   */
+  readSecret?(prompt: string): Promise<string>;
 }
 
 const QUIT = "TurboDL quit.";
@@ -40,6 +53,11 @@ const LIST_POLL_MS = 2000;
 /** the list goes on by itself in these */
 const LIST_GOES_ON: ReadonlySet<ListState> = new Set(["running", "waiting", "slowedDown"]);
 const LIST_TOO_MANY = `A list can hold at most ${PROFILE_LIST_MAX.toLocaleString("en-US")} profiles.`;
+/** how often the Telegram bot is read while a token connects, and how long that is waited for */
+const TELEGRAM_CONNECT_POLL_MS = 500;
+const TELEGRAM_CONNECT_MAX_MS = 15_000;
+/** how often it is read while a pairing waits */
+const TELEGRAM_PAIR_POLL_MS = 2000;
 /** the most characters the API takes for a list's name */
 const LIST_NAME_MAX = 255;
 
@@ -49,6 +67,7 @@ interface Ctx {
   sleep(ms: number, signal?: AbortSignal): Promise<void>;
   now(): number;
   onInterrupt(handler: () => void): () => void;
+  readSecret?(prompt: string): Promise<string>;
   /** replaced when a followed stream finds the app on another port */
   client: ApiClient;
 }
@@ -380,6 +399,85 @@ async function follow(ctx: Ctx, start: (f: Follower) => Promise<number | undefin
   }
 }
 
+/** Waits and reads the bot's status until `done` holds of it, the wait ran out (`ms`), or Ctrl+C; null on Ctrl+C. */
+async function pollTelegram(ctx: Ctx, every: number, done: (status: TelegramStatus) => boolean, ms: number, signal: AbortSignal): Promise<TelegramStatus | null> {
+  const start = ctx.now();
+  for (;;) {
+    await ctx.sleep(every, signal);
+    if (signal.aborted) return null;
+    const status = await ctx.client.telegram();
+    if (done(status) || ctx.now() - start >= ms) return status;
+  }
+}
+
+/** `turbodl telegram …`: the token never leaves `setTelegramToken`, so nothing here can print it. */
+async function telegram(ctx: Ctx, cmd: Extract<Command, { type: "telegram" }>): Promise<number> {
+  const { out, client } = ctx;
+  const interrupt = new AbortController();
+  const off = ctx.onInterrupt(() => interrupt.abort());
+  try {
+    switch (cmd.action) {
+      case "status":
+        out.telegram(await client.telegram());
+        return EXIT.ok;
+      case "on":
+      case "off":
+        out.telegram(await client.setTelegramEnabled(cmd.action === "on"));
+        return EXIT.ok;
+      case "unpair":
+        out.telegram(await client.setTelegramChat(null));
+        return EXIT.ok;
+      case "chat":
+        out.telegram(await client.setTelegramChat(cmd.chatId));
+        return EXIT.ok;
+      case "token": {
+        if (!ctx.readSecret) {
+          out.error("This terminal can't ask for the token. Pipe it on stdin.");
+          return EXIT.usage;
+        }
+        const token = (await ctx.readSecret("Bot token: ")).trim();
+        if (!token) {
+          out.error("No token given.");
+          return EXIT.usage;
+        }
+        let status = await client.setTelegramToken(token);
+        if (status.state === "connecting") {
+          const settled = await pollTelegram(ctx, TELEGRAM_CONNECT_POLL_MS, (s) => s.state !== "connecting", TELEGRAM_CONNECT_MAX_MS, interrupt.signal);
+          if (!settled) return EXIT.interrupted;
+          status = settled;
+        }
+        out.telegram(status);
+        return status.state === "ok" ? EXIT.ok : EXIT.failed;
+      }
+      case "pair": {
+        const pairing = await client.pairTelegram();
+        out.pairing(pairing);
+        // a re-pair from the bound chat leaves the id as it was: the pairing ending is what says it worked
+        const paired = (s: TelegramStatus) => !s.pairing && s.chatId !== null;
+        const status = await pollTelegram(ctx, TELEGRAM_PAIR_POLL_MS, (s) => paired(s) || ctx.now() >= pairing.expiresAt, Infinity, interrupt.signal);
+        if (!status) return EXIT.interrupted;
+        if (paired(status) && ctx.now() < pairing.expiresAt) {
+          if (cmd.json) out.telegram(status);
+          else out.notice(`Paired with chat ${status.chatId}.`);
+          return EXIT.ok;
+        }
+        out.error("The code ran out.");
+        return EXIT.failed;
+      }
+    }
+  } catch (err) {
+    if (err instanceof SecretInterrupted) return EXIT.interrupted;
+    // the app's own refusal ("Set a bot token first.") is a failed command, not an unreachable app
+    if (err instanceof ApiError && err.status === 400) {
+      out.error(err.message);
+      return EXIT.failed;
+    }
+    throw err;
+  } finally {
+    off();
+  }
+}
+
 async function command(ctx: Ctx, cmd: Exclude<Command, { type: "help" | "version" | "profileList" }>): Promise<number> {
   const { out, client } = ctx;
   switch (cmd.type) {
@@ -436,6 +534,8 @@ async function command(ctx: Ctx, cmd: Exclude<Command, { type: "help" | "version
       }
       return code;
     }
+    case "telegram":
+      return telegram(ctx, cmd);
     case "instagram":
       if (cmd.action === "login") {
         const result = await client.instagramLogin();
@@ -483,7 +583,7 @@ export async function run(io: CliIo): Promise<number> {
       out.error(conn.error);
       return EXIT.unreachable;
     }
-    const ctx: Ctx = { out, dir, sleep, now, onInterrupt: (h) => io.onInterrupt(h), client: new ApiClient(conn) };
+    const ctx: Ctx = { out, dir, sleep, now, onInterrupt: (h) => io.onInterrupt(h), client: new ApiClient(conn), readSecret: io.readSecret?.bind(io) };
     if (cmd.type === "profileList") return await new ListFollower(ctx).run(listRequest(cmd, profiles));
     return await command(ctx, cmd);
   } catch (err) {

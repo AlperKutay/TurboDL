@@ -156,7 +156,7 @@ describe("tagged posts, on or off in this version", () => {
 describe("HELP", () => {
   it("lists every command and option", () => {
     for (const word of [
-      "get", "add", "list", "status", "wait", "cancel", "instagram", "help",
+      "get", "add", "list", "status", "wait", "cancel", "instagram", "telegram", "help",
       "--dir", "--name", "--audio", "--max-height", "--highlights", "--highlights-only",
       "--no-posts", "--tagged", "--photos-only", "--videos-only",
       "--collection", "--all-collections", "--json", "--version"
@@ -260,5 +260,42 @@ describe("parseArgs posts", () => {
   it("lists posts in the help", () => {
     expect(HELP).toContain("posts <link>");
     expect(HELP).toContain("--since");
+  });
+});
+
+describe("parseArgs telegram", () => {
+  it("reads the actions", () => {
+    for (const action of ["status", "token", "pair", "unpair", "on", "off"] as const) {
+      expect(parseArgs(["telegram", action], cwd)).toEqual({ type: "telegram", action, json: false });
+    }
+    expect(parseArgs(["telegram", "status", "--json"], cwd)).toEqual({ type: "telegram", action: "status", json: true });
+  });
+
+  it("reads a chat id", () => {
+    expect(parseArgs(["telegram", "chat", "123"], cwd)).toEqual({ type: "telegram", action: "chat", chatId: 123, json: false });
+    expect(parseArgs(["telegram", "chat", "123", "--json"], cwd)).toEqual({ type: "telegram", action: "chat", chatId: 123, json: true });
+  });
+
+  it("rejects a chat id that is not a whole number above 0", () => {
+    const message = { error: "telegram chat needs a chat id (a whole number)" };
+    for (const bad of [["chat"], ["chat", "abc"], ["chat", "1.5"], ["chat", "0"], ["chat", "12", "13"], ["chat", "99999999999999999999"]]) {
+      expect(err(["telegram", ...bad])).toEqual(message);
+    }
+  });
+
+  it("rejects a missing or unknown action", () => {
+    const message = { error: "telegram needs status, token, chat, unpair, pair, on or off" };
+    expect(err(["telegram"])).toEqual(message);
+    expect(err(["telegram", "nope"])).toEqual(message);
+    expect(err(["telegram", "status", "extra"])).toEqual(message);
+  });
+
+  it("is in the help text", () => {
+    expect(HELP).toContain("  telegram status        Show the Telegram bot's state\n");
+    expect(HELP).toContain("  telegram token         Set the bot token (typed, or piped on stdin)\n");
+    expect(HELP).toContain("  telegram chat <id>     Bind the bot to this chat id\n");
+    expect(HELP).toContain("  telegram pair          Show a code to send the bot, and wait until it's paired\n");
+    expect(HELP).toContain("  telegram unpair        Unbind the chat\n");
+    expect(HELP).toContain("  telegram on|off        Turn the bot on or off\n");
   });
 });

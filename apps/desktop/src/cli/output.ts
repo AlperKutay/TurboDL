@@ -8,6 +8,7 @@ import {
   type JobProgress,
   type ProfileListRow,
   type ProfileListView,
+  type TelegramStatus,
 } from "@turbodl/shared";
 
 /** Everything the turbodl command prints, as text for people or as JSON lines for scripts. */
@@ -25,6 +26,12 @@ export interface Output {
   /** the followed profile list as it stopped going on */
   listEnd(list: ProfileListView): void;
   instagram(i: InstagramLoginResult): void;
+  /** the Telegram bot's status */
+  telegram(status: TelegramStatus): void;
+  /** the code a pairing waits for, and the bot to send it to */
+  pairing(p: { bot?: string; code: string; expiresAt: number }): void;
+  /** a result worth saying that is not the command's output */
+  notice(message: string): void;
   /** something the command goes on despite */
   warning(message: string): void;
   error(message: string): void;
@@ -39,6 +46,18 @@ export interface OutputOptions {
   /** stderr is a terminal: progress is shown there on one line rewritten in place */
   tty: boolean;
 }
+
+/** a Telegram state in words */
+const TELEGRAM_STATES: Record<TelegramStatus["state"], string> = {
+  off: "off",
+  noToken: "no token",
+  connecting: "connecting",
+  ok: "connected",
+  tokenRejected: "token rejected",
+  tokenUnreadable: "token unreadable",
+  conflict: "another program is reading this bot's messages",
+  offline: "can't reach Telegram",
+};
 
 /** Text: stdout gets only paths, ids and job details; the rest goes to stderr. JSON: one object per line on stdout. */
 export function createOutput(o: OutputOptions): Output {
@@ -56,6 +75,9 @@ function jsonOutput(o: OutputOptions): Output {
     listRow: line,
     listEnd: (list) => line({ list }),
     instagram: (i) => line({ type: "instagram", signedIn: i.signedIn, ...(i.username ? { username: i.username } : {}) }),
+    telegram: (status) => line(status),
+    pairing: (p) => line({ type: "pairing", ...p }),
+    notice: (message) => line({ type: "notice", message }),
     warning: (message) => {
       line({ type: "warning", message });
       o.stderr.write(`turbodl: warning: ${message}\n`);
@@ -215,6 +237,18 @@ function textOutput(o: OutputOptions): Output {
       out(`signedIn: ${i.signedIn}`);
       if (i.username) out(`username: ${i.username}`);
     },
+    telegram(status) {
+      if (status.bot) out(`Bot: @${status.bot}`);
+      out(`State: ${TELEGRAM_STATES[status.state]}`);
+      if (status.error) out(`Error: ${status.error}`);
+      out(`Chat: ${status.chatId ?? "not bound"}`);
+      out(`On: ${status.enabled ? "yes" : "no"}`);
+    },
+    pairing(p) {
+      out(p.bot ? `Send this to @${p.bot} in Telegram: /start ${p.code}` : `Send this to your bot in Telegram: /start ${p.code}`);
+      if (p.bot) out(`https://t.me/${p.bot}?start=${p.code}`);
+    },
+    notice: err,
     warning: (message) => err(`turbodl: warning: ${message}`),
     error: (message) => err(`turbodl: ${message}`),
     close: clear,
