@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import http from "node:http";
 import net from "node:net";
 import os from "node:os";
@@ -36,13 +36,18 @@ export interface LaunchedApp {
   port: number;
 }
 
-/** Starts the built app (out/) with an isolated profile, the given settings and extra environment. */
-export async function launchApp(settings: Record<string, unknown> = {}, env: Record<string, string> = {}): Promise<LaunchedApp> {
-  const userData = mkdtempSync(path.join(os.tmpdir(), "turbodl-e2e-"));
+/**
+ * Starts the built app (out/) with an isolated profile, the given settings and extra environment. `o.userData` starts
+ * it again on a profile an earlier launch used: what the app saved there stays, with a new port.
+ */
+export async function launchApp(settings: Record<string, unknown> = {}, env: Record<string, string> = {}, o: { userData?: string } = {}): Promise<LaunchedApp> {
+  const userData = o.userData ?? mkdtempSync(path.join(os.tmpdir(), "turbodl-e2e-"));
   const baseDir = path.join(userData, "downloads");
   mkdirSync(baseDir, { recursive: true });
   const port = await freePort();
-  writeFileSync(path.join(userData, "settings.json"), JSON.stringify({ bridgePort: port, baseDir, ...settings }));
+  const settingsFile = path.join(userData, "settings.json");
+  const saved = o.userData && existsSync(settingsFile) ? (JSON.parse(readFileSync(settingsFile, "utf8")) as Record<string, unknown>) : {};
+  writeFileSync(settingsFile, JSON.stringify({ ...saved, bridgePort: port, baseDir, ...settings }));
   const app = await electron.launch({
     args: [path.join(__dirname, "..")],
     env: { ...process.env, ...env, TURBODL_USER_DATA: userData } as Record<string, string>,
