@@ -5,7 +5,7 @@ import { createRequire } from "node:module";
 import path from "node:path";
 import { expect, test } from "@playwright/test";
 import type { TelegramStatus } from "@turbodl/shared";
-import { startFakeTelegram, type FakeTelegram } from "../test/fixtures/fake-telegram";
+import { FAKE_TOKEN, startFakeTelegram, type FakeTelegram } from "../test/fixtures/fake-telegram";
 import { startTestServer, type TestServer } from "../test/fixtures/test-server";
 import { launchApp, type LaunchedApp } from "./helpers";
 
@@ -16,8 +16,8 @@ import { launchApp, type LaunchedApp } from "./helpers";
 
 const electronExe = createRequire(__filename)("electron") as string;
 const CLI = path.join(__dirname, "..", "out", "cli", "turbodl.cjs");
-/** shaped like a token from @BotFather, which the app checks before saving it */
-const TOKEN = "4242424242:AAE2eFakeTokenForTurboDL_tests-0123";
+/** the fake Telegram's own token, shaped like one from @BotFather (the app checks that before saving it) */
+const TOKEN = FAKE_TOKEN;
 const OWNER = 42;
 const STRANGER = 99;
 const HELP_START = "Send TurboDL one of these:";
@@ -83,7 +83,7 @@ interface Ctx extends LaunchedApp {
 }
 
 async function withBot(settings: Record<string, unknown>, body: (ctx: Ctx) => Promise<void>): Promise<void> {
-  const fake = await startFakeTelegram({ token: TOKEN });
+  const fake = await startFakeTelegram();
   const server = await startTestServer();
   [0, 1, 2].forEach((n) => server.setFile(`/ig/${n}.png`, { data: randomBytes(3000), contentType: "image/png" }));
   const launched = await launchApp(settings, { TURBODL_INSTAGRAM_DEMO_BASE: server.url("").replace(/\/$/, ""), TURBODL_TELEGRAM_API: fake.url });
@@ -271,7 +271,7 @@ test("turning the bot off stops it answering", async () => {
 });
 
 test("a saved token survives an app restart", async () => {
-  const fake = await startFakeTelegram({ token: TOKEN });
+  const fake = await startFakeTelegram();
   const env = { TURBODL_TELEGRAM_API: fake.url };
   let launched = await launchApp({}, env);
   const { userData } = launched;

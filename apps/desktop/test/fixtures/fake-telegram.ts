@@ -32,9 +32,12 @@ interface SentMessage {
 
 const DESCRIPTIONS: Record<number, string> = { 401: "Unauthorized", 409: "Conflict: terminated by other getUpdates request", 429: "Too Many Requests: retry later", 400: "Bad Request" };
 
+/** The token the fake accepts unless told another: shaped like one from @BotFather, which the app checks before saving. */
+export const FAKE_TOKEN = "4242424242:AAE2eFakeTokenForTurboDL_tests-0123";
+
 /** A local stand-in for the Telegram Bot API (127.0.0.1, free port) that accepts one token. */
 export async function startFakeTelegram(o: { token?: string } = {}): Promise<FakeTelegram> {
-  const token = o.token ?? "123456:fake-token-ABCdef";
+  const token = o.token ?? FAKE_TOKEN;
   const bot = { id: 424242, username: "turbodl_test_bot" };
   const queue: Update[] = [];
   const messages: SentMessage[] = [];
