@@ -5,12 +5,26 @@ export type TelegramErrorKind = "unauthorized" | "conflict" | "rateLimited" | "n
 export class TelegramError extends Error {
   readonly kind: TelegramErrorKind;
   readonly retryAfter?: number;
-  constructor(kind: TelegramErrorKind, message: string, retryAfter?: number) {
+  /** true only when the request certainly never reached Telegram (a connect-phase failure) */
+  readonly unsent?: boolean;
+  constructor(kind: TelegramErrorKind, message: string, retryAfter?: number, unsent?: boolean) {
     super(message);
     this.name = "TelegramError";
     this.kind = kind;
     this.retryAfter = retryAfter;
+    if (unsent) this.unsent = true;
   }
+}
+
+const CONNECT_CODES = new Set(["ECONNREFUSED", "ENOTFOUND", "EAI_AGAIN", "ENETUNREACH", "EHOSTUNREACH", "UND_ERR_CONNECT_TIMEOUT"]);
+
+/** Whether a fetch failure happened before the request could leave (anywhere in its cause chain). */
+function isConnectFailure(err: unknown, depth = 0): boolean {
+  if (!err || typeof err !== "object" || depth > 4) return false;
+  const e = err as { code?: unknown; cause?: unknown; errors?: unknown };
+  if (typeof e.code === "string" && CONNECT_CODES.has(e.code)) return true;
+  if (Array.isArray(e.errors) && e.errors.length > 0 && e.errors.every((x) => isConnectFailure(x, depth + 1))) return true;
+  return isConnectFailure(e.cause, depth + 1);
 }
 
 /** Replaces every occurrence of the token, so an error text can be logged or shown. */
@@ -69,7 +83,7 @@ export class BotApi {
   async sendMessage(chatId: number, text: string, o: { keyboard?: Keyboard; replyTo?: number } = {}): Promise<number> {
     const body: Record<string, unknown> = { chat_id: chatId, text };
     if (o.keyboard) body.reply_markup = { inline_keyboard: o.keyboard };
-    if (o.replyTo !== undefined) body.reply_parameters = { message_id: o.replyTo };
+    if (o.replyTo !== undefined) body.reply_parameters = { message_id: o.replyTo, allow_sending_without_reply: true };
     const sent = await this.call<{ message_id: number }>("sendMessage", body);
     return sent.message_id;
   }
@@ -169,18 +183,18 @@ export class BotApi {
       return await this.doFetch(url, init);
     } catch (err) {
       if (isAbort(err, init.signal)) throw err;
-      throw this.networkError(err);
+      throw this.networkError(err, isConnectFailure(err));
     }
   }
 
-  private networkError(err: unknown): TelegramError {
+  private networkError(err: unknown, unsent = false): TelegramError {
     const parts: string[] = [];
     let e: unknown = err;
     for (let depth = 0; e && depth < 4; depth++) {
       parts.push(e instanceof Error ? e.message : String(e));
       e = e instanceof Error ? e.cause : undefined;
     }
-    return new TelegramError("network", scrub(`Network error: ${parts.join(": ")}`, this.token));
+    return new TelegramError("network", scrub(`Network error: ${parts.join(": ")}`, this.token), undefined, unsent);
   }
 
   private fromStatus(status: number, reply: ApiReply<unknown> | undefined): TelegramError {

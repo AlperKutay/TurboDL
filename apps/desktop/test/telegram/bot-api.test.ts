@@ -34,6 +34,7 @@ describe("BotApi", () => {
     const id = await api.sendMessage(7, "hello", { keyboard, replyTo: 5 });
     expect(fake.sent(7)).toEqual([{ messageId: id, text: "hello", keyboard, replyTo: 5 }]);
     expect(fake.calls.at(-1)?.body).not.toHaveProperty("parse_mode");
+    expect(fake.calls.at(-1)?.body.reply_parameters).toEqual({ message_id: 5, allow_sending_without_reply: true });
   });
 
   it("editMessageText with null removes the buttons", async () => {
@@ -79,6 +80,7 @@ describe("BotApi", () => {
     await fake.close();
     const err = await rejection(new BotApi({ token: fake.token, base: url }).getMe());
     expect(err.kind).toBe("network");
+    expect(err.unsent).toBe(true);
     fake = await startFakeTelegram();
   });
 
@@ -143,12 +145,14 @@ describe("BotApi", () => {
     const broken = (async () => new Response("not json", { status: 200 })) as unknown as typeof fetch;
     const err = await rejection(new BotApi({ token: fake.token, base: fake.url, fetch: broken }).getMe());
     expect(err.kind).toBe("network");
+    expect(err.unsent).toBeUndefined();
     const reset = (async () => {
       const body = new ReadableStream({ pull: (c) => c.error(new Error(`reset ${fake.token}`)) });
       return new Response(body, { status: 200 });
     }) as unknown as typeof fetch;
     const err2 = await rejection(new BotApi({ token: fake.token, base: fake.url, fetch: reset }).getUpdates(0, 0, new AbortController().signal));
     expect(err2.kind).toBe("network");
+    expect(err2.unsent).toBeUndefined();
     expect(err2.message).not.toContain(fake.token);
   });
 

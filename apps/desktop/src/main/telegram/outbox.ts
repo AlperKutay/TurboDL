@@ -9,6 +9,8 @@ export const EDIT_EVERY_MS = 5000;
 const RETRY_DELAYS_MS = [2000, 4000, 8000];
 /** Used when Telegram asks to slow down without saying for how long. */
 const DEFAULT_RETRY_AFTER_S = 5;
+/** How many messages' edit state is remembered (the least recently used are forgotten). */
+const REMEMBERED_MESSAGES = 500;
 
 export interface OutboxDeps {
   api: Pick<BotApi, "sendMessage" | "editMessageText">;
@@ -99,6 +101,14 @@ export class Outbox {
     this.wake?.();
   }
 
+  private log(text: string): void {
+    try {
+      this.d.log(text);
+    } catch {
+      // a broken logger must not stop the queue
+    }
+  }
+
   private kick(): void {
     if (this.wake) this.wake();
     if (this.running) return;
@@ -108,6 +118,16 @@ export class Outbox {
   }
 
   private async run(): Promise<void> {
+    for (;;) {
+      await this.drain();
+      // an error ends a drain early: go on with what is left
+      if (this.closed || this.queue.length === 0) break;
+    }
+    this.running = false;
+  }
+
+  private async drain(): Promise<void> {
+    let inHand: Entry | null = null;
     try {
       while (!this.closed && this.queue.length > 0) {
         const gap = this.lastCallAt + GAP_MS - this.d.now();
@@ -118,15 +138,19 @@ export class Outbox {
           await this.idle();
           continue;
         }
-        this.current = entry;
-        try {
-          await this.process(entry);
-        } finally {
-          this.current = null;
-        }
+        inHand = this.current = entry;
+        await this.process(entry);
+        inHand = this.current = null;
       }
-    } finally {
-      this.running = false;
+    } catch (err) {
+      // wait() or log() misbehaved: the call in hand ends (a send with null) and the later calls go on
+      const victim = inHand ?? this.queue.shift();
+      if (victim) {
+        if (victim.kind === "edit") this.pendingEdits.delete(victim.key);
+        settleEntry(victim, null);
+      }
+      this.current = null;
+      this.log(`outbox error: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
@@ -160,8 +184,8 @@ export class Outbox {
 
   private async process(entry: Entry): Promise<void> {
     if (entry.kind === "send") {
-      const out = await this.callWithRetry(() => this.d.api.sendMessage(entry.chatId, entry.text, entry.opts), "sendMessage");
-      if (out.status === "ok") this.lastSent.set(messageKey(entry.chatId, out.value), sentState(entry.text, entry.opts.keyboard ?? null));
+      const out = await this.callWithRetry(() => this.d.api.sendMessage(entry.chatId, entry.text, entry.opts), "sendMessage", true);
+      if (out.status === "ok") remember(this.lastSent, messageKey(entry.chatId, out.value), sentState(entry.text, entry.opts.keyboard ?? null));
       entry.settle(out.status === "ok" ? out.value : null);
       return;
     }
@@ -169,18 +193,18 @@ export class Outbox {
       settleEntry(entry, null);
       return;
     }
-    const out = await this.callWithRetry(() => this.d.api.editMessageText(entry.chatId, entry.messageId, entry.text, entry.keyboard), "editMessageText");
+    const out = await this.callWithRetry(() => this.d.api.editMessageText(entry.chatId, entry.messageId, entry.text, entry.keyboard), "editMessageText", false);
     if (out.status === "ok" || out.status === "notModified") {
-      this.lastSent.set(entry.key, sentState(entry.text, entry.keyboard));
-      this.lastEditAt.set(entry.key, this.d.now());
+      remember(this.lastSent, entry.key, sentState(entry.text, entry.keyboard));
+      remember(this.lastEditAt, entry.key, this.d.now());
     } else if (out.status === "notFound") {
-      this.gone.add(entry.key);
+      remember(this.gone, entry.key);
     }
     settleEntry(entry, null);
   }
 
   /** Runs one call, retrying what is worth retrying. Never throws. */
-  private async callWithRetry<T>(fn: () => Promise<T>, what: string): Promise<Outcome<T>> {
+  private async callWithRetry<T>(fn: () => Promise<T>, what: string, isSend: boolean): Promise<Outcome<T>> {
     let retries = 0;
     for (;;) {
       const gap = this.lastCallAt + GAP_MS - this.d.now();
@@ -193,32 +217,50 @@ export class Outbox {
       } catch (err) {
         this.lastCallAt = this.d.now();
         if (!(err instanceof TelegramError)) {
-          this.d.log(`${what} failed: ${err instanceof Error ? err.message : String(err)}`);
+          this.log(`${what} failed: ${err instanceof Error ? err.message : String(err)}`);
           return { status: "dropped" };
         }
         switch (err.kind) {
           case "notModified":
+            return { status: err.kind };
           case "notFound":
+            // for an edit that means the message is gone; for a send nothing was posted
+            if (isSend) this.log(`${what} failed (notFound): ${err.message}`);
             return { status: err.kind };
           case "rateLimited":
             await this.d.wait((err.retryAfter ?? DEFAULT_RETRY_AFTER_S) * 1000);
             continue;
           case "network":
           case "server":
+            // a send that may have reached the chat is not repeated: it could post twice
+            if (isSend && err.kind === "network" && !err.unsent) {
+              this.log(`${what} not retried, it may have been delivered: ${err.message}`);
+              return { status: "dropped" };
+            }
             if (retries >= RETRY_DELAYS_MS.length) {
-              this.d.log(`${what} given up after ${retries} retries: ${err.message}`);
+              this.log(`${what} given up after ${retries} retries: ${err.message}`);
               return { status: "dropped" };
             }
             await this.d.wait(RETRY_DELAYS_MS[retries++]);
             continue;
           default:
             // unauthorized, conflict, tooLarge, badRequest: retrying would not change the answer
-            this.d.log(`${what} failed (${err.kind}): ${err.message}`);
+            this.log(`${what} failed (${err.kind}): ${err.message}`);
             return { status: "dropped" };
         }
       }
     }
   }
+}
+
+/** Stores a value, keeping the map to the most recently stored REMEMBERED_MESSAGES keys. */
+function remember<V>(map: Map<string, V>, key: string, value: V): void;
+function remember(set: Set<string>, key: string): void;
+function remember(store: Map<string, unknown> | Set<string>, key: string, value?: unknown): void {
+  store.delete(key);
+  if (store instanceof Map) store.set(key, value);
+  else store.add(key);
+  while (store.size > REMEMBERED_MESSAGES) store.delete(store.keys().next().value as string);
 }
 
 function messageKey(chatId: number, messageId: number): string {
