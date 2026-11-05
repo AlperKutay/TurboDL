@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { Job, JobReason, ProfileListRow, ProfileListView } from "@turbodl/shared";
 import {
   MAX_TEXT,
+  clip,
   jobFinalText,
   jobKeyboard,
   jobLabel,
@@ -55,16 +56,38 @@ function datas(k: Keyboard | null): string[] {
 
 describe("texts", () => {
   it("every text stays under 4096", () => {
-    const big = list({ rows: rows(1000), index: 500, nextAt: 60_000, state: "waiting", message: longNote, progress: { done: 1, total: 2, note: longNote } });
-    expect(listText(big, 0).length).toBeLessThanOrEqual(MAX_TEXT);
-    expect(listRestartedText(big).length).toBeLessThanOrEqual(MAX_TEXT);
-    const noisy = job({ warnings: Array.from({ length: 50 }, () => longNote), files: ["/a/b.jpg"], progress: { done: 1, note: longNote }, error: longNote, state: "failed" });
-    for (const t of [jobText(noisy, "x"), jobFinalText(noisy, "x", 1), jobSummary(noisy, "x", 1), reasonText(noisy)]) {
-      expect(t.length).toBeLessThanOrEqual(MAX_TEXT);
+    // very long names in the rows that are shown push the list text past the cap
+    const wide = Array.from({ length: 1000 }, (_, i): ProfileListRow => ({ username: "u".repeat(2000) + i, state: "done", note: longNote }));
+    const big = list({ rows: [...wide, { username: "n".repeat(3000), state: "running" }], index: 1000, nextAt: 60_000, state: "waiting", message: longNote, progress: { done: 1, total: 2, note: longNote } });
+    const over = [
+      listText(big, 0),
+      jobFinalText(job({ state: "failed", error: "y".repeat(9000) }), "x", 0),
+      jobSummary(job({ state: "failed", error: "y".repeat(9000) }), "x", 0),
+      reasonText(job({ error: "y".repeat(9000) })),
+    ];
+    for (const t of over) {
+      expect(t).toHaveLength(MAX_TEXT);
+      expect(t.endsWith("…")).toBe(true);
     }
-    const jobs = Array.from({ length: 10 }, (_, i) => ({ label: "L".repeat(500) + i, job: job({ id: `j${i}`, progress: { done: 1, note: longNote } }) }));
+    expect(listRestartedText(big).length).toBeLessThanOrEqual(MAX_TEXT);
+    const noisy = job({ warnings: Array.from({ length: 50 }, () => longNote), files: ["/a/b.jpg"], progress: { done: 1, note: longNote } });
+    expect(jobText(noisy, "L".repeat(9000)).length).toBeLessThanOrEqual(MAX_TEXT);
+    const jobs = Array.from({ length: 12 }, (_, i) => ({ label: "L".repeat(500) + i, job: job({ id: `j${i}`, progress: { done: 1, note: longNote } }) }));
     const status = statusText({ version: "0.10.0", instagram: { signedIn: true, username: "me" }, jobs, list: big });
     expect(status.length).toBeLessThanOrEqual(MAX_TEXT);
+  });
+
+  it("never leaves half a surrogate pair before the ellipsis", () => {
+    const lone = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])/;
+    for (const n of [MAX_TEXT, 100, 61]) {
+      for (const pad of ["", "a"]) {
+        const t = clip(pad + "😀".repeat(MAX_TEXT), n);
+        expect(t.length).toBeLessThanOrEqual(n);
+        expect(t.endsWith("…")).toBe(true);
+        expect(lone.test(t)).toBe(false);
+      }
+    }
+    expect(lone.test(reasonText(job({ error: "a" + "😀".repeat(5000) })))).toBe(false);
   });
 
   it("cuts an over-long text with a trailing ellipsis", () => {

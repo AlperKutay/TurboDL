@@ -30,13 +30,17 @@ export const RESTARTED_LINK = "TurboDL restarted. This download goes on in Turbo
 const STATUS_JOBS_MAX = 10;
 const LIST_ROWS_SHOWN = 5;
 
-function cut(text: string): string {
-  return text.length <= MAX_TEXT ? text : `${text.slice(0, MAX_TEXT - 1)}…`;
+/** Cuts text to `max` UTF-16 units with a trailing `…`, never leaving half of a surrogate pair. */
+export function clip(text: string, max: number): string {
+  if (text.length <= max) return text;
+  let end = max - 1;
+  const last = text.charCodeAt(end - 1);
+  if (last >= 0xd800 && last <= 0xdbff) end -= 1;
+  return `${text.slice(0, end)}…`;
 }
 
-/** Shortens one piece of text that comes from outside (notes, names) so a message stays readable. */
-function clip(text: string, max: number): string {
-  return text.length <= max ? text : `${text.slice(0, max - 1)}…`;
+function cut(text: string): string {
+  return clip(text, MAX_TEXT);
 }
 
 export function jobLabel(job: Pick<Job, "url" | "kind">): string {

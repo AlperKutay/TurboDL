@@ -26,6 +26,40 @@ describe("prompts", () => {
     expect(labels).not.toContain("✓ Videos");
   });
 
+  it("names the signed-in account when it is known", () => {
+    const { prompts } = make();
+    expect(promptText(prompts.openProfile("nasa", ALL, true, "me"))).toContain("Signed in as @me.");
+    expect(promptText(prompts.openProfile("nasa", ALL, true))).toContain("Signed in.");
+    expect(promptText(prompts.openList("l", ["a"], [], ALL, { min: 1, max: 3 }, true, "me"))).toContain("Signed in as @me.");
+    expect(promptText(prompts.openList("l", ["a"], [], ALL, { min: 1, max: 3 }, true))).toContain("Signed in.");
+  });
+
+  it("ids differ between processes, so a stale button is expired", () => {
+    const a = new Prompts({ now: () => 0 });
+    const ids = new Set<string>();
+    for (let i = 0; i < 20; i++) {
+      const b = new Prompts({ now: () => 0 });
+      ids.add(b.openProfile("x", ALL, true).id);
+    }
+    expect(ids.size).toBeGreaterThan(15);
+    const old = a.openProfile("old", ALL, true);
+    for (let i = 0; i < 50; i++) {
+      const b = new Prompts({ now: () => 0 });
+      b.openProfile("new", ALL, true);
+      expect(b.press(`p:${old.id}:start`)).toEqual({ type: "expired" });
+    }
+  });
+
+  it("opening a prompt sweeps the expired ones", () => {
+    const { prompts, advance } = make();
+    const old = prompts.openProfile("a", ALL, true);
+    advance(PROMPT_TTL_MS + 60_000);
+    const fresh = prompts.openProfile("b", ALL, true);
+    expect(press(prompts, old.id, "posts")).toEqual({ type: "expired" });
+    expect(press(prompts, fresh.id, "posts").type).toBe("changed");
+    expect((prompts as unknown as { open: Map<string, unknown> }).open.size).toBe(1);
+  });
+
   it("signed out, Tagged starts off and is refused", () => {
     const { prompts } = make();
     const p = prompts.openProfile("nasa", ALL, false);

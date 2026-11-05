@@ -1,5 +1,7 @@
 import { effectiveSaveOptions, saveOptionsProblem, TAGGED_AVAILABLE } from "@turbodl/shared";
 import type { ListWait, ProfileSaveOptions } from "@turbodl/shared";
+import { randomInt } from "node:crypto";
+import { clip } from "./texts";
 import type { Keyboard } from "./types";
 
 /** The waits the list prompt's button offers after the one from the settings, in minutes. */
@@ -18,6 +20,8 @@ export interface ProfilePrompt {
   name: string;
   options: ProfileSaveOptions;
   signedIn: boolean;
+  /** the signed-in Instagram username, when known */
+  account?: string;
   createdAt: number;
 }
 
@@ -31,6 +35,7 @@ export interface ListPrompt {
   wait: ListWait;
   waits: ListWait[];
   signedIn: boolean;
+  account?: string;
   createdAt: number;
 }
 
@@ -56,21 +61,31 @@ function sameWait(a: ListWait, b: ListWait): boolean {
 export class Prompts {
   private readonly open = new Map<string, Prompt>();
   private counter = 0;
+  /** Random per process, so a button on a message from before a restart can't hit a new prompt. */
+  private readonly prefix = randomInt(36 ** 4).toString(36).padStart(4, "0");
 
   constructor(private readonly o: { now(): number }) {}
 
   private nextId(): string {
     this.counter += 1;
-    return this.counter.toString(36);
+    return this.prefix + this.counter.toString(36);
   }
 
-  openProfile(name: string, defaults: ProfileSaveOptions, signedIn: boolean): ProfilePrompt {
-    const p: ProfilePrompt = { id: this.nextId(), kind: "profile", name, options: effectiveSaveOptions(defaults, signedIn), signedIn, createdAt: this.o.now() };
+  /** Drops prompts nobody pressed within the TTL. */
+  private sweep(): void {
+    const now = this.o.now();
+    for (const [id, p] of this.open) if (now - p.createdAt > PROMPT_TTL_MS) this.open.delete(id);
+  }
+
+  openProfile(name: string, defaults: ProfileSaveOptions, signedIn: boolean, account?: string): ProfilePrompt {
+    this.sweep();
+    const p: ProfilePrompt = { id: this.nextId(), kind: "profile", name, options: effectiveSaveOptions(defaults, signedIn), signedIn, account, createdAt: this.o.now() };
     this.open.set(p.id, p);
     return p;
   }
 
-  openList(listName: string, usernames: string[], skipped: string[], defaults: ProfileSaveOptions, wait: ListWait, signedIn: boolean): ListPrompt {
+  openList(listName: string, usernames: string[], skipped: string[], defaults: ProfileSaveOptions, wait: ListWait, signedIn: boolean, account?: string): ListPrompt {
+    this.sweep();
     const waits = [wait, ...WAIT_PRESETS.filter((w) => !sameWait(w, wait))];
     const p: ListPrompt = {
       id: this.nextId(),
@@ -82,6 +97,7 @@ export class Prompts {
       wait,
       waits,
       signedIn,
+      account,
       createdAt: this.o.now(),
     };
     this.open.set(p.id, p);
@@ -124,7 +140,7 @@ export class Prompts {
 }
 
 function signInLine(p: Prompt): string {
-  return p.signedIn ? "Signed in." : "Signed out: Tagged needs a sign-in.";
+  return p.signedIn ? (p.account ? `Signed in as @${p.account}.` : "Signed in.") : "Signed out: Tagged needs a sign-in.";
 }
 
 export function promptText(p: Prompt): string {
@@ -132,7 +148,7 @@ export function promptText(p: Prompt): string {
   const n = p.usernames.length;
   const lines = [`List: ${n} ${n === 1 ? "profile" : "profiles"}`];
   if (p.skipped.length > 0) {
-    const shown = p.skipped.slice(0, SKIPPED_SHOWN).map((s) => (s.length > 60 ? `${s.slice(0, 59)}…` : s));
+    const shown = p.skipped.slice(0, SKIPPED_SHOWN).map((s) => clip(s, 60));
     const more = p.skipped.length > SKIPPED_SHOWN ? `, and ${p.skipped.length - SKIPPED_SHOWN} more` : "";
     const count = p.skipped.length;
     lines.push(`${count} ${count === 1 ? "line wasn't a profile" : "lines weren't profiles"}: ${shown.join(", ")}${more}`);
