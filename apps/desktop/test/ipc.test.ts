@@ -1,9 +1,18 @@
 import { describe, expect, it, vi } from "vitest";
 import { DEFAULT_SAVE_OPTIONS } from "@turbodl/shared";
-import { mediaKindsArg, profileListArg, saveOptionsArg } from "../src/main/ipc";
+import { mediaKindsArg, profileListArg, registerIpc, saveOptionsArg } from "../src/main/ipc";
+import type { AppController } from "../src/main/controller";
 
-// the handlers aren't registered here: only the checks of what the renderer sends
-vi.mock("electron", () => ({ app: {}, BrowserWindow: {}, clipboard: {}, dialog: {}, ipcMain: {}, shell: {} }));
+// the handlers are only collected here (see the Telegram test); the rest checks what the renderer sends
+const handlers = vi.hoisted(() => new Map<string, (event: unknown, ...args: unknown[]) => unknown>());
+vi.mock("electron", () => ({
+  app: {},
+  BrowserWindow: {},
+  clipboard: {},
+  dialog: {},
+  ipcMain: { handle: (channel: string, fn: (event: unknown, ...args: unknown[]) => unknown) => handlers.set(channel, fn) },
+  shell: {},
+}));
 
 describe("the renderer's save options", () => {
   it("keeps each option that is a boolean", () => {
@@ -53,5 +62,32 @@ describe("the renderer's profile list", () => {
     expect(profileListArg({ usernames: ["sample.user"], wait: { min: 2 } })).toEqual(WAIT_PROBLEM);
     expect(profileListArg({ usernames: ["sample.user"], wait: "2-5" })).toEqual(WAIT_PROBLEM);
     expect(profileListArg({ usernames: ["sample.user"] })).toEqual(WAIT_PROBLEM);
+  });
+});
+
+describe("the renderer's Telegram calls", () => {
+  it("telegram calls check their arguments", async () => {
+    const calls: string[] = [];
+    const controller = {
+      telegramSetToken: async (t: string | null) => (calls.push(`token:${t}`), { ok: true }),
+      telegramSetChat: async (c: number | null) => (calls.push(`chat:${c}`), { ok: true }),
+      telegramSetEnabled: async (e: boolean) => (calls.push(`enabled:${e}`), { ok: true }),
+      telegramPair: async () => (calls.push("pair"), { ok: true, code: "123456", expiresAt: 1 }),
+    } as unknown as AppController;
+    registerIpc(controller);
+    const call = (name: string, ...args: unknown[]) => handlers.get(`turbodl:${name}`)!(null, ...args);
+
+    for (const bad of [42, {}, undefined, true]) expect(await call("telegramSetToken", bad)).toEqual({ ok: false, error: "The bot token must be text." });
+    for (const bad of ["42", NaN, undefined, {}]) expect(await call("telegramSetChat", bad)).toEqual({ ok: false, error: "A chat id must be a number." });
+    for (const bad of ["true", 1, null, undefined]) expect(await call("telegramSetEnabled", bad)).toEqual({ ok: false, error: "Enabled must be true or false." });
+    expect(calls).toEqual([]);
+
+    expect(await call("telegramSetToken", "123:abc")).toEqual({ ok: true });
+    expect(await call("telegramSetToken", null)).toEqual({ ok: true });
+    expect(await call("telegramSetChat", 42)).toEqual({ ok: true });
+    expect(await call("telegramSetChat", null)).toEqual({ ok: true });
+    expect(await call("telegramSetEnabled", false)).toEqual({ ok: true });
+    await call("telegramPair");
+    expect(calls).toEqual(["token:123:abc", "token:null", "chat:42", "chat:null", "enabled:false", "pair"]);
   });
 });

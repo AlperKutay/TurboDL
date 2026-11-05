@@ -145,6 +145,16 @@ export function registerIpc(c: AppController): void {
   handle("stopProfileList", () => c.stopProfileList());
   handle("continueProfileList", () => c.continueProfileList());
   handle("closeProfileList", () => c.closeProfileList());
+  handle("telegramSetToken", (token: unknown) =>
+    typeof token === "string" || token === null ? c.telegramSetToken(token) : { ok: false, error: "The bot token must be text." },
+  );
+  handle("telegramSetChat", (chatId: unknown) =>
+    (typeof chatId === "number" && Number.isFinite(chatId)) || chatId === null ? c.telegramSetChat(chatId) : { ok: false, error: "A chat id must be a number." },
+  );
+  handle("telegramSetEnabled", (enabled: unknown) =>
+    typeof enabled === "boolean" ? c.telegramSetEnabled(enabled) : { ok: false, error: "Enabled must be true or false." },
+  );
+  handle("telegramPair", () => c.telegramPair());
   handle("cancelCountdown", () => c.cancelCountdown());
   handle("installExtension", async () => {
     const result = await c.installExtension();

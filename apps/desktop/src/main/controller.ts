@@ -60,6 +60,8 @@ import {
   type Result,
   type ScreenBackupView,
   type Settings,
+  type TelegramPairResult,
+  type TelegramStatus,
   type BrowserCookie,
   SavedError,
   parseInstagramLink,
@@ -986,6 +988,26 @@ export class AppController {
     return this.lists.continue((list) => saveOptionsProblem(effectiveSaveOptions(list.options, this.instagramSession.signedIn())));
   }
 
+  telegramStatus(): TelegramStatus {
+    return this.telegram.status();
+  }
+
+  telegramSetToken(token: string | null): Promise<Result> {
+    return this.telegram.setToken(token);
+  }
+
+  telegramSetChat(chatId: number | null): Promise<Result> {
+    return this.telegram.setChat(chatId);
+  }
+
+  telegramSetEnabled(enabled: boolean): Promise<Result> {
+    return this.telegram.setEnabled(enabled);
+  }
+
+  telegramPair(): Promise<TelegramPairResult> {
+    return this.telegram.pair();
+  }
+
   async closeProfileList(): Promise<Result> {
     return this.lists.close();
   }
@@ -1354,11 +1376,11 @@ export class AppController {
       continueList: () => this.continueProfileList(),
       closeList: () => this.closeProfileList(),
       telegram: {
-        status: () => this.telegram.status(),
-        setToken: (token) => this.telegram.setToken(token),
-        setChat: (chatId) => this.telegram.setChat(chatId),
-        setEnabled: (enabled) => this.telegram.setEnabled(enabled),
-        pair: () => this.telegram.pair(),
+        status: () => this.telegramStatus(),
+        setToken: (token) => this.telegramSetToken(token),
+        setChat: (chatId) => this.telegramSetChat(chatId),
+        setEnabled: (enabled) => this.telegramSetEnabled(enabled),
+        pair: () => this.telegramPair(),
       },
     };
   }

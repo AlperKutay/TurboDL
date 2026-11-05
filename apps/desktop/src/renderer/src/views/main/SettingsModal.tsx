@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
-import type { CliStatus, InstallResult, Result, Settings } from "@turbodl/shared";
+import type { CliStatus, InstallResult, Result, Settings, TelegramStatus } from "@turbodl/shared";
 import { api } from "../../api";
 import { Modal } from "../../components/Modal";
+import { TelegramSection } from "./TelegramSection";
 
 /** Chromium browsers load the extension folder from their extensions page. */
 const EXTENSION_PAGES = [
@@ -10,7 +11,7 @@ const EXTENSION_PAGES = [
   { address: "opera://extensions", browsers: "(Opera)" },
 ];
 
-export function SettingsModal({ settings, version, onClose }: { settings: Settings; version: string; onClose(): void }) {
+export function SettingsModal({ settings, telegram, version, onClose }: { settings: Settings; telegram: TelegramStatus; version: string; onClose(): void }) {
   const [draft, setDraft] = useState(settings);
   const [extensions, setExtensions] = useState(settings.captureExtensions.join(" "));
   const [minKb, setMinKb] = useState(String(Math.round(settings.minCaptureSize / 1024)));
@@ -173,6 +174,8 @@ export function SettingsModal({ settings, version, onClose }: { settings: Settin
         Put Instagram downloads in a folder per account
       </label>
       <p className="muted field-note">Instagram › account (its highlights in Instagram › account › Highlights). Off: single links and Saved picks go to Instagram.</p>
+
+      <TelegramSection status={telegram} />
 
       <h3>Command line</h3>
       <div className="install-box">
