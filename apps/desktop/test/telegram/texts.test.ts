@@ -131,10 +131,16 @@ describe("texts", () => {
 
   it("jobSummary says when parts were left out", () => {
     const files = ["/dl/nasa/a.jpg"];
-    const warned = job({ state: "done", files, limited: true, warnings: ["Tagged posts need an Instagram sign-in.", "Second warning."] });
+    // a profile backup's warnings: its plan (news, not a warning), then what it couldn't save; the last one says it
+    const plan = "Backing up 6 posts, about 12 MB, 177 GB free on the drive.";
+    const warned = job({ state: "done", files, limited: true, warnings: [plan, "This profile has no highlights.", "Tagged posts need a sign-in to Instagram; they weren't saved."] });
     expect(jobSummary(warned, "@nasa profile backup", 0)).toBe(
-      "Done: @nasa profile backup — 1 file saved.\nSome parts were left out: Tagged posts need an Instagram sign-in.\nFolder: /dl/nasa",
+      "Done: @nasa profile backup — 1 file saved.\nSome parts were left out: Tagged posts need a sign-in to Instagram; they weren't saved.\nFolder: /dl/nasa",
     );
+    // the plan alone leaves nothing out
+    expect(jobSummary(job({ state: "done", files, warnings: [plan] }), "x", 0)).toBe("Done: x — 1 file saved.\nFolder: /dl/nasa");
+    expect(jobSummary(job({ state: "done", files, warnings: ["Backing up every post; it continues an earlier backup."] }), "x", 0)).not.toContain("left out");
+    expect(jobSummary(job({ state: "done", files, limited: true, warnings: [plan] }), "x", 0)).toBe("Done: x — 1 file saved.\nSome parts were left out.\nFolder: /dl/nasa");
     expect(jobSummary(job({ state: "done", files, limited: true }), "x", 0)).toBe("Done: x — 1 file saved.\nSome parts were left out.\nFolder: /dl/nasa");
     expect(jobSummary(job({ state: "done", files, warnings: ["Some posts are shown only to signed-in visitors."] }), "x", 0)).toContain(
       "\nSome parts were left out: Some posts are shown only to signed-in visitors.\n",

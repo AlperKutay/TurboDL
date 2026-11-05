@@ -1,5 +1,6 @@
 import { formatBytes, formatDuration, formatSpeed, profileName } from "@turbodl/shared";
 import type { ApiInfo, Job, JobReason, ProfileListView } from "@turbodl/shared";
+import { isPlanWarning } from "../jobs/instagram-job";
 import type { Keyboard } from "./types";
 
 /** Telegram's limit for one message, in characters. */
@@ -129,9 +130,13 @@ export function jobSummary(job: Job, label: string, existing: number): string {
   return cut(`Done${failed}: ${name} — ${saved(job, existing)}.${leftOut(job)}${folder}`);
 }
 
-/** A job done without some of its parts (signed out, or with warnings) says so: "Done" alone would hide it. */
+/**
+ * A job done without some of its parts (signed out, or with warnings) says so: "Done" alone would hide it. The backup's
+ * plan, told as a warning when it starts, isn't one; of the others, the last says it, as in a profile list's row.
+ */
 function leftOut(job: Job): string {
-  if (job.warnings.length > 0) return `\nSome parts were left out: ${clip(job.warnings[0], 200)}`;
+  const warning = job.warnings.filter((w) => !isPlanWarning(w)).at(-1);
+  if (warning !== undefined) return `\nSome parts were left out: ${clip(warning, 200)}`;
   return job.limited ? "\nSome parts were left out." : "";
 }
 
