@@ -850,7 +850,7 @@ describe("turbodl telegram", () => {
   it("pair prints the code and exits 0 once a chat is bound", async () => {
     const c = cli(["telegram", "pair"], {
       onSleep: async () => {
-        if (fake.telegramReads >= 1) fake.telegram = { ...fake.telegram, pairing: undefined, chatId: 77 };
+        if (fake.telegramReads >= 1) fake.telegram = { ...fake.telegram, pairing: undefined, chatId: 77, pairedAt: 1 };
       },
     });
     expect(await c.done).toBe(0);
@@ -864,12 +864,39 @@ describe("turbodl telegram", () => {
     fake.telegram = { ...fake.telegram, chatId: 77 };
     const c = cli(["telegram", "pair"], {
       onSleep: async () => {
-        if (fake.telegramReads >= 1) fake.telegram = { ...fake.telegram, pairing: undefined };
+        if (fake.telegramReads >= 1) fake.telegram = { ...fake.telegram, pairing: undefined, pairedAt: 1 };
       },
     });
     expect(await c.done).toBe(0);
     expect(c.sleeps).toEqual([2000, 2000]);
     expect(c.stderr.text).toBe("Paired with chat 77.\n");
+  });
+
+  it("pair exits 1 when the pairing is gone without a newer pairing (restart, new token, bot off, another code)", async () => {
+    // issued at 600000 - 10 min = 0: a stamp before that is an earlier pairing
+    for (const pairedAt of [undefined, -5]) {
+      fake.telegram = { ...fake.telegram, chatId: 77, pairedAt };
+      const c = cli(["telegram", "pair"], {
+        onSleep: async () => {
+          fake.telegram = { ...fake.telegram, pairing: undefined };
+        },
+      });
+      expect(await c.done).toBe(1);
+      expect(c.stderr.text).toBe("turbodl: The pairing was cancelled.\n");
+    }
+  });
+
+  it("token says so when the bot is off", async () => {
+    fake.telegram = { state: "off", tokenSet: false, chatId: null, enabled: false };
+    const c = cli(["telegram", "token"], {
+      secret: TOKEN_TEXT,
+      onSleep: async () => {
+        fake.telegram = { ...fake.telegram, state: "off" };
+      },
+    });
+    expect(await c.done).toBe(1);
+    expect(c.stdout.text).toContain("State: off\n");
+    expect(c.stderr.text).toBe("Token saved; the bot is off. Turn it on with: turbodl telegram on\n");
   });
 
   it("pair exits 1 when the code runs out", async () => {
@@ -896,7 +923,7 @@ describe("turbodl telegram", () => {
   it("pair --json prints the code and the end as JSON lines", async () => {
     const c = cli(["telegram", "pair", "--json"], {
       onSleep: async () => {
-        fake.telegram = { ...fake.telegram, pairing: undefined, chatId: 5 };
+        fake.telegram = { ...fake.telegram, pairing: undefined, chatId: 5, pairedAt: 1 };
       },
     });
     expect(await c.done).toBe(0);

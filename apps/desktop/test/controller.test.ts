@@ -2420,7 +2420,7 @@ describe("Telegram", () => {
       await until(() => c.settings.telegram.chatId === OWNER);
       expect(c.settings.telegram.enabled).toBe(true);
       await until(() => c.snapshot().telegram.state === "ok");
-      expect(c.snapshot().telegram).toEqual({ state: "ok", tokenSet: true, bot: "turbodl_test_bot", chatId: OWNER, enabled: true });
+      expect(c.snapshot().telegram).toEqual({ state: "ok", tokenSet: true, bot: "turbodl_test_bot", chatId: OWNER, enabled: true, pairedAt: expect.any(Number) });
       expect(ui.events).toContainEqual({ type: "settings", settings: c.settings });
       expect(telegramEvents().at(-1)).toEqual({ type: "telegram", status: c.snapshot().telegram });
       // turning it off in Settings stops the bot

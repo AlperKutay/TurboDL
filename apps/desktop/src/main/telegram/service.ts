@@ -1,6 +1,7 @@
 import { randomInt } from "node:crypto";
 import path from "node:path";
 import {
+  PAIRING_MS,
   chatIdProblem,
   type ProfileListView,
   type Result,
@@ -17,8 +18,6 @@ import { TelegramBot, type BotApp } from "./bot";
 import type { BotStateFile } from "./state";
 import { TokenStore, type TokenCrypt } from "./token-store";
 
-/** how long a pairing code is valid */
-export const PAIRING_MS = 10 * 60 * 1000;
 /** what @BotFather hands out: the bot's number, a colon and a secret */
 export const TOKEN_FORMAT = /^\d{3,20}:[A-Za-z0-9_-]{20,100}$/;
 
@@ -81,6 +80,8 @@ export class TelegramService {
   private recovered = false;
   private pairing: TelegramPairing | null = null;
   private pairingTimer: NodeJS.Timeout | null = null;
+  /** when the last pairing succeeded */
+  private pairedAt: number | undefined;
 
   constructor(d: TelegramServiceDeps) {
     this.d = d;
@@ -121,6 +122,7 @@ export class TelegramService {
     if (name) status.bot = name;
     const pairing = this.activePairing();
     if (pairing) status.pairing = { ...pairing };
+    if (this.pairedAt !== undefined) status.pairedAt = this.pairedAt;
     const error = this.bot ? this.botError : undefined;
     if (error) status.error = this.scrub(error);
     return status;
@@ -224,6 +226,7 @@ export class TelegramService {
 
   /** The chat that sent the code is bound and the bot stays on; the code is used up. */
   private paired(chatId: number): void {
+    this.pairedAt = this.now();
     this.endPairing();
     // the controller takes the change at once; the bot keeps running for the chat it now answers
     void this.d

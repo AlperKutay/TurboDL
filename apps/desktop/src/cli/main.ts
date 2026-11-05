@@ -1,7 +1,7 @@
 import fsp from "node:fs/promises";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { PROFILE_LIST_MAX, parseProfileList, type ApiLaunch, type Job, type JobOptions, type JobRequest, type ListRequest, type ListState, type ProfileListView, type TelegramStatus } from "@turbodl/shared";
+import { PAIRING_MS, PROFILE_LIST_MAX, parseProfileList, type ApiLaunch, type Job, type JobOptions, type JobRequest, type ListRequest, type ListState, type ProfileListView, type TelegramStatus } from "@turbodl/shared";
 import { HELP, parseArgs, type Command } from "./args";
 import { ApiClient, ApiError, ping } from "./client";
 import { connect, readApiFile, userDataDir, type Connection } from "./discover";
@@ -447,21 +447,24 @@ async function telegram(ctx: Ctx, cmd: Extract<Command, { type: "telegram" }>): 
           status = settled;
         }
         out.telegram(status);
+        if (status.state === "off") out.notice("Token saved; the bot is off. Turn it on with: turbodl telegram on");
         return status.state === "ok" ? EXIT.ok : EXIT.failed;
       }
       case "pair": {
         const pairing = await client.pairTelegram();
         out.pairing(pairing);
-        // a re-pair from the bound chat leaves the id as it was: the pairing ending is what says it worked
-        const paired = (s: TelegramStatus) => !s.pairing && s.chatId !== null;
-        const status = await pollTelegram(ctx, TELEGRAM_PAIR_POLL_MS, (s) => paired(s) || ctx.now() >= pairing.expiresAt, Infinity, interrupt.signal);
+        // the app stamps a successful pairing; a code that is gone without a stamp newer than this code was cancelled
+        // (a restart, a new token, the bot turned off, another code) or ran out. A re-pair from the bound chat leaves the id as it was.
+        const issuedAt = pairing.expiresAt - PAIRING_MS;
+        const paired = (s: TelegramStatus) => s.pairedAt !== undefined && s.pairedAt >= issuedAt && s.chatId !== null;
+        const status = await pollTelegram(ctx, TELEGRAM_PAIR_POLL_MS, (s) => paired(s) || !s.pairing || ctx.now() >= pairing.expiresAt, Infinity, interrupt.signal);
         if (!status) return EXIT.interrupted;
-        if (paired(status) && ctx.now() < pairing.expiresAt) {
+        if (paired(status)) {
           if (cmd.json) out.telegram(status);
           else out.notice(`Paired with chat ${status.chatId}.`);
           return EXIT.ok;
         }
-        out.error("The code ran out.");
+        out.error(ctx.now() >= pairing.expiresAt ? "The code ran out." : "The pairing was cancelled.");
         return EXIT.failed;
       }
     }

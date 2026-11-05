@@ -1,9 +1,18 @@
 import { SecretInterrupted } from "./main";
 
-/** What the line editor does with one typed character; `done` ends the line, `abort` is Ctrl+C. */
+/** What the line editor does with typed characters (escape sequences are dropped); `done` ends the line, `abort` is Ctrl+C. */
 export function editSecret(text: string, input: string): { text: string; done?: boolean; abort?: boolean } {
   let out = text;
-  for (const ch of input) {
+  for (let i = 0; i < input.length; i++) {
+    const ch = input[i];
+    if (ch === "\u001b") {
+      // an arrow key, Delete and the like arrive as ESC [ ... letter (or ESC and one character): not part of the secret
+      if (input[i + 1] === "[") {
+        i += 2;
+        while (i < input.length && !(input[i] >= "@" && input[i] <= "~")) i++;
+      } else i += input[i + 1] === "O" ? 2 : 1;
+      continue;
+    }
     if (ch === "\u0003") return { text: out, abort: true };
     if (ch === "\r" || ch === "\n") return { text: out, done: true };
     if (ch === "\u0004") return { text: out, done: true };

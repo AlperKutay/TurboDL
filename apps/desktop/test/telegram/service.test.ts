@@ -2,8 +2,8 @@ import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { TelegramSettings, TelegramStatus } from "@turbodl/shared";
-import { PAIRING_MS, TelegramService, type TelegramServiceDeps } from "../../src/main/telegram/service";
+import { PAIRING_MS, type TelegramSettings, type TelegramStatus } from "@turbodl/shared";
+import { TelegramService, type TelegramServiceDeps } from "../../src/main/telegram/service";
 import { READ_TIMEOUT_MS, TokenStore, type TokenCrypt } from "../../src/main/telegram/token-store";
 import { PAIRED, RESTARTED_LINK } from "../../src/main/telegram/texts";
 import type { BotStateFile } from "../../src/main/telegram/state";
@@ -207,6 +207,12 @@ describe("telegram service", () => {
     expect(settings.enabled).toBe(true);
     expect(service.status()).toMatchObject({ state: "ok", chatId: OWNER, enabled: true, bot: "turbodl_test_bot" });
     expect(service.status().pairing).toBeUndefined();
+    expect(service.status().pairedAt).toBeGreaterThanOrEqual(before);
+    expect(service.status().pairedAt).toBeLessThanOrEqual(Date.now());
+    // a new code does not take the last pairing back
+    const again = await service.pair();
+    expect(again.ok).toBe(true);
+    expect(service.status().pairedAt).toBeGreaterThanOrEqual(before);
     await fake.waitFor(() => fake.sent(OWNER).length === 1);
     expect(fake.sent(OWNER)[0].text.startsWith(PAIRED)).toBe(true);
     // the bot goes on answering: the owner's /help is answered

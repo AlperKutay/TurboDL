@@ -9,6 +9,9 @@ export const DEFAULT_TELEGRAM: TelegramSettings = { enabled: false, chatId: null
 
 export type TelegramState = "off" | "noToken" | "connecting" | "ok" | "tokenRejected" | "tokenUnreadable" | "conflict" | "offline";
 
+/** how long a pairing code is valid */
+export const PAIRING_MS = 10 * 60 * 1000;
+
 export interface TelegramPairing {
   code: string;
   expiresAt: number;
@@ -21,6 +24,8 @@ export interface TelegramStatus {
   chatId: number | null;
   enabled: boolean;
   pairing?: TelegramPairing;
+  /** when a chat last paired with the bot (epoch ms, the app's clock); kept until the app quits */
+  pairedAt?: number;
   error?: string;
 }
 

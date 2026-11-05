@@ -33,6 +33,10 @@ describe("editSecret", () => {
     expect(editSecret("abc", "\u007f")).toEqual({ text: "ab" });
     expect(editSecret("", "\u007f")).toEqual({ text: "" });
     expect(editSecret("ab", "c\r")).toEqual({ text: "abc", done: true });
+    // arrow keys and Delete are not characters of the secret
+    expect(editSecret("ab", "\u001b[A")).toEqual({ text: "ab" });
+    expect(editSecret("ab", "c\u001b[3~d\u001b[1;5Ce\r")).toEqual({ text: "abcde", done: true });
+    expect(editSecret("ab", "\u001bOA")).toEqual({ text: "ab" });
     expect(editSecret("ab", "\u0003")).toEqual({ text: "ab", abort: true });
   });
 });
