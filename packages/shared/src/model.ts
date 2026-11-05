@@ -1,5 +1,6 @@
 import type { Highlight, InstagramItem, InstagramLink, InstagramProfile, ListWait, ParsedProfileList, ProfileListView, ProfileSaveOptions, SavedCollection, SavedPage, SavedSource } from "./instagram";
 import type { BrowserCookie, CaptureSource, MediaItem } from "./protocol";
+import type { TelegramPairResult, TelegramSettings, TelegramStatus } from "./telegram";
 
 export type Category = "video" | "music" | "programs" | "archives" | "documents" | "images" | "other";
 export type DownloadStatus = "queued" | "scheduled" | "downloading" | "paused" | "completed" | "error";
@@ -110,6 +111,7 @@ export interface Settings {
   /** the random wait between a profile list's profiles, minutes */
   listWait: ListWait;
   scheduler: SchedulerSettings;
+  telegram: TelegramSettings;
 }
 
 export interface NewDownload {
@@ -285,6 +287,8 @@ export interface AppSnapshot {
   screenBackup: ScreenBackupView | null;
   /** the profile list running or last run */
   profileList: ProfileListView | null;
+  /** the Telegram bot as Settings shows it (never its token) */
+  telegram: TelegramStatus;
 }
 
 /**
@@ -311,6 +315,7 @@ export type AppEvent =
   | { type: "instagramBackup"; backup: BackupView | null }
   | { type: "screenBackup"; screenBackup: ScreenBackupView | null }
   | { type: "profileList"; list: ProfileListView | null }
+  | { type: "telegram"; status: TelegramStatus }
   /** a saved link came in: show the Saved section */
   | { type: "openSaved" }
   /** a profile link came in: show it in Profiles */
@@ -402,6 +407,13 @@ export interface TurboApi {
   continueProfileList(): Promise<Result>;
   /** forgets a list that isn't going on by itself */
   closeProfileList(): Promise<Result>;
+  /** saves the bot token (null removes it); the token never comes back */
+  telegramSetToken(token: string | null): Promise<Result>;
+  /** binds the bot to a private chat (null unpairs it) */
+  telegramSetChat(chatId: number | null): Promise<Result>;
+  telegramSetEnabled(enabled: boolean): Promise<Result>;
+  /** starts a pairing: a code to send to the bot as /start <code> */
+  telegramPair(): Promise<TelegramPairResult>;
   cancelCountdown(): Promise<void>;
   installExtension(): Promise<InstallResult>;
   cliStatus(): Promise<CliStatus>;

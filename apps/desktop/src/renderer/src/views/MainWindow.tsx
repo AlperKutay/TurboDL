@@ -182,7 +182,7 @@ export function MainWindow() {
           }}
         />
       )}
-      {modal?.type === "settings" && <SettingsModal settings={state.settings} version={state.version} onClose={() => setModal(null)} />}
+      {modal?.type === "settings" && <SettingsModal settings={state.settings} telegram={state.telegram} version={state.version} onClose={() => setModal(null)} />}
       {modal?.type === "scheduler" && <SchedulerModal settings={state.settings} onClose={() => setModal(null)} />}
       {state.countdown && <CountdownOverlay state={state.countdown} />}
     </div>

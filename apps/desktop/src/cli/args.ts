@@ -1,5 +1,5 @@
 import path from "node:path";
-import { DEFAULT_LIST_WAIT, TAGGED_AVAILABLE, parseIsoTime, waitProblem, type JobOptions, type ListWait, type ProfileSaveOptions } from "@turbodl/shared";
+import { DEFAULT_LIST_WAIT, TAGGED_AVAILABLE, chatIdProblem, parseIsoTime, waitProblem, type JobOptions, type ListWait, type ProfileSaveOptions } from "@turbodl/shared";
 
 /** One parsed turbodl command line. */
 export type Command =
@@ -11,6 +11,8 @@ export type Command =
   | { type: "status"; id: string; json: boolean }
   | { type: "wait" | "cancel"; ids: string[]; json: boolean }
   | { type: "instagram"; action: "login" | "logout" | "status"; json: boolean }
+  | { type: "telegram"; action: "status" | "token" | "unpair" | "pair" | "on" | "off"; json: boolean }
+  | { type: "telegram"; action: "chat"; chatId: number; json: boolean }
   | { type: "help" }
   | { type: "version" };
 
@@ -31,6 +33,12 @@ Commands:
   instagram login        Sign in to Instagram
   instagram logout       Sign out of Instagram
   instagram status       Show the Instagram sign-in state
+  telegram status        Show the Telegram bot's state
+  telegram token         Set the bot token (typed, or piped on stdin)
+  telegram chat <id>     Bind the bot to this chat id
+  telegram pair          Show a code to send the bot, and wait until it's paired
+  telegram unpair        Unbind the chat
+  telegram on|off        Turn the bot on or off
   help                   Show this text
 
 Options (get and add):
@@ -70,7 +78,7 @@ export const HELP = helpText();
 
 const VALUE_OPTIONS = new Set(["-d", "--dir", "--name", "--max-height", "--collection", "--since", "--limit", "--from-file", "--wait"]);
 const FLAG_OPTIONS = new Set(["--audio", "--highlights", "--highlights-only", "--no-posts", "--tagged", "--photos-only", "--videos-only", "--all-collections", "--json"]);
-const COMMANDS = new Set(["get", "add", "list", "status", "wait", "cancel", "instagram", "posts"]);
+const COMMANDS = new Set(["get", "add", "list", "status", "wait", "cancel", "instagram", "posts", "telegram"]);
 /** what a list of profiles has no use for */
 const NOT_FOR_LISTS = ["--dir", "--name", "--audio", "--max-height", "--collection", "--all-collections"];
 
@@ -194,6 +202,16 @@ export function parseArgs(argv: string[], cwd: string, o: { tagged?: boolean } =
       return rest[0] === "login" || rest[0] === "logout" || rest[0] === "status"
         ? { type: "instagram", action: rest[0], json }
         : { error: "instagram needs login, logout or status" };
+    case "telegram": {
+      const [action, ...more] = rest;
+      if (action === "chat") {
+        const id = more.length === 1 && /^[1-9]\d{0,15}$/.test(more[0]) ? Number(more[0]) : Number.NaN;
+        return chatIdProblem(id) === null ? { type: "telegram", action, chatId: id, json } : { error: "telegram chat needs a chat id (a whole number)" };
+      }
+      return more.length === 0 && (action === "status" || action === "token" || action === "pair" || action === "unpair" || action === "on" || action === "off")
+        ? { type: "telegram", action, json }
+        : { error: "telegram needs status, token, chat, unpair, pair, on or off" };
+    }
   }
 
   const fromFile = values.get("--from-file")?.at(-1);

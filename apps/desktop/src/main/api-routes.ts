@@ -14,8 +14,11 @@ import {
   type ProfileListView,
   type ProfileSaveOptions,
   type Result,
+  type TelegramPairResult,
+  type TelegramStatus,
   DEFAULT_LIST_WAIT,
   waitProblem,
+  chatIdProblem,
 } from "@turbodl/shared";
 import { UNFINISHED, listNames } from "./instagram/profile-lists";
 
@@ -37,6 +40,14 @@ export interface ApiHandlers {
   stopList(): Promise<void>;
   continueList(): Promise<Result>;
   closeList(): Promise<Result>;
+  /** the Telegram bot: its status (never its token) and its settings */
+  telegram: {
+    status(): TelegramStatus;
+    setToken(token: string | null): Promise<Result>;
+    setChat(chatId: number | null): Promise<Result>;
+    setEnabled(enabled: boolean): Promise<Result>;
+    pair(): Promise<TelegramPairResult>;
+  };
 }
 
 /** A list request as the app starts it: names as `listNames` gives them, every option and the wait filled in. */
@@ -81,9 +92,9 @@ export function readBody(req: http.IncomingMessage): Promise<string | null> {
   });
 }
 
-/** The API's routes: /v1/info, /v1/jobs…, /v1/lists…, /v1/instagram/… */
+/** The API's routes: /v1/info, /v1/jobs…, /v1/lists…, /v1/instagram/…, /v1/telegram… */
 export function isApiPath(p: string): boolean {
-  return p === "/v1/info" || p === "/v1/jobs" || p.startsWith("/v1/jobs/") || p === "/v1/lists" || p.startsWith("/v1/lists/") || p.startsWith("/v1/instagram/");
+  return p === "/v1/info" || p === "/v1/jobs" || p.startsWith("/v1/jobs/") || p === "/v1/lists" || p.startsWith("/v1/lists/") || p.startsWith("/v1/instagram/") || p === "/v1/telegram" || p.startsWith("/v1/telegram/");
 }
 
 /** The methods the API answers on a path: only the lists routes take DELETE. */
@@ -280,6 +291,50 @@ async function handleLists(req: http.IncomingMessage, res: http.ServerResponse, 
   sendJson(res, 404, { error: "not found" });
 }
 
+/** The JSON object a POST carries, or the answer that refuses it. */
+async function readJsonBody(req: http.IncomingMessage, res: http.ServerResponse): Promise<unknown | undefined> {
+  if (!String(req.headers["content-type"] ?? "").includes("application/json")) return void sendJson(res, 415, { error: "content-type" });
+  const body = await readBody(req);
+  if (body === null) return void sendJson(res, 413, { error: "too large" });
+  try {
+    return JSON.parse(body);
+  } catch {
+    return void sendJson(res, 400, { error: "json" });
+  }
+}
+
+/** The Telegram routes: the status, the token, the chat, on and off, and a pairing code. Nothing here ever answers with the token. */
+async function handleTelegram(req: http.IncomingMessage, res: http.ServerResponse, urlPath: string, api: ApiHandlers): Promise<void> {
+  const t = api.telegram;
+  if (req.method === "GET" && urlPath === "/v1/telegram") return sendJson(res, 200, { telegram: t.status() });
+  if (req.method !== "POST") return sendJson(res, 404, { error: "not found" });
+  if (urlPath === "/v1/telegram/pair") {
+    const paired = await t.pair();
+    if (!paired.ok) return sendJson(res, 400, { error: paired.error });
+    return sendJson(res, 200, { code: paired.code, bot: paired.bot, expiresAt: paired.expiresAt });
+  }
+  if (urlPath !== "/v1/telegram/token" && urlPath !== "/v1/telegram/chat" && urlPath !== "/v1/telegram/enabled") return sendJson(res, 404, { error: "not found" });
+  const json = await readJsonBody(req, res);
+  if (json === undefined) return;
+  if (!isObj(json)) return sendJson(res, 400, { error: "body" });
+  let result: Result;
+  if (urlPath === "/v1/telegram/token") {
+    if (json.token !== null && typeof json.token !== "string") return sendJson(res, 400, { error: "token" });
+    result = await t.setToken(json.token);
+  } else if (urlPath === "/v1/telegram/chat") {
+    if (json.chatId !== null) {
+      const problem = chatIdProblem(json.chatId);
+      if (problem) return sendJson(res, 400, { error: problem });
+    }
+    result = await t.setChat(json.chatId as number | null);
+  } else {
+    if (typeof json.enabled !== "boolean") return sendJson(res, 400, { error: "enabled" });
+    result = await t.setEnabled(json.enabled);
+  }
+  if (!result.ok) return sendJson(res, 400, { error: result.error });
+  sendJson(res, 200, { telegram: t.status() });
+}
+
 /** Answers an API request whose token and Origin were already checked. */
 export async function handleApi(req: http.IncomingMessage, res: http.ServerResponse, urlPath: string, api: ApiHandlers): Promise<void> {
   const get = req.method === "GET";
@@ -321,6 +376,7 @@ export async function handleApi(req: http.IncomingMessage, res: http.ServerRespo
     }
   }
   if (urlPath.startsWith("/v1/lists")) return handleLists(req, res, urlPath, api);
+  if (urlPath === "/v1/telegram" || urlPath.startsWith("/v1/telegram/")) return handleTelegram(req, res, urlPath, api);
   if (post && urlPath === "/v1/instagram/login") return sendJson(res, 200, await api.instagramLogin());
   if (post && urlPath === "/v1/instagram/logout") {
     await api.instagramLogout();

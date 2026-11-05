@@ -5,7 +5,7 @@ import { Writable } from "node:stream";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { ApiLaunch, InstagramPostInfo, JobEvent } from "@turbodl/shared";
 import { HELP } from "../../src/cli/args";
-import { run, type CliIo } from "../../src/cli/main";
+import { SecretInterrupted, run, type CliIo } from "../../src/cli/main";
 import { UNFINISHED } from "../../src/main/instagram/profile-lists";
 import { makeJob, startFakeApi, type FakeApi } from "./fake-api";
 
@@ -35,6 +35,8 @@ interface CliOptions {
   onSleep?: () => Promise<void>;
   /** the files the command can read, by absolute path */
   files?: Record<string, string>;
+  /** what `readSecret` gives, or "interrupt" for Ctrl+C; without it the command has no `readSecret` */
+  secret?: string;
   /** the command's own timers instead of the clock that only moves when it waits */
   realClock?: boolean;
 }
@@ -45,6 +47,7 @@ function cli(argv: string[], o: CliOptions = {}) {
   const stderr = new Sink();
   const spawned: ApiLaunch[] = [];
   const sleeps: number[] = [];
+  const prompts: string[] = [];
   let handler: (() => void) | undefined;
   let t = 0;
   const io: CliIo = {
@@ -77,6 +80,13 @@ function cli(argv: string[], o: CliOptions = {}) {
       return text;
     },
   };
+  if (o.secret !== undefined) {
+    io.readSecret = async (prompt) => {
+      prompts.push(prompt);
+      if (o.secret === "interrupt") throw new SecretInterrupted();
+      return o.secret!;
+    };
+  }
   if (o.realClock) {
     delete io.sleep;
     delete io.now;
@@ -86,6 +96,7 @@ function cli(argv: string[], o: CliOptions = {}) {
     stderr,
     spawned,
     sleeps,
+    prompts,
     interrupt: () => {
       if (!handler) throw new Error("no Ctrl+C handler");
       handler();
@@ -749,5 +760,275 @@ describe("turbodl get --from-file", () => {
     });
     expect(await c.done).toBe(0);
     expect(c.stdout.text).toBe("nasa: done, 1 new\n");
+  });
+});
+
+describe("turbodl telegram", () => {
+  const TOKEN_TEXT = "987654321:SECRET-token-value";
+
+  it("status prints the bot, its state, the chat and whether it is on", async () => {
+    fake.telegram = { ...fake.telegram, chatId: 42 };
+    const bound = cli(["telegram", "status"]);
+    expect(await bound.done).toBe(0);
+    expect(bound.stdout.text).toBe("Bot: @turbo_bot\nState: connected\nChat: 42\nOn: yes\n");
+
+    fake.telegram = { state: "noToken", tokenSet: false, chatId: null, enabled: false };
+    const none = cli(["telegram", "status"]);
+    expect(await none.done).toBe(0);
+    expect(none.stdout.text).toBe("State: no token\nChat: not bound\nOn: no\n");
+  });
+
+  it("status --json prints the status object", async () => {
+    fake.telegram = { ...fake.telegram, chatId: 42 };
+    const c = cli(["telegram", "status", "--json"]);
+    expect(await c.done).toBe(0);
+    expect(JSON.parse(c.stdout.text)).toEqual({ state: "ok", tokenSet: true, bot: "turbo_bot", chatId: 42, enabled: true });
+  });
+
+  it("token reads the secret, waits while it connects and prints the status", async () => {
+    fake.telegram = { state: "noToken", tokenSet: false, chatId: null, enabled: true };
+    const c = cli(["telegram", "token"], {
+      secret: TOKEN_TEXT,
+      onSleep: async () => {
+        // the call that set the token read the status once; the first poll is the second read
+        if (fake.telegramReads >= 2) fake.telegram = { ...fake.telegram, state: "ok", bot: "turbo_bot" };
+      },
+    });
+    expect(await c.done).toBe(0);
+    expect(fake.telegramCalls).toEqual([["token", TOKEN_TEXT]]);
+    expect(c.sleeps).toEqual([500, 500]);
+    expect(c.prompts).toHaveLength(1);
+    expect(c.stdout.text).toBe("Bot: @turbo_bot\nState: connected\nChat: not bound\nOn: yes\n");
+    expect(c.stdout.text + c.stderr.text + c.prompts.join("")).not.toContain("SECRET");
+  });
+
+  it("token stops waiting after 15 s and exits 1 when the state is not ok", async () => {
+    fake.telegram = { state: "noToken", tokenSet: false, chatId: null, enabled: true };
+    const c = cli(["telegram", "token"], { secret: TOKEN_TEXT });
+    expect(await c.done).toBe(1);
+    expect(c.sleeps.reduce((a, b) => a + b, 0)).toBe(15_000);
+    expect(c.stdout.text).toContain("State: connecting\n");
+
+    fake.telegram = { state: "noToken", tokenSet: false, chatId: null, enabled: true };
+    const rejected = cli(["telegram", "token"], {
+      secret: TOKEN_TEXT,
+      onSleep: async () => {
+        fake.telegram = { ...fake.telegram, state: "tokenRejected", error: "Telegram refused the token." };
+      },
+    });
+    expect(await rejected.done).toBe(1);
+    expect(rejected.stdout.text).toContain("State: token rejected\n");
+    expect(rejected.stdout.text + rejected.stderr.text).not.toContain("SECRET");
+  });
+
+  it("an empty token exits 2 and sets nothing", async () => {
+    for (const secret of ["", "  "]) {
+      const c = cli(["telegram", "token"], { secret });
+      expect(await c.done).toBe(2);
+      expect(c.stderr.text).toBe("turbodl: No token given.\n");
+    }
+    expect(fake.telegramCalls).toEqual([]);
+  });
+
+  it("token without a way to read it, and Ctrl+C while typing it", async () => {
+    const none = cli(["telegram", "token"]);
+    expect(await none.done).toBe(2);
+    expect(fake.telegramCalls).toEqual([]);
+    const typed = cli(["telegram", "token"], { secret: "interrupt" });
+    expect(await typed.done).toBe(130);
+    expect(fake.telegramCalls).toEqual([]);
+  });
+
+  it("a refused token exits 1 with the app's message and never shows the token", async () => {
+    fake.telegramRefusal = "That doesn't look like a bot token.";
+    const c = cli(["telegram", "token"], { secret: TOKEN_TEXT });
+    expect(await c.done).toBe(1);
+    expect(c.stderr.text).toBe("turbodl: That doesn't look like a bot token.\n");
+    expect(c.stdout.text + c.stderr.text).not.toContain("SECRET");
+  });
+
+  it("pair prints the code and exits 0 once a chat is bound", async () => {
+    const c = cli(["telegram", "pair"], {
+      onSleep: async () => {
+        if (fake.telegramReads >= 1) fake.telegram = { ...fake.telegram, pairing: undefined, chatId: 77, pairedAt: 1 };
+      },
+    });
+    expect(await c.done).toBe(0);
+    expect(fake.telegramCalls).toEqual([["pair"]]);
+    expect(c.stdout.text).toBe("Send this to @turbo_bot in Telegram: /start 123456\nhttps://t.me/turbo_bot?start=123456\n");
+    expect(c.stderr.text).toBe("Paired with chat 77.\n");
+    expect(c.sleeps).toEqual([2000, 2000]);
+  });
+
+  it("pair from the chat that is bound already waits for the pairing to end, not for a new id", async () => {
+    fake.telegram = { ...fake.telegram, chatId: 77 };
+    const c = cli(["telegram", "pair"], {
+      onSleep: async () => {
+        if (fake.telegramReads >= 1) fake.telegram = { ...fake.telegram, pairing: undefined, pairedAt: 1 };
+      },
+    });
+    expect(await c.done).toBe(0);
+    expect(c.sleeps).toEqual([2000, 2000]);
+    expect(c.stderr.text).toBe("Paired with chat 77.\n");
+  });
+
+  it("pair exits 1 when the pairing is gone without a newer pairing (restart, new token, bot off, another code)", async () => {
+    // issued at 600000 - 10 min = 0: a stamp before that is an earlier pairing
+    for (const pairedAt of [undefined, -5]) {
+      fake.telegram = { ...fake.telegram, chatId: 77, pairedAt };
+      const c = cli(["telegram", "pair"], {
+        onSleep: async () => {
+          fake.telegram = { ...fake.telegram, pairing: undefined };
+        },
+      });
+      expect(await c.done).toBe(1);
+      expect(c.stderr.text).toBe("turbodl: The pairing was cancelled.\n");
+    }
+  });
+
+  it("token on a fresh profile says to pair next", async () => {
+    fake.telegram = { state: "off", tokenSet: false, chatId: null, enabled: false };
+    const c = cli(["telegram", "token"], {
+      secret: TOKEN_TEXT,
+      onSleep: async () => {
+        fake.telegram = { ...fake.telegram, state: "off" };
+      },
+    });
+    expect(await c.done).toBe(1);
+    expect(c.stdout.text).toContain("State: off\n");
+    expect(c.stderr.text).toBe("Token saved. Pair your chat with: turbodl telegram pair\n");
+  });
+
+  it("token with a chat bound but the bot off says to turn it on", async () => {
+    fake.telegram = { state: "off", tokenSet: false, chatId: 42, enabled: false };
+    const c = cli(["telegram", "token"], {
+      secret: TOKEN_TEXT,
+      onSleep: async () => {
+        fake.telegram = { ...fake.telegram, state: "off" };
+      },
+    });
+    expect(await c.done).toBe(1);
+    expect(c.stdout.text).toContain("State: off\nChat: 42\n");
+    expect(c.stderr.text).toBe("Token saved; the bot is off. Turn it on with: turbodl telegram on\n");
+  });
+
+  it("pair prints the bot's name and link once, as soon as the bot that started for it knows it", async () => {
+    // the bot was off: it starts for the pairing and learns its name from Telegram a little later
+    fake.telegram = { state: "off", tokenSet: true, chatId: null, enabled: false };
+    const c = cli(["telegram", "pair"], {
+      onSleep: async () => {
+        if (fake.telegramReads === 1) fake.telegram = { ...fake.telegram, state: "connecting" };
+        if (fake.telegramReads === 2) fake.telegram = { ...fake.telegram, state: "ok", bot: "turbo_bot" };
+        if (fake.telegramReads === 4) fake.telegram = { ...fake.telegram, pairing: undefined, chatId: 77, enabled: true, pairedAt: 1 };
+      },
+    });
+    expect(await c.done).toBe(0);
+    expect(c.stdout.text).toBe(
+      "Send this to your bot in Telegram: /start 123456\nSend this to @turbo_bot in Telegram: /start 123456\nhttps://t.me/turbo_bot?start=123456\n",
+    );
+    expect(c.stderr.text).toBe("Paired with chat 77.\n");
+    expect(c.sleeps).toEqual([2000, 2000, 2000, 2000, 2000]);
+  });
+
+  it("pair --json adds a pairing line with the bot once its name is known", async () => {
+    fake.telegram = { state: "off", tokenSet: true, chatId: null, enabled: false };
+    const c = cli(["telegram", "pair", "--json"], {
+      onSleep: async () => {
+        if (fake.telegramReads === 1) fake.telegram = { ...fake.telegram, state: "ok", bot: "turbo_bot" };
+        if (fake.telegramReads === 3) fake.telegram = { ...fake.telegram, pairing: undefined, chatId: 5, pairedAt: 1 };
+      },
+    });
+    expect(await c.done).toBe(0);
+    const lines = c.stdout.text.trim().split("\n").map((l) => JSON.parse(l));
+    expect(lines).toHaveLength(3);
+    expect(lines[0]).toEqual({ type: "pairing", code: "123456", expiresAt: 600_000 });
+    expect(lines[1]).toEqual({ type: "pairing", bot: "turbo_bot", code: "123456", expiresAt: 600_000 });
+    expect(lines[2]).toMatchObject({ chatId: 5 });
+  });
+
+  it.each(["tokenRejected", "tokenUnreadable"] as const)("pair ends with exit 1 and the status when the token is %s", async (state) => {
+    fake.telegram = { state: "off", tokenSet: true, chatId: null, enabled: false };
+    const c = cli(["telegram", "pair"], {
+      onSleep: async () => {
+        // the pairing is still open: only the token's state ends the wait
+        if (fake.telegramReads === 1) fake.telegram = { ...fake.telegram, state, error: "Telegram refused the token." };
+      },
+    });
+    expect(await c.done).toBe(1);
+    expect(fake.telegram.pairing).toBeDefined();
+    expect(c.stdout.text).toBe(
+      `Send this to your bot in Telegram: /start 123456\nState: ${state === "tokenRejected" ? "token rejected" : "token unreadable"}\nError: Telegram refused the token.\nChat: not bound\nOn: no\n`,
+    );
+    expect(c.stderr.text).toBe("");
+    expect(c.sleeps).toEqual([2000, 2000]);
+  });
+
+  it("pair keeps waiting through a conflict or a lost connection", async () => {
+    const c = cli(["telegram", "pair"], {
+      onSleep: async () => {
+        if (fake.telegramReads === 1) fake.telegram = { ...fake.telegram, state: "conflict", error: "Conflict" };
+        if (fake.telegramReads === 2) fake.telegram = { ...fake.telegram, state: "offline", error: "fetch failed" };
+        if (fake.telegramReads === 3) fake.telegram = { ...fake.telegram, state: "ok", error: undefined, pairing: undefined, chatId: 77, pairedAt: 1 };
+      },
+    });
+    expect(await c.done).toBe(0);
+    expect(c.stderr.text).toBe("Paired with chat 77.\n");
+    expect(c.sleeps).toEqual([2000, 2000, 2000, 2000]);
+  });
+
+  it("pair exits 1 when the code runs out", async () => {
+    fake.pairExpiresAt = 5000;
+    const c = cli(["telegram", "pair"]);
+    expect(await c.done).toBe(1);
+    expect(c.stderr.text).toBe("turbodl: The code ran out.\n");
+    expect(c.sleeps).toEqual([2000, 2000, 2000]);
+  });
+
+  it("pair exits 130 on Ctrl+C", async () => {
+    let c!: ReturnType<typeof cli>;
+    c = cli(["telegram", "pair"], { onSleep: async () => c.interrupt() });
+    expect(await c.done).toBe(130);
+  });
+
+  it("pair without a token exits 1 with the app's message", async () => {
+    fake.telegramRefusal = "Set a bot token first.";
+    const c = cli(["telegram", "pair"]);
+    expect(await c.done).toBe(1);
+    expect(c.stderr.text).toBe("turbodl: Set a bot token first.\n");
+  });
+
+  it("pair --json prints the code and the end as JSON lines", async () => {
+    const c = cli(["telegram", "pair", "--json"], {
+      onSleep: async () => {
+        fake.telegram = { ...fake.telegram, pairing: undefined, chatId: 5, pairedAt: 1 };
+      },
+    });
+    expect(await c.done).toBe(0);
+    const lines = c.stdout.text.trim().split("\n").map((l) => JSON.parse(l));
+    expect(lines[0]).toEqual({ type: "pairing", bot: "turbo_bot", code: "123456", expiresAt: 600_000 });
+    expect(lines[1]).toMatchObject({ chatId: 5 });
+  });
+
+  it("chat, unpair, on and off change the settings and print the status", async () => {
+    const chat = cli(["telegram", "chat", "42"]);
+    expect(await chat.done).toBe(0);
+    expect(chat.stdout.text).toContain("Chat: 42\n");
+    const off = cli(["telegram", "off"]);
+    expect(await off.done).toBe(0);
+    expect(off.stdout.text).toContain("On: no\n");
+    const on = cli(["telegram", "on"]);
+    expect(await on.done).toBe(0);
+    expect(on.stdout.text).toContain("On: yes\n");
+    const unpair = cli(["telegram", "unpair"]);
+    expect(await unpair.done).toBe(0);
+    expect(unpair.stdout.text).toContain("Chat: not bound\n");
+    expect(fake.telegramCalls).toEqual([["chat", 42], ["enabled", false], ["enabled", true], ["chat", null]]);
+  });
+
+  it("a refused change exits 1 with the app's message", async () => {
+    fake.telegramRefusal = "No.";
+    const c = cli(["telegram", "on"]);
+    expect(await c.done).toBe(1);
+    expect(c.stderr.text).toBe("turbodl: No.\n");
   });
 });

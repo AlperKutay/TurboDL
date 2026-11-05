@@ -59,3 +59,8 @@ export function profileName(text: string): string | null {
   const name = typed.replace(/^@/, "");
   return /^[a-z0-9._]{1,30}$/i.test(name) ? name.toLowerCase() : null;
 }
+
+/** The link to a profile's page. */
+export function profileUrl(name: string): string {
+  return `https://www.instagram.com/${encodeURIComponent(name)}/`;
+}

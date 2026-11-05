@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import type { ApiFile, ApiInfo, InstagramLoginResult, Job, JobEvent, JobEventBody, JobRequest, ProfileListView } from "@turbodl/shared";
+import type { ApiFile, ApiInfo, InstagramLoginResult, Job, JobEvent, JobEventBody, JobRequest, ProfileListView, TelegramStatus } from "@turbodl/shared";
 import { createBridgeServer, type BridgeServer } from "../../src/main/bridge-server";
 import type { ApiHandlers, ParsedListRequest } from "../../src/main/api-routes";
 
@@ -34,6 +34,16 @@ export interface FakeApi {
   listReads: number;
   /** changes the list as its runner would: `patch` over it, rows by index */
   updateList(patch: Partial<ProfileListView>, rows?: Record<number, Partial<ProfileListView["rows"][number]>>): void;
+  /** the Telegram status the API answers */
+  telegram: TelegramStatus;
+  /** the Telegram calls made, in order: ["token", value], ["chat", id], ["enabled", flag], ["pair"] */
+  telegramCalls: unknown[][];
+  /** how many times the status was read */
+  telegramReads: number;
+  /** when the code the fake hands out stops being valid */
+  pairExpiresAt: number;
+  /** set: every Telegram change is refused with it */
+  telegramRefusal?: string;
   /** resolves once `cond` holds; checked now and after every API call */
   until(cond: () => boolean): Promise<void>;
   /** resolves once the job's events were subscribed to `count` times in all */
@@ -127,6 +137,42 @@ export async function startFakeApi(): Promise<FakeApi> {
     },
     continueList: async () => ({ ok: false, error: "not in the fake" }),
     closeList: async () => ({ ok: false, error: "not in the fake" }),
+    telegram: {
+      status: () => {
+        fake.telegramReads++;
+        notify();
+        return fake.telegram;
+      },
+      setToken: async (token) => {
+        fake.telegramCalls.push(["token", token]);
+        if (fake.telegramRefusal) return { ok: false, error: fake.telegramRefusal };
+        fake.telegram = { ...fake.telegram, tokenSet: token !== null, state: token === null ? "noToken" : "connecting" };
+        notify();
+        return { ok: true };
+      },
+      setChat: async (chatId) => {
+        fake.telegramCalls.push(["chat", chatId]);
+        if (fake.telegramRefusal) return { ok: false, error: fake.telegramRefusal };
+        fake.telegram = { ...fake.telegram, chatId };
+        notify();
+        return { ok: true };
+      },
+      setEnabled: async (enabled) => {
+        fake.telegramCalls.push(["enabled", enabled]);
+        if (fake.telegramRefusal) return { ok: false, error: fake.telegramRefusal };
+        fake.telegram = { ...fake.telegram, enabled };
+        notify();
+        return { ok: true };
+      },
+      pair: async () => {
+        fake.telegramCalls.push(["pair"]);
+        if (fake.telegramRefusal) return { ok: false, error: fake.telegramRefusal };
+        const pairing = { code: "123456", expiresAt: fake.pairExpiresAt };
+        fake.telegram = { ...fake.telegram, pairing };
+        notify();
+        return { ok: true, bot: fake.telegram.bot, ...pairing };
+      },
+    },
   };
 
   const serve = async (): Promise<number> => {
@@ -161,6 +207,10 @@ export async function startFakeApi(): Promise<FakeApi> {
     listRequests: [],
     listStops: 0,
     listReads: 0,
+    telegram: { state: "ok", tokenSet: true, bot: "turbo_bot", chatId: null, enabled: true },
+    telegramCalls: [],
+    telegramReads: 0,
+    pairExpiresAt: 600_000,
     updateList(patch, rows = {}) {
       const list = fake.list;
       if (!list) throw new Error("no list");

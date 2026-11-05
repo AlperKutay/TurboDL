@@ -1,5 +1,5 @@
 import http from "node:http";
-import type { ApiInfo, InstagramLoginResult, Job, JobEvent, JobRequest, ListRequest, ProfileListView } from "@turbodl/shared";
+import type { ApiInfo, InstagramLoginResult, Job, JobEvent, JobRequest, ListRequest, ProfileListView, TelegramPairing, TelegramStatus } from "@turbodl/shared";
 import type { Connection } from "./discover";
 
 /** A failed API call; status 0 means the connection itself failed. */
@@ -152,6 +152,31 @@ export class ApiClient {
   /** Stops the profile list; resolves with it once it stopped (null when there is none). */
   async stopList(): Promise<ProfileListView | null> {
     return ((await this.ok("POST", "/v1/lists/current/stop", {})) as { list: ProfileListView | null }).list;
+  }
+
+  /** The Telegram bot's status (never its token). */
+  async telegram(): Promise<TelegramStatus> {
+    return ((await this.ok("GET", "/v1/telegram")) as { telegram: TelegramStatus }).telegram;
+  }
+
+  /** Sets the bot token (null forgets it); a refused one rejects with the app's message. Resolves with the status. */
+  async setTelegramToken(token: string | null): Promise<TelegramStatus> {
+    return ((await this.ok("POST", "/v1/telegram/token", { token })) as { telegram: TelegramStatus }).telegram;
+  }
+
+  /** Binds the bot to a chat (null unbinds it). Resolves with the status. */
+  async setTelegramChat(chatId: number | null): Promise<TelegramStatus> {
+    return ((await this.ok("POST", "/v1/telegram/chat", { chatId })) as { telegram: TelegramStatus }).telegram;
+  }
+
+  /** Turns the bot on or off. Resolves with the status. */
+  async setTelegramEnabled(enabled: boolean): Promise<TelegramStatus> {
+    return ((await this.ok("POST", "/v1/telegram/enabled", { enabled })) as { telegram: TelegramStatus }).telegram;
+  }
+
+  /** Starts a pairing: the code to send the bot, and the bot's name once it is known. */
+  async pairTelegram(): Promise<TelegramPairing & { bot?: string }> {
+    return (await this.ok("POST", "/v1/telegram/pair", {})) as TelegramPairing & { bot?: string };
   }
 
   /** Opens Instagram's sign-in in the app and resolves with the outcome. */

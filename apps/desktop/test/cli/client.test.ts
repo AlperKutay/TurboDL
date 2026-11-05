@@ -46,6 +46,14 @@ const fake: ApiHandlers = {
   stopList: async () => undefined,
   continueList: async () => ({ ok: false, error: "not in the fake" }),
   closeList: async () => ({ ok: false, error: "not in the fake" }),
+  // the Telegram routes are tested on their own
+  telegram: {
+    status: () => ({ state: "off", tokenSet: false, chatId: null, enabled: false }),
+    setToken: async () => ({ ok: false, error: "not in the fake" }),
+    setChat: async () => ({ ok: false, error: "not in the fake" }),
+    setEnabled: async () => ({ ok: false, error: "not in the fake" }),
+    pair: async () => ({ ok: false, error: "not in the fake" }),
+  },
 };
 
 beforeEach(async () => {
