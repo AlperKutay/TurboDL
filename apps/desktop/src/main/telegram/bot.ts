@@ -3,11 +3,23 @@ import type { ParsedListRequest } from "../api-routes";
 import type { JsonStore } from "../store";
 import { TelegramError, scrub, type BotApi } from "./bot-api";
 import { JobFollower } from "./bot-jobs";
-import { OwnerHandler } from "./bot-owner";
+import { OwnerHandler, isActive } from "./bot-owner";
 import { ownerUpdate, pairingStart } from "./gate";
 import { Outbox } from "./outbox";
-import { EMPTY_STATE, isBotStateFile, type BotStateFile } from "./state";
-import { HELP, PAIRED } from "./texts";
+import { EMPTY_STATE, isBotStateFile, type BotStateFile, type OpenJob } from "./state";
+import {
+  HELP,
+  LIST_CLOSED,
+  MAX_TEXT,
+  PAIRED,
+  RESTARTED_LINK,
+  RESTARTED_PROFILE,
+  clip,
+  jobRestartedText,
+  listKeyboard,
+  listRestartedText,
+  listText,
+} from "./texts";
 import type { Keyboard, Update } from "./types";
 
 /** What the bot may ask of the app: ApiHandlers' job and list calls, plus the settings' defaults. */
@@ -66,6 +78,10 @@ export class TelegramBot {
   private running: Promise<void> | null = null;
   private stopped = false;
   private ready = false;
+  /** what the last run left open has been taken up (once per bot) */
+  private resumed = false;
+  /** the followed list's state when the bot last heard of it: a finished list that changes is a new list in its place */
+  private listSeen: ProfileListView["state"] | undefined;
   private current: TelegramState = "off";
   private botName: string | undefined;
   private backoffMs = BACKOFF_START_MS;
@@ -99,6 +115,7 @@ export class TelegramBot {
       edit: (chatId, messageId, text, keyboard, opts) => this.edit(chatId, messageId, text, keyboard, opts),
       listOpened: (chatId, messageId, active) => {
         this.state.list = { chatId, messageId, active };
+        this.listSeen = o.app.list()?.state;
         this.saveState();
       },
       stopped: () => this.stopped,
@@ -133,14 +150,45 @@ export class TelegramBot {
     }
   }
 
-  /** Task 8: the profile list changed. */
-  listChanged(_list: ProfileListView | null): void {
-    // filled in by the list tracking
+  /**
+   * The profile list changed: the list message the bot follows shows it, and the state file keeps whether it goes on
+   * by itself (for the notice after a restart). A closed list's message says so and is forgotten.
+   */
+  listChanged(list: ProfileListView | null): void {
+    // after stop() the state stays as it was: the app's quit stops the list after the bot
+    const followed = this.state.list;
+    if (this.stopped || !followed) return;
+    if (!list) {
+      this.forgetList();
+      void this.edit(followed.chatId, followed.messageId, LIST_CLOSED, null, { final: true });
+      return;
+    }
+    if (this.listSeen === "finished" && list.state !== "finished") {
+      // a new list took the finished one's place: the message keeps the finished list's last words
+      this.forgetList();
+      return;
+    }
+    this.listSeen = list.state;
+    const active = isActive(list);
+    if (followed.active !== active) {
+      followed.active = active;
+      this.saveState();
+    }
+    void this.edit(followed.chatId, followed.messageId, listText(list, this.o.now()), listKeyboard(list));
   }
 
-  /** Task 8: something to tell the chat about the list. */
-  listNotice(_text: string): void {
-    // filled in by the list tracking
+  /** Something to tell the chat about the list (it finished, or stopped by itself): a new message, so the phone notifies. */
+  listNotice(text: string): void {
+    const chatId = this.o.chatId();
+    if (this.stopped || chatId === null) return;
+    void this.send(chatId, clip(text, MAX_TEXT));
+  }
+
+  /** The bot no longer follows a list message. */
+  private forgetList(): void {
+    this.state.list = null;
+    this.listSeen = undefined;
+    this.saveState();
   }
 
   private loadState(): BotStateFile {
@@ -235,7 +283,7 @@ export class TelegramBot {
       this.state = { ...structuredClone(EMPTY_STATE), botId: me.id };
       this.saveState();
     }
-    // Task 8: recovery of open jobs and the list goes here
+    this.resume();
     try {
       await this.o.api.setMyCommands(COMMANDS, this.ctl.signal);
     } catch (err) {
@@ -244,6 +292,56 @@ export class TelegramBot {
       this.log(`could not register the commands: ${this.text(err)}`);
     }
     this.ready = true;
+  }
+
+  /**
+   * Once per bot, after the state is known to be this bot's: the jobs and the list message the last run left open. A
+   * job the app still has is followed again; one it lost to a restart gets its last words and a notice; anything for a
+   * chat that is no longer bound is dropped.
+   */
+  private resume(): void {
+    if (this.resumed) return;
+    this.resumed = true;
+    const chatId = this.o.chatId();
+    const open = this.state.jobs;
+    // the jobs followed again come back through `opened`
+    this.state.jobs = [];
+    for (const entry of open) {
+      if (entry.chatId !== chatId) continue;
+      const job = this.o.app.job(entry.jobId);
+      if (job) this.jobs.follow(entry.chatId, job, entry.label, entry.messageId);
+      // within one app run a job the app has let go of ended long ago: nothing to say
+      else if (this.o.afterAppStart) this.restarted(entry);
+    }
+    this.resumeList(chatId);
+    this.saveState();
+  }
+
+  /** A job the restart ended (a backup) or took out of the bot's hands (a download that goes on in the app). */
+  private restarted({ chatId, messageId, kind, label }: OpenJob): void {
+    void this.edit(chatId, messageId, jobRestartedText(label), null, { final: true });
+    // a download must not be sent again: it would make a second, numbered copy next to the resumed one
+    void this.send(chatId, kind === "instagramProfile" ? RESTARTED_PROFILE : RESTARTED_LINK, { replyTo: messageId });
+  }
+
+  /** Re-attaches the list message to the app's list; one that went on by itself before the restart gets a notice. */
+  private resumeList(chatId: number | null): void {
+    const followed = this.state.list;
+    if (!followed) return;
+    const list = this.o.app.list();
+    if (!list || followed.chatId !== chatId) {
+      this.state.list = null;
+      return;
+    }
+    const wasActive = followed.active;
+    followed.active = isActive(list);
+    this.listSeen = list.state;
+    const keyboard = listKeyboard(list);
+    void this.edit(followed.chatId, followed.messageId, listText(list, this.o.now()), keyboard);
+    // the app stops a running list when it starts; it goes on only when the owner says so
+    if (this.o.afterAppStart && wasActive && list.state === "stopped" && keyboard) {
+      void this.send(followed.chatId, listRestartedText(list), { keyboard, replyTo: followed.messageId });
+    }
   }
 
   /** A call went through: the connection is fine again. */

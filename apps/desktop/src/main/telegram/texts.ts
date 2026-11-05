@@ -26,6 +26,7 @@ export const NOTHING_RUNNING = "Nothing is running.";
 export const NO_LIST = "There is no list.";
 export const RESTARTED_PROFILE = "TurboDL restarted before this finished. Send it again; it skips what it already saved.";
 export const RESTARTED_LINK = "TurboDL restarted. This download goes on in TurboDL, but the bot can't follow it any more.";
+export const LIST_CLOSED = "The list was closed.";
 export const CANCELLED = "Cancelled.";
 export const STOP_WHAT = "What should TurboDL stop?";
 export const LIST_TOO_LARGE = "This file is too large for a list of profiles (over 1 MB).";
@@ -100,6 +101,11 @@ export function jobFinalText(job: Job, label: string, existing: number): string 
   if (job.state === "done") return cut(`${head}\n${saved(job, existing)}`);
   if (job.state === "cancelled") return cut(`${head}\nStopped.`);
   return cut(`${head}\nFailed: ${reasonText(job)}`);
+}
+
+/** The last words of a job's message when a restart took the job away: true of a backup and of a download alike. */
+export function jobRestartedText(label: string): string {
+  return `${clip(label, 200)}\nTurboDL restarted.`;
 }
 
 function saved(job: Job, existing: number): string {
