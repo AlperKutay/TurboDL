@@ -22,6 +22,10 @@ export interface BotApiOptions {
   token: string;
   base?: string;
   fetch?: typeof fetch;
+  /** every call but getUpdates is cut off as a network error after this long (default 30 s) */
+  requestTimeoutMs?: number;
+  /** getUpdates is cut off this long after its own long-poll timeout (default 10 s) */
+  pollGraceMs?: number;
 }
 
 interface ApiReply<T> {
@@ -39,10 +43,14 @@ export class BotApi {
   private readonly token: string;
   private readonly base: string;
   private readonly doFetch: typeof fetch;
+  private readonly requestTimeoutMs: number;
+  private readonly pollGraceMs: number;
 
   constructor(o: BotApiOptions) {
     this.token = o.token;
     this.base = (o.base ?? "https://api.telegram.org").replace(/\/+$/, "");
+    this.requestTimeoutMs = o.requestTimeoutMs ?? 30_000;
+    this.pollGraceMs = o.pollGraceMs ?? 10_000;
     this.doFetch = o.fetch ?? ((input, init) => fetch(input, init));
   }
 
@@ -51,7 +59,7 @@ export class BotApi {
   }
 
   getUpdates(offset: number, timeoutSec: number, signal: AbortSignal): Promise<Update[]> {
-    return this.call("getUpdates", { offset, timeout: timeoutSec, allowed_updates: ["message", "callback_query"] }, signal);
+    return this.call("getUpdates", { offset, timeout: timeoutSec, allowed_updates: ["message", "callback_query"] }, signal, timeoutSec * 1000 + this.pollGraceMs);
   }
 
   async setMyCommands(commands: { command: string; description: string }[]): Promise<void> {
@@ -79,7 +87,12 @@ export class BotApi {
     const file = await this.call<{ file_path?: string; file_size?: number }>("getFile", { file_id: fileId });
     if (!file.file_path) throw new TelegramError("notFound", "Telegram returned no file path");
     if (file.file_size !== undefined && file.file_size > maxBytes) throw tooLarge();
-    const res = await this.send(`${this.base}/file/bot${this.token}/${file.file_path}`, { method: "GET" });
+    return this.guarded(this.requestTimeoutMs, undefined, (guard) => this.readFile(`${this.base}/file/bot${this.token}/${file.file_path}`, maxBytes, guard));
+  }
+
+  private async readFile(url: string, maxBytes: number, guard: AbortSignal): Promise<Buffer> {
+    const tooLarge = () => new TelegramError("tooLarge", `The file is larger than ${maxBytes} bytes`);
+    const res = await this.send(url, { method: "GET", signal: guard });
     if (!res.ok) throw this.fromStatus(res.status, undefined);
     const declared = Number(res.headers.get("content-length"));
     if (Number.isFinite(declared) && declared > maxBytes) {
@@ -101,27 +114,53 @@ export class BotApi {
         chunks.push(Buffer.from(part.value));
       }
     } catch (err) {
-      if (err instanceof TelegramError) throw err;
+      if (err instanceof TelegramError || isAbort(err, guard)) throw err;
       throw this.networkError(err);
     }
     return Buffer.concat(chunks);
   }
 
-  private async call<T>(method: string, body: Record<string, unknown>, signal?: AbortSignal): Promise<T> {
-    const res = await this.send(`${this.base}/bot${this.token}/${method}`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(body),
-      signal,
+  private call<T>(method: string, body: Record<string, unknown>, signal?: AbortSignal, timeoutMs = this.requestTimeoutMs): Promise<T> {
+    return this.guarded(timeoutMs, signal, async (guard) => {
+      const res = await this.send(`${this.base}/bot${this.token}/${method}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+        signal: guard,
+      });
+      let reply: ApiReply<T> | undefined;
+      try {
+        reply = (await res.json()) as ApiReply<T>;
+      } catch (err) {
+        if (isAbort(err, guard)) throw err;
+        // a good status with an unreadable body is a broken connection, not a bad request
+        if (res.ok) throw this.networkError(err);
+      }
+      if (!res.ok || !reply?.ok) throw this.fromStatus(res.status, reply);
+      return reply.result as T;
     });
-    let reply: ApiReply<T> | undefined;
+  }
+
+  /** Runs `fn` with a signal that fires on the caller's abort (rethrown as is) or after `timeoutMs` (a network error). */
+  private async guarded<T>(timeoutMs: number, signal: AbortSignal | undefined, fn: (guard: AbortSignal) => Promise<T>): Promise<T> {
+    const ctl = new AbortController();
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      ctl.abort();
+    }, timeoutMs);
+    const onAbort = () => ctl.abort();
+    if (signal?.aborted) ctl.abort();
+    else signal?.addEventListener("abort", onAbort, { once: true });
     try {
-      reply = (await res.json()) as ApiReply<T>;
+      return await fn(ctl.signal);
     } catch (err) {
-      if (isAbort(err, signal)) throw err;
+      if (timedOut && !signal?.aborted) throw new TelegramError("network", `Network error: no answer within ${Math.round(timeoutMs / 1000)} s`);
+      throw err;
+    } finally {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
     }
-    if (!res.ok || !reply?.ok) throw this.fromStatus(res.status, reply);
-    return reply.result as T;
   }
 
   /** fetch, turning a failure into a scrubbed network error (an abort passes through). */

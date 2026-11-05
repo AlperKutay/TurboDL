@@ -131,4 +131,41 @@ describe("BotApi", () => {
     expect(err).not.toBeInstanceOf(TelegramError);
     expect((err as Error).name).toBe("AbortError");
   });
+
+  it("an error from a 400 never contains the token", async () => {
+    fake.failNext("getMe", 400, { ok: false, error_code: 400, description: `Bad Request: ${fake.token} is bad` });
+    const err = await rejection(api.getMe());
+    expect(err.kind).toBe("badRequest");
+    expect(err.message).not.toContain(fake.token);
+  });
+
+  it("a good status with an unreadable body is a network error", async () => {
+    const broken = (async () => new Response("not json", { status: 200 })) as unknown as typeof fetch;
+    const err = await rejection(new BotApi({ token: fake.token, base: fake.url, fetch: broken }).getMe());
+    expect(err.kind).toBe("network");
+    const reset = (async () => {
+      const body = new ReadableStream({ pull: (c) => c.error(new Error(`reset ${fake.token}`)) });
+      return new Response(body, { status: 200 });
+    }) as unknown as typeof fetch;
+    const err2 = await rejection(new BotApi({ token: fake.token, base: fake.url, fetch: reset }).getUpdates(0, 0, new AbortController().signal));
+    expect(err2.kind).toBe("network");
+    expect(err2.message).not.toContain(fake.token);
+  });
+
+  it("a call nobody answers ends as a network error after the timeout", async () => {
+    const hung = ((_url: string, init: RequestInit) => new Promise((_, reject) => init.signal?.addEventListener("abort", () => reject(init.signal?.reason ?? new DOMException("aborted", "AbortError"))))) as unknown as typeof fetch;
+    const slow = new BotApi({ token: fake.token, base: fake.url, fetch: hung, requestTimeoutMs: 50, pollGraceMs: 50 });
+    expect((await rejection(slow.sendMessage(1, "x"))).kind).toBe("network");
+    expect((await rejection(slow.getUpdates(0, 0, new AbortController().signal))).kind).toBe("network");
+  });
+
+  it("the caller's abort still wins over the timeout wiring", async () => {
+    const hung = ((_url: string, init: RequestInit) => new Promise((_, reject) => init.signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError"))))) as unknown as typeof fetch;
+    const ctl = new AbortController();
+    const p = new BotApi({ token: fake.token, base: fake.url, fetch: hung }).getUpdates(0, 50, ctl.signal);
+    setTimeout(() => ctl.abort(), 20);
+    const err = await p.then(() => undefined, (e: unknown) => e);
+    expect(err).not.toBeInstanceOf(TelegramError);
+    expect((err as Error).name).toBe("AbortError");
+  });
 });
