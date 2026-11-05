@@ -329,17 +329,19 @@ describe("after a restart", () => {
     expect(stateFile().list).toEqual({ chatId: OWNER, messageId: id, active: false });
   });
 
-  it("a list the app no longer has is forgotten", async () => {
+  it("a list the app no longer has says it was closed and is forgotten", async () => {
     const before = makeApp();
     const first = await startBot(before);
-    await showList(before, listWith("running", 1));
+    const id = await showList(before, listWith("running", 1));
     await first.stop();
 
-    const edits = calls("editMessageText");
+    const sends = calls("sendMessage");
     await startBot(makeApp(), true);
+    await fake.waitFor(() => sent()[0].text === LIST_CLOSED);
+    expect(sent()[0]).toMatchObject({ messageId: id, keyboard: undefined });
     await fake.waitFor(() => stateFile().list === null);
     await settle();
-    expect(calls("editMessageText")).toBe(edits);
+    expect(calls("sendMessage")).toBe(sends);
     expect(sent()).toHaveLength(1);
   });
 

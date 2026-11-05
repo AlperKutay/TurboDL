@@ -324,13 +324,21 @@ export class TelegramBot {
     void this.send(chatId, kind === "instagramProfile" ? RESTARTED_PROFILE : RESTARTED_LINK, { replyTo: messageId });
   }
 
-  /** Re-attaches the list message to the app's list; one that went on by itself before the restart gets a notice. */
+  /**
+   * Re-attaches the list message to the app's list; one that went on by itself before the restart gets a notice. A
+   * list the app no longer has is closed: its message says so, so no dead buttons are left.
+   */
   private resumeList(chatId: number | null): void {
     const followed = this.state.list;
     if (!followed) return;
-    const list = this.o.app.list();
-    if (!list || followed.chatId !== chatId) {
+    if (followed.chatId !== chatId) {
       this.state.list = null;
+      return;
+    }
+    const list = this.o.app.list();
+    if (!list) {
+      this.state.list = null;
+      void this.edit(followed.chatId, followed.messageId, LIST_CLOSED, null, { final: true });
       return;
     }
     const wasActive = followed.active;
