@@ -7,6 +7,8 @@ export interface OpenJob {
   messageId: number;
   kind: JobKind;
   label: string;
+  /** the job has ended and its last words were on their way: a restart must not call it unfinished */
+  ended?: true;
 }
 
 /** What the bot keeps between runs (`<userData>/telegram-state.json`). */
@@ -26,7 +28,15 @@ const isInt = (v: unknown): v is number => typeof v === "number" && Number.isSaf
 const isObject = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
 
 function isOpenJob(v: unknown): v is OpenJob {
-  return isObject(v) && typeof v.jobId === "string" && isInt(v.chatId) && isInt(v.messageId) && typeof v.kind === "string" && typeof v.label === "string";
+  return (
+    isObject(v) &&
+    typeof v.jobId === "string" &&
+    isInt(v.chatId) &&
+    isInt(v.messageId) &&
+    typeof v.kind === "string" &&
+    typeof v.label === "string" &&
+    (v.ended === undefined || v.ended === true)
+  );
 }
 
 export function isBotStateFile(v: unknown): v is BotStateFile {

@@ -98,6 +98,13 @@ export class TelegramBot {
         this.state.jobs.push(job);
         this.saveState();
       },
+      ended: (jobId) => {
+        const entry = this.state.jobs.find((j) => j.jobId === jobId);
+        if (!entry) return;
+        entry.ended = true;
+        this.saveState();
+        this.persistNow();
+      },
       closed: (jobId) => {
         this.state.jobs = this.state.jobs.filter((j) => j.jobId !== jobId);
         this.saveState();
@@ -155,12 +162,12 @@ export class TelegramBot {
    * by itself (for the notice after a restart). A closed list's message says so and is forgotten.
    */
   listChanged(list: ProfileListView | null): void {
-    // after stop() the state stays as it was: the app's quit stops the list after the bot
+    // after stop() the state stays as it was: the app's quit stops the list after the bot. Before the bot has
+    // recovered, the state may be another bot's and the message isn't re-attached yet: recovery catches up.
     const followed = this.state.list;
-    if (this.stopped || !followed) return;
+    if (this.stopped || !this.resumed || !followed) return;
     if (!list) {
-      this.forgetList();
-      void this.edit(followed.chatId, followed.messageId, LIST_CLOSED, null, { final: true });
+      this.listClosed(followed);
       return;
     }
     if (this.listSeen === "finished" && list.state !== "finished") {
@@ -172,7 +179,9 @@ export class TelegramBot {
     const active = isActive(list);
     if (followed.active !== active) {
       followed.active = active;
+      // on disk at once: a crash before the debounced save would lose the restart notice, or send a false one
       this.saveState();
+      this.persistNow();
     }
     void this.edit(followed.chatId, followed.messageId, listText(list, this.o.now()), listKeyboard(list));
   }
@@ -189,6 +198,12 @@ export class TelegramBot {
     this.state.list = null;
     this.listSeen = undefined;
     this.saveState();
+  }
+
+  /** The list is gone: its message says so, without buttons that could only fail, and is forgotten. */
+  private listClosed(followed: { chatId: number; messageId: number }): void {
+    this.forgetList();
+    void this.edit(followed.chatId, followed.messageId, LIST_CLOSED, null, { final: true });
   }
 
   private loadState(): BotStateFile {
@@ -307,14 +322,17 @@ export class TelegramBot {
     // the jobs followed again come back through `opened`
     this.state.jobs = [];
     for (const entry of open) {
-      if (entry.chatId !== chatId) continue;
+      // an ended job's last words were on their way when the bot stopped: never "unfinished", never a second summary
+      if (entry.chatId !== chatId || entry.ended) continue;
       const job = this.o.app.job(entry.jobId);
       if (job) this.jobs.follow(entry.chatId, job, entry.label, entry.messageId);
       // within one app run a job the app has let go of ended long ago: nothing to say
       else if (this.o.afterAppStart) this.restarted(entry);
     }
     this.resumeList(chatId);
+    // on disk at once: a crash right after must not repeat the notices
     this.saveState();
+    this.persistNow();
   }
 
   /** A job the restart ended (a backup) or took out of the bot's hands (a download that goes on in the app). */
@@ -337,8 +355,7 @@ export class TelegramBot {
     }
     const list = this.o.app.list();
     if (!list) {
-      this.state.list = null;
-      void this.edit(followed.chatId, followed.messageId, LIST_CLOSED, null, { final: true });
+      this.listClosed(followed);
       return;
     }
     const wasActive = followed.active;

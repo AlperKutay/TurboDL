@@ -25,7 +25,9 @@ let clock: number;
 /** the chat the bot is bound to */
 let bound: number | null;
 
-function makeBot(app: BotApp, afterAppStart = false): TelegramBot {
+const quickWait = () => new Promise<void>((resolve) => setTimeout(resolve, 10));
+
+function makeBot(app: BotApp, afterAppStart = false, wait: (ms: number, signal: AbortSignal) => Promise<void> = quickWait): TelegramBot {
   const bot = new TelegramBot({
     api: new BotApi({ token: fake.token, base: fake.url, requestTimeoutMs: 2000, pollGraceMs: 1000 }),
     app,
@@ -37,7 +39,7 @@ function makeBot(app: BotApp, afterAppStart = false): TelegramBot {
     afterAppStart,
     // 10 s further at every read: the outbox's 1 s gap and 5 s edit throttle never hold a test up
     now: () => (clock += 10_000),
-    wait: () => new Promise((resolve) => setTimeout(resolve, 10)),
+    wait,
     log: (text) => logs.push(text),
     token: fake.token,
   });
@@ -59,6 +61,8 @@ async function startBot(h: FakeApp, afterAppStart = false): Promise<TelegramBot>
 const sent = () => fake.sent(OWNER);
 const calls = (method: string) => fake.calls.filter((c) => c.method === method).length;
 const settle = () => new Promise((r) => setTimeout(r, 200));
+/** The edits asked of one message, from the `from`th call on. */
+const editsOf = (messageId: number, from = 0) => fake.calls.slice(from).filter((c) => c.method === "editMessageText" && c.body.message_id === messageId).map((c) => c.body);
 
 function stateFile(): BotStateFile {
   try {
@@ -152,6 +156,63 @@ describe("following the list", () => {
     expect(sent()[0].keyboard).toEqual([[{ text: "Close", callback_data: "lx" }]]);
     await fake.waitFor(() => stateFile().list?.active === false);
     // every change went to the one list message
+    expect(sent()).toHaveLength(1);
+  });
+
+  it("the list's active flag is on disk as soon as it changes", async () => {
+    // a debounce that never fires in the test: only an explicit flush writes the file
+    store = new JsonStore<BotStateFile>(path.join(dir, "telegram-state.json"), 60_000);
+    const h = makeApp();
+    const bot = await startBot(h);
+    h.list = listWith("running", 0);
+    fake.text(OWNER, "/list");
+    await fake.waitFor(() => sent().length === 1);
+    const id = sent()[0].messageId;
+    // the bot follows the message once its id comes back; that alone waits for the debounce
+    await settle();
+    expect(stateFile().list).toBeNull();
+
+    h.list = listWith("stopped", 0);
+    bot.listChanged(h.list);
+    expect(stateFile().list).toEqual({ chatId: OWNER, messageId: id, active: false });
+    h.list = listWith("running", 0);
+    bot.listChanged(h.list);
+    expect(stateFile().list).toEqual({ chatId: OWNER, messageId: id, active: true });
+  });
+
+  it("list changes wait until the bot has recovered", async () => {
+    const h = makeApp();
+    const first = await startBot(h);
+    const id = await showList(h, listWith("running", 0));
+    await first.stop();
+
+    // the next bot can't reach Telegram at first, and waits before it tries again
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => (release = resolve));
+    const wait = (_ms: number, signal: AbortSignal) =>
+      new Promise<void>((resolve) => {
+        void held.then(resolve);
+        signal.addEventListener("abort", () => resolve(), { once: true });
+      });
+    fake.failNext("getMe", 502);
+    const gets = calls("getMe");
+    const bot = makeBot(h.app, false, wait);
+    bot.start();
+    await fake.waitFor(() => calls("getMe") === gets + 1);
+    const from = fake.calls.length;
+    h.list = listWith("stopped", 1);
+    bot.listChanged(h.list);
+    await settle();
+    expect(editsOf(id, from)).toEqual([]);
+    expect(stateFile().list).toEqual({ chatId: OWNER, messageId: id, active: true });
+
+    // once it is through, the message catches up with the list as it is now
+    release();
+    await fake.waitFor(() => sent()[0].text === listText(h.list!, 0));
+    expect(sent()[0].keyboard).toEqual(CONTINUE_CLOSE);
+    expect(editsOf(id, from)).toHaveLength(1);
+    await fake.waitFor(() => stateFile().list?.active === false);
+    // the same app run: no restart notice
     expect(sent()).toHaveLength(1);
   });
 
@@ -329,20 +390,54 @@ describe("after a restart", () => {
     expect(stateFile().list).toEqual({ chatId: OWNER, messageId: id, active: false });
   });
 
-  it("a list the app no longer has says it was closed and is forgotten", async () => {
+  it.each([
+    ["after a restart", true],
+    // the owner closed the list in the app's window while the bot was off
+    ["inside one app run", false],
+  ])("a list the app no longer has says it was closed and is forgotten %s", async (_when, afterAppStart) => {
     const before = makeApp();
     const first = await startBot(before);
-    const id = await showList(before, listWith("running", 1));
+    const id = await showList(before, listWith("finished", 3));
     await first.stop();
 
+    const app = afterAppStart ? makeApp() : before;
+    app.list = null;
     const sends = calls("sendMessage");
-    await startBot(makeApp(), true);
+    const from = fake.calls.length;
+    await startBot(app, afterAppStart);
     await fake.waitFor(() => sent()[0].text === LIST_CLOSED);
-    expect(sent()[0]).toMatchObject({ messageId: id, keyboard: undefined });
     await fake.waitFor(() => stateFile().list === null);
     await settle();
+    expect(editsOf(id, from)).toEqual([{ chat_id: OWNER, message_id: id, text: LIST_CLOSED, reply_markup: { inline_keyboard: [] } }]);
+    expect(sent()[0]).toMatchObject({ messageId: id, keyboard: undefined });
     expect(calls("sendMessage")).toBe(sends);
     expect(sent()).toHaveLength(1);
+  });
+
+  it.each([
+    ["after a restart", true],
+    ["inside one app run", false],
+  ])("a job that ended before its summary went out is dropped silently %s", async (_when, afterAppStart) => {
+    const before = makeApp();
+    const first = await startBot(before);
+    fake.text(OWNER, "https://example.com/a.zip");
+    await fake.waitFor(() => stateFile().jobs.length === 1);
+    const id = sent()[0].messageId;
+    const record = before.records.get("job1")!;
+    record.start();
+    record.file("C:/dl/a.zip");
+    record.end({ state: "done" });
+    // the bot stops before its final edit and summary go out
+    await first.stop();
+    expect(stateFile().jobs).toEqual([{ jobId: "job1", chatId: OWNER, messageId: id, kind: "file", label: "example.com a.zip", ended: true }]);
+    expect(sent()).toEqual([{ messageId: id, text: "example.com a.zip\nQueued", keyboard: [[{ text: "Stop", callback_data: "s:job1" }]], replyTo: undefined }]);
+
+    const writes = calls("sendMessage") + calls("editMessageText");
+    await startBot(afterAppStart ? makeApp() : before, afterAppStart);
+    await fake.waitFor(() => stateFile().jobs.length === 0);
+    await settle();
+    // neither "restarted before this finished" nor a second summary
+    expect(calls("sendMessage") + calls("editMessageText")).toBe(writes);
   });
 
   it("a bot restart inside one app run follows its jobs again and sends no restart notice", async () => {
@@ -381,6 +476,9 @@ describe("after a restart", () => {
     await fake.waitFor(() => sent()[0].text === "example.com a.zip\nRunning\n3/4");
     expect(a.followers).toBe(1);
     expect(sent().map((m) => m.text).join("\n")).not.toContain("restarted");
+    // b's summary came once
+    await settle();
+    expect(sent()).toHaveLength(5);
   });
 
   it("recovery never writes to a chat that is no longer bound", async () => {

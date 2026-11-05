@@ -12,6 +12,8 @@ export interface JobFollowerDeps {
   edit(chatId: number, messageId: number, text: string, keyboard: Keyboard | null, o?: { final?: boolean }): Promise<void>;
   /** the job has its message: it goes into the state file */
   opened(job: OpenJob): void;
+  /** the job ended and its last words are going out: the state file marks it, so a restart doesn't call it unfinished */
+  ended(jobId: string): void;
   /** the job's summary went out: it leaves the state file */
   closed(jobId: string): void;
   stopped(): boolean;
@@ -137,7 +139,10 @@ export class JobFollower {
   private async conclude(f: Followed): Promise<void> {
     this.followed.delete(f.job.id);
     const { chatId, messageId, job, label, existing } = f;
-    if (typeof messageId === "number") void this.d.edit(chatId, messageId, jobFinalText(job, label, existing), null, { final: true });
+    if (typeof messageId === "number") {
+      this.d.ended(job.id);
+      void this.d.edit(chatId, messageId, jobFinalText(job, label, existing), null, { final: true });
+    }
     const sent = await this.d.send(chatId, jobSummary(job, label, existing), typeof messageId === "number" ? { replyTo: messageId } : {});
     // stopped before the summary went: the state file keeps the job, so the next start can finish it
     if (sent === null && this.d.stopped()) return;

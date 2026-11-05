@@ -160,7 +160,7 @@ export class OwnerHandler {
       return;
     }
     if (this.d.stopped()) return;
-    const parsed = parseProfileList(bytes.toString("utf8").replace(/^﻿/, ""));
+    const parsed = parseProfileList(bytes.toString("utf8").replace(/^\uFEFF/, ""));
     // no names, or more than a list holds: the app's own words
     const names = listNames(parsed.usernames);
     if ("error" in names) {

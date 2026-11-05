@@ -294,6 +294,9 @@ describe("bot state file", () => {
     expect(isBotStateFile({ botId: 1, offset: 2, jobs: [], list: { chatId: 1, messageId: 2, active: true } })).toBe(true);
     expect(isBotStateFile({ botId: 1, offset: "2", jobs: [], list: null })).toBe(false);
     expect(isBotStateFile({ botId: null, offset: 0, jobs: [{ jobId: 1 }], list: null })).toBe(false);
+    const job = { jobId: "j", chatId: 1, messageId: 2, kind: "file", label: "x" };
+    expect(isBotStateFile({ botId: 1, offset: 2, jobs: [job, { ...job, jobId: "k", ended: true }], list: null })).toBe(true);
+    expect(isBotStateFile({ botId: 1, offset: 2, jobs: [{ ...job, ended: "yes" }], list: null })).toBe(false);
     expect(isBotStateFile(null)).toBe(false);
   });
 });
