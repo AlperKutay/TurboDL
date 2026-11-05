@@ -32,6 +32,8 @@ const instagramDemoSignedOut = Boolean(instagramDemoBase) && process.env.TURBODL
 /** A local stand-in for Instagram's pages, read by the real hidden pages, for the e2e tests; only with an isolated profile. */
 const instagramTestSite = process.env.TURBODL_USER_DATA ? process.env.TURBODL_INSTAGRAM_SITE : undefined;
 if (instagramTestSite) allowTestSite(instagramTestSite);
+/** A local stand-in for Telegram's Bot API, for the e2e tests; only with an isolated profile (never where the real token goes). */
+const telegramTestApi = process.env.TURBODL_USER_DATA ? process.env.TURBODL_TELEGRAM_API || undefined : undefined;
 const identity = notificationIdentity({ isPackaged: app.isPackaged, isolated: Boolean(process.env.TURBODL_USER_DATA) });
 
 let controller: AppController | null = null;
@@ -144,7 +146,7 @@ async function start(): Promise<void> {
         // never the blocking decrypt: the app's start must not wait on a keyring
         decrypt: async (data) => (await safeStorage.decryptStringAsync(data)).result,
       },
-      apiBase: process.env.TURBODL_TELEGRAM_API || undefined,
+      apiBase: telegramTestApi,
     },
   });
   // test runs: the demo (unless asked to start signed out), or the real pages against a stand-in site, start signed in

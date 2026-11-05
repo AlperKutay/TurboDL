@@ -73,8 +73,12 @@ export class TelegramService {
   private botError: string | undefined;
   /** the bot's @name, as getMe said, for the token it was said for */
   private botName: { token: string; name: string } | null = null;
-  /** whether a bot has been started in this run of the app: only the first one may tell of a restart */
-  private botStarted = false;
+  /**
+   * A bot reached Telegram in this run of the app, and so took up what the last run left open (a bot reports ok in
+   * the same turn as it recovers). Until then every new bot may tell of a restart: one turned off or refused before it
+   * got there told nothing.
+   */
+  private recovered = false;
   private pairing: TelegramPairing | null = null;
   private pairingTimer: NodeJS.Timeout | null = null;
 
@@ -268,6 +272,7 @@ export class TelegramService {
         if (this.bot === bot) this.paired(chatId);
       },
       onStatus: (state, info) => {
+        if (state === "ok") this.recovered = true;
         if (this.bot !== bot) return;
         this.botState = state;
         this.botError = info.error;
@@ -275,13 +280,12 @@ export class TelegramService {
         this.publish();
       },
       store: this.store,
-      afterAppStart: !this.botStarted,
+      afterAppStart: !this.recovered,
       now: () => this.now(),
       wait: (ms, signal) => delay(ms, signal),
       log: (text) => this.log(text),
       token,
     });
-    this.botStarted = true;
     this.bot = bot;
     this.botToken = token;
     this.botState = "connecting";

@@ -291,7 +291,7 @@ describe("telegram service", () => {
     expect(service.status()).toMatchObject({ state: "connecting", tokenSet: true });
   });
 
-  it("only the first bot since the app started tells of a restart", async () => {
+  it("only the first bot that reaches Telegram since the app started tells of a restart", async () => {
     const state = (jobId: string): BotStateFile => ({
       botId: fake.bot.id,
       offset: 0,
@@ -301,10 +301,23 @@ describe("telegram service", () => {
     const stateFile = path.join(dir, "telegram-state.json");
     writeFileSync(stateFile, JSON.stringify(state("lost-in-restart")));
     saveToken(TOKEN_A);
+    // Telegram can't be reached until `reachable`
+    let reachable = false;
+    let attempts = 0;
+    const switchable = ((input: string | URL | Request, init: RequestInit) => {
+      attempts++;
+      return reachable ? fetch(input, init) : hung(String(input), init);
+    }) as typeof fetch;
     let clock = 0;
     // 10 s further at every read: the outbox's gaps never hold the test up
-    const service = makeService({ now: () => (clock += 10_000) });
+    const service = makeService({ fetch: switchable, now: () => (clock += 10_000) });
     await service.start();
+    // the first bot never gets an answer, and is turned off: what the last run left open is still to tell
+    await until(() => attempts > 0);
+    await service.setEnabled(false);
+    expect(fake.sent(OWNER)).toEqual([]);
+    reachable = true;
+    await service.setEnabled(true);
     await fake.waitFor(() => fake.sent(OWNER).some((m) => m.text === RESTARTED_LINK));
     await service.setEnabled(false);
     // a job left open by a bot of this app run: the app let go of it, nothing to tell
