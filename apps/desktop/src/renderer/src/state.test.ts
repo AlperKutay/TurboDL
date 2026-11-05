@@ -34,6 +34,7 @@ const snapshot = (downloads: DownloadView[]): AppSnapshot => ({
   instagramBackup: null,
   screenBackup: null,
   profileList: null,
+  telegram: { state: "off", tokenSet: false, chatId: null, enabled: false },
 });
 
 describe("applyEvent", () => {

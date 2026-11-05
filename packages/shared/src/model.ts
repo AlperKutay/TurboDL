@@ -1,6 +1,6 @@
 import type { Highlight, InstagramItem, InstagramLink, InstagramProfile, ListWait, ParsedProfileList, ProfileListView, ProfileSaveOptions, SavedCollection, SavedPage, SavedSource } from "./instagram";
 import type { BrowserCookie, CaptureSource, MediaItem } from "./protocol";
-import type { TelegramSettings } from "./telegram";
+import type { TelegramSettings, TelegramStatus } from "./telegram";
 
 export type Category = "video" | "music" | "programs" | "archives" | "documents" | "images" | "other";
 export type DownloadStatus = "queued" | "scheduled" | "downloading" | "paused" | "completed" | "error";
@@ -287,6 +287,8 @@ export interface AppSnapshot {
   screenBackup: ScreenBackupView | null;
   /** the profile list running or last run */
   profileList: ProfileListView | null;
+  /** the Telegram bot as Settings shows it (never its token) */
+  telegram: TelegramStatus;
 }
 
 /**
@@ -313,6 +315,7 @@ export type AppEvent =
   | { type: "instagramBackup"; backup: BackupView | null }
   | { type: "screenBackup"; screenBackup: ScreenBackupView | null }
   | { type: "profileList"; list: ProfileListView | null }
+  | { type: "telegram"; status: TelegramStatus }
   /** a saved link came in: show the Saved section */
   | { type: "openSaved" }
   /** a profile link came in: show it in Profiles */

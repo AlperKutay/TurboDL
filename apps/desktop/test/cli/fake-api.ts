@@ -127,6 +127,14 @@ export async function startFakeApi(): Promise<FakeApi> {
     },
     continueList: async () => ({ ok: false, error: "not in the fake" }),
     closeList: async () => ({ ok: false, error: "not in the fake" }),
+    // the Telegram routes are tested on their own
+    telegram: {
+      status: () => ({ state: "off", tokenSet: false, chatId: null, enabled: false }),
+      setToken: async () => ({ ok: false, error: "not in the fake" }),
+      setChat: async () => ({ ok: false, error: "not in the fake" }),
+      setEnabled: async () => ({ ok: false, error: "not in the fake" }),
+      pair: async () => ({ ok: false, error: "not in the fake" }),
+    },
   };
 
   const serve = async (): Promise<number> => {

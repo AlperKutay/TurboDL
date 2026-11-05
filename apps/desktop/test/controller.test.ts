@@ -3,13 +3,15 @@ import http from "node:http";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_SAVE_OPTIONS, SavedError, type AppEvent, type BackupView, type BrowserCookie, type InstagramItem, type InstagramProfile, type PendingItem, type SavedPost } from "@turbodl/shared";
-import { AppController, type ControllerUi, type InstagramDeps } from "../src/main/controller";
+import type { ApiHandlers } from "../src/main/api-routes";
+import { AppController, type ControllerOptions, type ControllerUi, type InstagramDeps } from "../src/main/controller";
 import type { FindOutcome } from "../src/main/instagram/finder";
 import { profileShowedNothing } from "../src/main/instagram/profile-service";
 import { PUBLIC_PROFILE, fakeProfiles, fakeSignedOut, savedGet, signedOutCover } from "./fixtures/instagram-fakes";
 import { FFMPEG, makeClips, serveFolder, type Clips } from "./fixtures/media";
+import { startFakeTelegram } from "./fixtures/fake-telegram";
 import { startTestServer, type TestServer } from "./fixtures/test-server";
 
 const ORIGIN = "chrome-extension://fnkkncklkbdmaphmmddfmbcjkllejhea";
@@ -89,7 +91,12 @@ afterEach(async () => {
   rmSync(root, { recursive: true, force: true });
 });
 
-async function start(settings: Record<string, unknown> = {}, ffmpegPath: string | null = null, instagram?: InstagramDeps): Promise<AppController> {
+async function start(
+  settings: Record<string, unknown> = {},
+  ffmpegPath: string | null = null,
+  instagram?: InstagramDeps,
+  telegram?: ControllerOptions["telegram"],
+): Promise<AppController> {
   const userData = path.join(root, "user");
   mkdirSync(userData, { recursive: true });
   const port = (settings.bridgePort as number | undefined) ?? (await freePort());
@@ -108,6 +115,7 @@ async function start(settings: Record<string, unknown> = {}, ffmpegPath: string 
     mediaTools: { ensure: async () => ({ ytdlp: "unused", deno: null, ffmpeg: null }), updateIfStale: async () => undefined },
     ytdlpCommand: () => ({ file: process.execPath, args: [FAKE_YTDLP] }),
     instagram,
+    telegram,
   });
   await controller.init();
   return controller;
@@ -2358,5 +2366,75 @@ describe("Instagram signed out, and a folder per account", () => {
     await c.updateSettings({ instagramByAccount: false });
     c.manager.remove(c.manager.list().map((d) => d.id), false);
     expect(await pick("https://www.instagram.com/p/C1abcDEF/")).toEqual([path.join(root, "dl", "Instagram")]);
+  });
+});
+
+describe("Telegram", () => {
+  const TOKEN = "123456:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+  const OWNER = 7;
+  const telegramEvents = () => ui.events.filter((e) => e.type === "telegram");
+
+  async function until(pred: () => boolean, ms = 5000): Promise<void> {
+    const end = Date.now() + ms;
+    while (!pred()) {
+      if (Date.now() > end) throw new Error("until timed out");
+      await new Promise((r) => setTimeout(r, 20));
+    }
+  }
+
+  it("the snapshot carries the telegram status", async () => {
+    const c = await start({ telegram: { enabled: false, chatId: 42 } });
+    await until(() => telegramEvents().length > 0);
+    expect(c.snapshot().telegram).toEqual({ state: "noToken", tokenSet: false, chatId: 42, enabled: false });
+    expect(telegramEvents().at(-1)).toEqual({ type: "telegram", status: c.snapshot().telegram });
+  });
+
+  it("quitting stops the bot before the list", async () => {
+    const c = await start();
+    const order: string[] = [];
+    const parts = c as unknown as { telegram: { stop(): Promise<void> }; lists: { stop(): Promise<void> } };
+    vi.spyOn(parts.telegram, "stop").mockImplementation(async () => {
+      order.push("bot stopping");
+      await new Promise((r) => setTimeout(r, 50));
+      order.push("bot stopped");
+    });
+    vi.spyOn(parts.lists, "stop").mockImplementation(async () => {
+      order.push("list stopped");
+    });
+    await c.shutdown();
+    expect(order).toEqual(["bot stopping", "bot stopped", "list stopped"]);
+  });
+
+  it("pairing from the app binds the chat in Settings, and the token stays out of everything it shows", async () => {
+    const fake = await startFakeTelegram({ token: TOKEN });
+    try {
+      const c = await start({}, null, undefined, { crypt: { available: () => false, encrypt: () => Buffer.alloc(0), decrypt: () => Promise.reject(new Error("unused")) }, apiBase: fake.url });
+      const api = (c as unknown as { apiHandlers(): ApiHandlers }).apiHandlers();
+      await until(() => api.telegram.status().state === "noToken");
+      expect(await api.telegram.setToken(TOKEN)).toEqual({ ok: true });
+      expect(api.telegram.status()).toMatchObject({ state: "off", tokenSet: true });
+      const paired = await api.telegram.pair();
+      if (!paired.ok) throw new Error(paired.error);
+      await fake.waitFor(() => fake.calls.some((call) => call.method === "getUpdates"));
+      fake.text(OWNER, `/start ${paired.code}`);
+      await until(() => c.settings.telegram.chatId === OWNER);
+      expect(c.settings.telegram.enabled).toBe(true);
+      await until(() => c.snapshot().telegram.state === "ok");
+      expect(c.snapshot().telegram).toEqual({ state: "ok", tokenSet: true, bot: "turbodl_test_bot", chatId: OWNER, enabled: true });
+      expect(ui.events).toContainEqual({ type: "settings", settings: c.settings });
+      expect(telegramEvents().at(-1)).toEqual({ type: "telegram", status: c.snapshot().telegram });
+      // turning it off in Settings stops the bot
+      await c.updateSettings({ telegram: { enabled: false, chatId: OWNER } });
+      expect(c.snapshot().telegram.state).toBe("off");
+      await c.shutdown();
+      const userData = path.join(root, "user");
+      for (const file of ["settings.json", "api.json", "telegram-state.json"]) expect(readFileSync(path.join(userData, file), "utf8")).not.toContain(TOKEN);
+      expect(readFileSync(path.join(userData, "telegram-token"), "utf8")).toBe(TOKEN);
+      expect(JSON.stringify(ui.events)).not.toContain(TOKEN);
+      expect(JSON.stringify(c.snapshot())).not.toContain(TOKEN);
+    } finally {
+      await controller?.shutdown();
+      await fake.close();
+    }
   });
 });

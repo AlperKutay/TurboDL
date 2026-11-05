@@ -14,6 +14,8 @@ import {
   type ProfileListView,
   type ProfileSaveOptions,
   type Result,
+  type TelegramPairResult,
+  type TelegramStatus,
   DEFAULT_LIST_WAIT,
   waitProblem,
 } from "@turbodl/shared";
@@ -37,6 +39,14 @@ export interface ApiHandlers {
   stopList(): Promise<void>;
   continueList(): Promise<Result>;
   closeList(): Promise<Result>;
+  /** the Telegram bot: its status (never its token) and its settings */
+  telegram: {
+    status(): TelegramStatus;
+    setToken(token: string | null): Promise<Result>;
+    setChat(chatId: number | null): Promise<Result>;
+    setEnabled(enabled: boolean): Promise<Result>;
+    pair(): Promise<TelegramPairResult>;
+  };
 }
 
 /** A list request as the app starts it: names as `listNames` gives them, every option and the wait filled in. */

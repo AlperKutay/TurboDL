@@ -136,6 +136,16 @@ async function start(): Promise<void> {
           crypt: systemCrypt(process.platform, safeStorage),
           agent: chromeAgent(app.userAgentFallback),
         },
+    telegram: {
+      crypt: {
+        // basic_text on Linux counts as unavailable: the token then goes to a plain file only the user can read
+        available: () => systemCrypt(process.platform, safeStorage).available(),
+        encrypt: (text) => safeStorage.encryptString(text),
+        // never the blocking decrypt: the app's start must not wait on a keyring
+        decrypt: async (data) => (await safeStorage.decryptStringAsync(data)).result,
+      },
+      apiBase: process.env.TURBODL_TELEGRAM_API || undefined,
+    },
   });
   // test runs: the demo (unless asked to start signed out), or the real pages against a stand-in site, start signed in
   if ((instagramDemoBase && !instagramDemoSignedOut) || instagramTestSite) c.instagramSession.take([DEMO_COOKIE]);

@@ -28,6 +28,8 @@ export function applyEvent(state: AppSnapshot, event: AppEvent): AppSnapshot {
       return { ...state, screenBackup: event.screenBackup };
     case "profileList":
       return { ...state, profileList: event.list };
+    case "telegram":
+      return { ...state, telegram: event.status };
     case "openSaved":
     case "openProfile":
       return state;

@@ -104,6 +104,8 @@ import { runPowerAction, type PowerAction } from "./power";
 import { Scheduler } from "./scheduler";
 import { defaultSettings, mergeSettings, normalizeSettings } from "./settings";
 import { JsonStore } from "./store";
+import { TelegramService } from "./telegram/service";
+import type { TokenCrypt } from "./telegram/token-store";
 
 export interface ControllerUi {
   broadcast(event: AppEvent): void;
@@ -137,6 +139,8 @@ export interface ControllerOptions {
   instagram?: InstagramDeps;
   /** how API clients start this app in the background, written to api.json (default: this executable, hidden) */
   launch?: ApiLaunch;
+  /** the Telegram bot's token encryption and Bot API (default: no encryption, so the token is a plain file; Telegram itself) */
+  telegram?: { crypt: TokenCrypt; apiBase?: string; fetch?: typeof fetch };
 }
 
 export interface InstagramDeps {
@@ -179,6 +183,15 @@ const NO_TAGGED_PAGE: TaggedSource = {
   load: () => Promise.reject(new SavedError("badAnswer")),
   page: () => Promise.reject(new SavedError("badAnswer")),
   close: () => undefined,
+};
+
+/** Without the system's encryption (tests): the bot token is kept in its plain file. */
+const NO_TOKEN_CRYPT: TokenCrypt = {
+  available: () => false,
+  encrypt: () => {
+    throw new Error("No system encryption");
+  },
+  decrypt: () => Promise.reject(new Error("No system encryption")),
 };
 
 const NO_INSTAGRAM: InstagramDeps = {
@@ -293,6 +306,8 @@ export class AppController {
   private readonly listStore: JsonStore<ProfileListView | null>;
   /** the one list of profiles to back up, each as an ordinary profile job (never a screen's) */
   private readonly lists: ProfileLists;
+  /** the Telegram bot, its token and its pairing; never awaited by the app's start */
+  private readonly telegram: TelegramService;
 
   constructor(private readonly o: ControllerOptions) {
     this.instagram = o.instagram ?? NO_INSTAGRAM;
@@ -376,14 +391,46 @@ export class AppController {
       },
       // a closed list's file goes (a store writes no null)
       save: (list) => (list ? this.listStore.save(list) : this.listStore.remove()),
-      onChange: (list) => this.o.ui.broadcast({ type: "profileList", list }),
-      notify: (text) => this.o.ui.notifyListFinished(text),
+      // the bot is built after the list (it needs the settings): the list may change before it is there
+      onChange: (list) => {
+        this.o.ui.broadcast({ type: "profileList", list });
+        this.telegram?.listChanged(list);
+      },
+      notify: (text) => {
+        this.o.ui.notifyListFinished(text);
+        this.telegram?.listNotice(text);
+      },
       // the index keeps Instagram's own casing of the name
       savedTotal: (username) => this.profiles.profilesList().find((entry) => entry.username.toLowerCase() === username.toLowerCase())?.saved,
     });
     this.defaults = defaultSettings(o.downloadsDir);
     this.settingsStore = new JsonStore<Settings>(path.join(o.userDataDir, "settings.json"));
     this.settings = normalizeSettings(this.settingsStore.load(() => this.defaults), this.defaults);
+    const api = this.apiHandlers();
+    this.telegram = new TelegramService({
+      userDataDir: o.userDataDir,
+      crypt: o.telegram?.crypt ?? NO_TOKEN_CRYPT,
+      apiBase: o.telegram?.apiBase,
+      fetch: o.telegram?.fetch,
+      settings: () => this.settings.telegram,
+      saveSettings: async (next) => {
+        await this.updateSettings({ telegram: { ...this.settings.telegram, ...next } });
+      },
+      app: {
+        info: api.info,
+        createJob: api.createJob,
+        job: api.job,
+        cancelJob: api.cancelJob,
+        subscribe: api.subscribe,
+        list: api.list,
+        startList: api.startList,
+        stopList: api.stopList,
+        continueList: api.continueList,
+        closeList: api.closeList,
+        defaults: () => ({ save: this.settings.instagramSave, wait: this.settings.listWait }),
+      },
+      onStatus: (status) => this.o.ui.broadcast({ type: "telegram", status }),
+    });
     this.tools = o.mediaTools ?? new ToolManager({ dir: path.join(o.userDataDir, "tools"), ffmpegPath: o.ffmpegPath });
     this.resolver = createResolver({ tools: () => this.tools.ensure(), command: o.ytdlpCommand });
     this.manager = new DownloadManager({
@@ -423,6 +470,8 @@ export class AppController {
     this.manager.init();
     this.scheduler.start();
     await this.startBridge();
+    // in the background: reading the token may wait on a keyring, and the bot on Telegram
+    void this.telegram.start();
     void this.tools.updateIfStale().catch(() => undefined);
   }
 
@@ -436,6 +485,7 @@ export class AppController {
       instagramBackup: this.backups.view(),
       screenBackup: this.screenBackup,
       profileList: this.lists.view(),
+      telegram: this.telegram.status(),
     };
   }
 
@@ -1141,6 +1191,10 @@ export class AppController {
     if (previous.launchAtLogin !== this.settings.launchAtLogin) this.o.ui.setLaunchAtLogin(this.settings.launchAtLogin);
     this.manager.poke();
     this.o.ui.broadcast({ type: "settings", settings: this.settings });
+    // a fresh object every time: compared by value
+    const before = previous.telegram;
+    const after = this.settings.telegram;
+    if (before.enabled !== after.enabled || before.chatId !== after.chatId) await this.telegram.apply();
     return this.settings;
   }
 
@@ -1181,7 +1235,10 @@ export class AppController {
   }
 
   async shutdown(): Promise<void> {
-    // the list first: the profile it is at comes back as waiting (Continue runs it again), not as an outcome of the quit
+    // the bot before the list: the list's stop below must not reach it, so its state file keeps the list as going on
+    // (for the notice after the restart)
+    await Promise.race([this.telegram.stop(), new Promise((r) => setTimeout(r, 3000))]);
+    // then the list: the profile it is at comes back as waiting (Continue runs it again), not as an outcome of the quit
     await Promise.race([this.lists.stop(), new Promise((r) => setTimeout(r, 3000))]);
     // a backup's item in flight removes its temporary file before the app goes
     await Promise.race([this.backups.stop(), new Promise((r) => setTimeout(r, 3000))]);
@@ -1296,6 +1353,13 @@ export class AppController {
       stopList: () => this.stopProfileList(),
       continueList: () => this.continueProfileList(),
       closeList: () => this.closeProfileList(),
+      telegram: {
+        status: () => this.telegram.status(),
+        setToken: (token) => this.telegram.setToken(token),
+        setChat: (chatId) => this.telegram.setChat(chatId),
+        setEnabled: (enabled) => this.telegram.setEnabled(enabled),
+        pair: () => this.telegram.pair(),
+      },
     };
   }
 
