@@ -8,6 +8,7 @@ A download manager for Windows, macOS and Linux, inspired by IDM. It comes with 
 - **Resume** — unfinished downloads continue where they left off, even after a restart.
 - **Browser integration** — clicking a download link hands it to TurboDL. If TurboDL is closed, the extension starts it.
 - **Instagram** — posts, reels, stories and highlights from a link; your saved posts and collections; a profile's posts, highlights and tagged posts. Pick what you want, or back a collection or profile up into a folder, where later backups only save what is new. A profile backup chooses what it saves: posts, highlights and, with a sign-in, the posts the profile is tagged in; photos, videos or both. Ticking a kind later fills it in for older posts too. Public profiles and their highlights work without signing in; that is slower, as TurboDL reads each post from its own page, a few seconds apart: a 50-post profile takes a few minutes; a 1,000-post profile takes hours. Saved, current stories, posts Instagram shows only to signed-in visitors and private profiles still need a sign-in.
+- **Telegram bot** — send TurboDL an Instagram username, a link or a `.txt` list of profiles from your phone; it downloads on the computer it runs on and reports back in the chat. Off until you set it up.
 - **Video downloads** — a "⬇ TurboDL" button appears on videos. HLS/DASH streams are downloaded by TurboDL itself; for sites like YouTube, [yt-dlp](https://github.com/yt-dlp/yt-dlp) finds the video addresses. You choose the quality.
 - **Queue and scheduler** — start downloads at a set time and shut down or sleep the computer when they finish.
 - **Automatic sorting** — files go into Video, Music, Programs, Archives, Documents, Images and Other folders.
@@ -34,6 +35,7 @@ turbodl list                                                # all jobs
 turbodl status <id>                                         # one job
 turbodl cancel <id>                                         # cancel a job
 turbodl instagram login | logout | status                   # the Instagram sign-in
+turbodl telegram status | token | chat <id> | unpair | pair | on | off   # the Telegram bot
 ```
 
 Other options for `get` and `add`: `--name <file>` (one link only), `--audio`, `--max-height <px>`. For Instagram profiles: `--no-posts` (needs `--highlights` or `--tagged`), `--tagged` (needs a sign-in), `--photos-only`, `--videos-only`. Run `turbodl --help` for the full list.
@@ -93,6 +95,36 @@ The same list can be started from the command line (`turbodl get --from-file`), 
 - `POST /v1/lists/current/stop` stops it; `POST /v1/lists/current/continue` goes on from where it stopped (409 when it can't); `DELETE /v1/lists/current` closes it (409 when it can't).
 - Starting a list while another is unfinished is refused with 409.
 - `GET /v1/info` lists `"lists"` in `"features"` when the app has these routes.
+
+## Telegram bot
+
+TurboDL can take orders from your phone through a Telegram bot of your own, for example while it runs on a computer somewhere else. The bot is part of the app: it works while TurboDL runs, needs no open port (it asks Telegram for new messages), and is off until you set it up.
+
+1. In Telegram, create a bot with [@BotFather](https://t.me/BotFather) (`/newbot`) and copy the token it gives you. Use a new bot for TurboDL, and one per computer: only one program at a time can read a bot's messages.
+2. Save the token: **Settings → Telegram → Bot token**, or `turbodl telegram token`, which asks for it (or reads it piped on stdin), so it stays out of your shell history.
+3. Pair your chat: **Pair** in Settings, or `turbodl telegram pair`. TurboDL shows a 6-digit code, valid for 10 minutes. Send `/start <code>` to your bot from your Telegram account: that chat is bound, and the bot turns on. If you know your chat id, you can bind it instead (the Chat field in Settings, or `turbodl telegram chat <id>`), then turn the bot on.
+
+What the bot understands:
+
+| You send | TurboDL |
+| --- | --- |
+| An Instagram username (`nasa`, `@nasa`) or profile link | Asks what to save (Posts, Highlights, Tagged, Photos, Videos, ticked as in the app), then backs the profile up when you press Start |
+| Several usernames in one message, or a `.txt` file with one profile per line (up to 1 MB) | The same choices and the wait between profiles, then starts a [profile list](#profile-lists) |
+| Any other link: an Instagram post, reel, story or highlight, YouTube, a file | Downloads it at once, at the best quality |
+| `/status` | The version, the Instagram sign-in, the downloads the bot started and the list |
+| `/stop` | A Stop button for each download the bot started, Stop list and Stop all |
+| `/list` | The profile list's message again, with its buttons |
+| `/help` | What the bot understands |
+
+- Each download has one message that updates itself while it runs, then a short reply when it ends: the files saved and their folder, or why it failed. A list has one message that follows it (with Stop, Continue and Close), and TurboDL's own notice when the list finishes or stops by itself.
+- Files stay on the computer running TurboDL, in its usual download folders. Telegram only gets status messages, never the files.
+- The bot answers only the bound private chat. Messages and button presses from anyone else, and from groups, get no reply at all.
+- Instagram Saved collections can't be backed up from Telegram yet; use the TurboDL app. The Instagram sign-in happens on that computer, in the app or with `turbodl instagram login`; the bot only says whether TurboDL is signed in.
+- The bot shows only what it started, and the profile list, whoever started it.
+- After TurboDL restarts, the bot says so in the messages of what was running: send a profile backup again (it skips what it already saved); a link's download goes on in TurboDL; a list waits for Continue.
+- The token is stored encrypted by the system (where it can't be, in a file only you can read) and never shown: Settings, `turbodl` and the API only tell whether one is saved and the bot's @name.
+
+On the command line, `turbodl telegram status` shows the bot's state (`--json` for scripts), `token` saves or replaces the token, `chat <id>` binds a chat, `pair` shows a code and waits until a chat sends it, `unpair` unbinds the chat, and `on` and `off` turn the bot on and off. In the local API: `GET /v1/telegram`, and `POST /v1/telegram/token` (`{"token": "…"}`, or `null` to remove it), `/chat` (`{"chatId": 123}` or `null`), `/enabled` (`{"enabled": true}`) and `/pair`. `GET /v1/info` lists `"telegram"` in `"features"`.
 
 ## Python
 
