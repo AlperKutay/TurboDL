@@ -163,6 +163,20 @@ describe("BotApi", () => {
     expect((await rejection(slow.getUpdates(0, 0, new AbortController().signal))).kind).toBe("network");
   });
 
+  it("an abort signal ends getMe, setMyCommands and answerCallbackQuery as a plain abort", async () => {
+    const hung = ((_url: string, init: RequestInit) => new Promise((_, reject) => init.signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError"))))) as unknown as typeof fetch;
+    const hungApi = new BotApi({ token: fake.token, base: fake.url, fetch: hung });
+    const calls = [(s: AbortSignal) => hungApi.getMe(s), (s: AbortSignal) => hungApi.setMyCommands([], s), (s: AbortSignal) => hungApi.answerCallbackQuery("x", undefined, s)];
+    for (const call of calls) {
+      const ctl = new AbortController();
+      const p = call(ctl.signal);
+      setTimeout(() => ctl.abort(), 10);
+      const err = await p.then(() => undefined, (e: unknown) => e);
+      expect(err).not.toBeInstanceOf(TelegramError);
+      expect((err as Error).name).toBe("AbortError");
+    }
+  });
+
   it("the caller's abort still wins over the timeout wiring", async () => {
     const hung = ((_url: string, init: RequestInit) => new Promise((_, reject) => init.signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError"))))) as unknown as typeof fetch;
     const ctl = new AbortController();

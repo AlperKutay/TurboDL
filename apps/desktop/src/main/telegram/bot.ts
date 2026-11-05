@@ -139,7 +139,7 @@ export class TelegramBot {
   }
 
   private report(state: TelegramState, info: { bot?: string; error?: string } = {}): void {
-    if (state === this.current && state !== "ok") return;
+    if (this.stopped || (state === this.current && state !== "ok")) return;
     this.current = state;
     try {
       this.o.onStatus(state, info);
@@ -191,7 +191,8 @@ export class TelegramBot {
   }
 
   private async setup(): Promise<void> {
-    const me = await this.o.api.getMe();
+    const me = await this.o.api.getMe(this.ctl.signal);
+    if (this.stopped) return;
     this.botName = me.username;
     this.succeeded();
     if (this.state.botId !== me.id) {
@@ -199,7 +200,13 @@ export class TelegramBot {
       this.saveState();
     }
     // Task 8: recovery of open jobs and the list goes here
-    await this.o.api.setMyCommands(COMMANDS);
+    try {
+      await this.o.api.setMyCommands(COMMANDS, this.ctl.signal);
+    } catch (err) {
+      // the commands menu is a nicety: without it the bot still works
+      if (this.stopped) return;
+      this.log(`could not register the commands: ${this.text(err)}`);
+    }
     this.ready = true;
   }
 
@@ -215,6 +222,7 @@ export class TelegramBot {
     const kind = err instanceof TelegramError ? err.kind : "network";
     switch (kind) {
       case "unauthorized":
+      case "notFound": // Telegram answers 404 for a malformed token
         this.report("tokenRejected", { error });
         return false;
       case "conflict":
@@ -234,20 +242,34 @@ export class TelegramBot {
     }
   }
 
-  /** One update: the offset moves first, so a crash never handles an update twice. */
+  /** Writes the state to disk now (ignored updates keep the debounced save). */
+  private persistNow(): void {
+    try {
+      this.o.store.flush();
+    } catch (err) {
+      this.log(`could not save the bot state: ${this.text(err)}`);
+    }
+  }
+
+  /** One update: the offset moves first, and is on disk before an update that gets handled, so a crash does not replay it. */
   private async handle(update: Update): Promise<void> {
+    if (this.stopped) return;
     this.state.offset = update.update_id + 1;
     this.saveState();
     try {
       const start = pairingStart(update);
       const pairing = this.o.pairing();
       if (start && pairing && start.code === pairing.code && this.o.now() < pairing.expiresAt) {
+        this.persistNow();
         this.o.onPaired(start.chatId);
         void this.outbox.send(start.chatId, `${PAIRED}\n\n${HELP}`);
         return;
       }
       const owner = ownerUpdate(update, this.o.chatId());
-      if (owner) await this.handleOwner(owner);
+      if (owner) {
+        this.persistNow();
+        await this.handleOwner(owner);
+      }
     } catch (err) {
       this.log(`update ${update.update_id} failed: ${this.text(err)}`);
     }
@@ -256,7 +278,7 @@ export class TelegramBot {
   /** The one place an update from the bound chat is handled. For now every one is answered with the help. */
   private async handleOwner(update: NonNullable<ReturnType<typeof ownerUpdate>>): Promise<void> {
     if (update.type === "press") {
-      await this.o.api.answerCallbackQuery(update.id).catch(() => undefined);
+      await this.o.api.answerCallbackQuery(update.id, undefined, this.ctl.signal).catch(() => undefined);
       return;
     }
     void this.outbox.send(update.message.chat.id, HELP);

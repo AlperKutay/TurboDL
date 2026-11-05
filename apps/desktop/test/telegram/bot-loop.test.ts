@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -123,8 +123,8 @@ describe("bot loop", () => {
     await fake.waitFor(() => polls().length > 0 && fake.calls.length > before);
     await new Promise((r) => setTimeout(r, 300));
     expect(fake.sent(OWNER)).toHaveLength(1);
-    const latest = polls().at(-1)!.body.offset as number;
-    expect(latest).toBeGreaterThan(100);
+    // the handled update is 101: the new bot's first poll asks from 102
+    expect(fake.calls.slice(before).find((c) => c.method === "getUpdates")?.body.offset).toBe(102);
   });
 
   it("a rejected token ends the loop as tokenRejected", async () => {
@@ -183,11 +183,13 @@ describe("bot loop", () => {
     let expiresAt = Date.now() + 60_000;
     makeBot({ chatId: () => null, pairing: () => ({ code: CODE, expiresAt }) }).start();
     await fake.waitFor(() => polls().length > 0);
+    // a wrong code while the pairing is valid
     fake.text(OWNER, "/start 999999");
+    await fake.waitFor(() => polls().some((c) => Number(c.body.offset) >= 102));
+    // the right code once it expired
     expiresAt = Date.now() - 1;
     fake.text(OWNER, `/start ${CODE}`);
-    const offsetAfter = () => polls().some((c) => Number(c.body.offset) >= 103);
-    await fake.waitFor(offsetAfter);
+    await fake.waitFor(() => polls().some((c) => Number(c.body.offset) >= 103));
     expect(paired).toEqual([]);
     expect(repliesTo(OWNER)).toEqual([]);
   });
@@ -221,6 +223,48 @@ describe("bot loop", () => {
     expect(polls()[0].body.offset).toBe(0);
     const saved = store.load(() => structuredClone(EMPTY_STATE));
     expect(saved).toEqual({ ...EMPTY_STATE, botId: 424242 });
+  });
+
+  it("the offset is on disk before an owner update is handled", async () => {
+    const file = path.join(dir, "slow-state.json");
+    // a debounce that never fires in the test: only an explicit flush writes the file
+    const slow = new JsonStore<BotStateFile>(file, 60_000);
+    makeBot({ store: slow }).start();
+    await fake.waitFor(() => polls().length > 0);
+    fake.text(OWNER, "hello");
+    await fake.waitFor(() => fake.sent(OWNER).length === 1);
+    expect(JSON.parse(readFileSync(file, "utf8")).offset).toBe(102);
+  });
+
+  it("a failing setMyCommands does not stop the polling", async () => {
+    fake.failNext("setMyCommands", 400);
+    makeBot().start();
+    await fake.waitFor(() => polls().length > 0);
+    expect(states()).toEqual(["connecting", "ok"]);
+    expect(logs.some((l) => l.includes("commands"))).toBe(true);
+  });
+
+  it("a 404 from getMe counts as a rejected token", async () => {
+    fake.failNext("getMe", 404);
+    makeBot().start();
+    await fake.waitFor(() => states().includes("tokenRejected"));
+    await new Promise((r) => setTimeout(r, 100));
+    expect(states().at(-1)).toBe("tokenRejected");
+    expect(waits).toEqual([]);
+  });
+
+  it("stopping while getMe hangs returns at once and reports nothing after", async () => {
+    const hung = ((_url: string, init: RequestInit) => new Promise((_, reject) => init.signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError"))))) as unknown as typeof fetch;
+    const bot = makeBot({ api: new BotApi({ token: fake.token, base: fake.url, fetch: hung }) });
+    bot.start();
+    await new Promise((r) => setTimeout(r, 50));
+    const seen = statuses.length;
+    const started = Date.now();
+    await bot.stop();
+    expect(Date.now() - started).toBeLessThan(200);
+    await new Promise((r) => setTimeout(r, 50));
+    expect(statuses.length).toBe(seen);
+    expect(fake.calls).toEqual([]);
   });
 
   it("stop ends the long poll at once", async () => {

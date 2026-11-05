@@ -68,16 +68,16 @@ export class BotApi {
     this.doFetch = o.fetch ?? ((input, init) => fetch(input, init));
   }
 
-  getMe(): Promise<{ id: number; username: string }> {
-    return this.call("getMe", {});
+  getMe(signal?: AbortSignal): Promise<{ id: number; username: string }> {
+    return this.call("getMe", {}, signal);
   }
 
   getUpdates(offset: number, timeoutSec: number, signal: AbortSignal): Promise<Update[]> {
     return this.call("getUpdates", { offset, timeout: timeoutSec, allowed_updates: ["message", "callback_query"] }, signal, timeoutSec * 1000 + this.pollGraceMs);
   }
 
-  async setMyCommands(commands: { command: string; description: string }[]): Promise<void> {
-    await this.call("setMyCommands", { commands });
+  async setMyCommands(commands: { command: string; description: string }[], signal?: AbortSignal): Promise<void> {
+    await this.call("setMyCommands", { commands }, signal);
   }
 
   async sendMessage(chatId: number, text: string, o: { keyboard?: Keyboard; replyTo?: number } = {}): Promise<number> {
@@ -92,8 +92,8 @@ export class BotApi {
     await this.call("editMessageText", { chat_id: chatId, message_id: messageId, text, reply_markup: { inline_keyboard: keyboard ?? [] } });
   }
 
-  async answerCallbackQuery(id: string, text?: string): Promise<void> {
-    await this.call("answerCallbackQuery", text === undefined ? { callback_query_id: id } : { callback_query_id: id, text });
+  async answerCallbackQuery(id: string, text?: string, signal?: AbortSignal): Promise<void> {
+    await this.call("answerCallbackQuery", text === undefined ? { callback_query_id: id } : { callback_query_id: id, text }, signal);
   }
 
   async downloadDocument(fileId: string, maxBytes: number): Promise<Buffer> {
